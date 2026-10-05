@@ -6,6 +6,11 @@ from typing import Literal, Self
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+ReplayScenarioName = Literal[
+    "html_room_success", "html_fail_api_success", "html_challenge", "api_missing_room",
+    "live_with_comments", "live_end", "temporary_disconnect", "rate_limit", "security_event",
+]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -13,7 +18,8 @@ class Settings(BaseSettings):
         extra="ignore", validate_default=True,
     )
 
-    live_mode: Literal["real", "fake"] = "fake"
+    live_mode: Literal["real", "fake", "replay"] = "fake"
+    replay_scenario: ReplayScenarioName | None = None
     tiktok_username: str = ""
     diagnostic: bool = False
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -42,8 +48,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_modes(self) -> Self:
-        if self.diagnostic and self.live_mode != "real":
-            raise ValueError("Diagnostic mode requires LIVE_MODE=real")
+        if self.diagnostic and self.live_mode not in {"real", "replay"}:
+            raise ValueError("Diagnostic mode requires LIVE_MODE=real or replay")
+        if self.live_mode == "replay":
+            if not self.replay_scenario:
+                raise ValueError("Replay mode requires --scenario")
+            self.tiktok_username = "replay"
+        elif self.replay_scenario is not None:
+            raise ValueError("Scenario requires LIVE_MODE=replay")
         if self.live_mode == "real" and not self.tiktok_username:
             raise ValueError("TIKTOK_USERNAME is required for LIVE_MODE=real")
         if self.reconnect_max_seconds < self.reconnect_initial_seconds:

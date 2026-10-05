@@ -28,13 +28,27 @@ class JsonFormatter(logging.Formatter):
 
 
 class ConsoleFormatter(logging.Formatter):
-    def __init__(self, diagnostic: bool = False):
+    def __init__(self, diagnostic: bool = False, replay: bool = False):
         super().__init__()
         self.diagnostic = diagnostic
+        self.replay = replay
 
     def format(self, record: logging.LogRecord) -> str:
         fields = getattr(record, "fields", {})
         time = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+        if self.replay and record.msg == "room_lookup_result":
+            outcome = "success" if fields["parsed_room_id"] else "failure"
+            return (f"[{time}] REPLAY room_lookup: {fields['room_lookup_strategy']} {outcome} "
+                    f"{fields}")
+        if record.msg == "replay_result":
+            return (f"REPLAY RESULT: {'PASS' if fields['passed'] else 'FAIL'}\n"
+                    f"  scenario: {fields['scenario']}\n"
+                    f"  states visited: {' -> '.join(fields['states_visited'])}\n"
+                    f"  comments processed: {fields['comments_processed']}\n"
+                    f"  reply suggestions: {fields['reply_suggestions']}\n"
+                    f"  final state: {fields['final_state']}\n"
+                    f"  terminal state: {fields['terminal_state']}\n"
+                    f"  failed checks: {', '.join(fields['failed_checks']) or 'none'}")
         if record.msg == "reply_suggestion":
             item = fields["suggestion"]
             safe = lambda value: console_text(str(value)) if value else "—"
@@ -108,7 +122,9 @@ def configure_logging(settings: Settings) -> logging.Logger:
     file_handler.setFormatter(JsonFormatter())
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
-    console.setFormatter(ConsoleFormatter(settings.diagnostic))
+    console.setFormatter(ConsoleFormatter(
+        settings.diagnostic or settings.live_mode == "replay", replay=settings.live_mode == "replay",
+    ))
     logger.addHandler(file_handler)
     logger.addHandler(console)
     return logger

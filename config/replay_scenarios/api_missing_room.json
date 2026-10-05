@@ -1,0 +1,36 @@
+{
+  "sessions": [
+    {
+      "responses": [
+        {
+          "stage": "html",
+          "status": 200,
+          "content_type": "text/html",
+          "body": "<html><body>Public LIVE shell</body></html>"
+        },
+        {
+          "stage": "api",
+          "status": 200,
+          "content_type": "application/json",
+          "body": "{\"message\": \"\", \"data\": {\"user\": {}}}"
+        }
+      ],
+      "events": []
+    }
+  ],
+  "expected": {
+    "states": [
+      "starting",
+      "connecting",
+      "operator_required",
+      "stopped"
+    ],
+    "requests": [
+      "html",
+      "api"
+    ],
+    "comments": 0,
+    "suggestions": [],
+    "terminal_state": "operator_required"
+  }
+}

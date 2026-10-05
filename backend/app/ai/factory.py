@@ -8,7 +8,7 @@ from app.config import Settings
 
 def create_processor(settings: Settings) -> CommentProcessor:
     project = load_yaml_model(settings.project_config_path, ProjectConfig)
-    if settings.diagnostic:
+    if settings.diagnostic or settings.live_mode == "replay":
         # Stage 3A isolates the LIVE integration from provider selection.
         project = project.model_copy(update={
             "ai": project.ai.model_copy(update={"provider": "fake"}),

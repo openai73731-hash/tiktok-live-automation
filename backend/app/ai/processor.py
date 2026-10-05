@@ -93,8 +93,9 @@ class CommentProcessor:
             reason=reason, status="ready",
         )
 
-    async def handle(self, comment: Comment) -> None:
+    async def handle(self, comment: Comment) -> ReplySuggestion:
         suggestion = await self.process(comment)
         logger.info("reply_suggestion", extra={"fields": {
             "suggestion": suggestion.model_dump(mode="json"),
         }})
+        return suggestion

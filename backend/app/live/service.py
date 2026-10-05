@@ -9,7 +9,7 @@ from app.live.models import Comment, LiveStatus
 from app.logging_config import LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
-CommentCallback = Callable[[Comment], Awaitable[None]]
+CommentCallback = Callable[[Comment], Awaitable[object]]
 
 
 class LiveService:
@@ -56,4 +56,3 @@ class LiveService:
             consumer.cancel()
             await asyncio.gather(producer, consumer, return_exceptions=True)
             self._running = False
-

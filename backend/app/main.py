@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import logging
+from typing import get_args
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,7 +10,7 @@ from pydantic import ValidationError
 import yaml
 
 from app.ai.factory import create_processor
-from app.config import Settings
+from app.config import ReplayScenarioName, Settings
 from app.live.models import LiveState
 from app.live.service import LiveService
 from app.logging_config import LOGGER_NAME, configure_logging
@@ -52,6 +53,10 @@ app = create_app()
 
 
 async def run_listener(settings: Settings) -> int:
+    if settings.live_mode == "replay":
+        from app.live.replay import run_replay
+        result = await run_replay(settings)
+        return 0 if result["passed"] else 1
     processor = create_processor(settings)
     service = LiveService(settings, on_comment=processor.handle)
     await service.run()
@@ -60,13 +65,16 @@ async def run_listener(settings: Settings) -> int:
 
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Read-only TikTok LIVE listener")
-    parser.add_argument("--mode", choices=("real", "fake"))
+    parser.add_argument("--mode", choices=("real", "fake", "replay"))
+    parser.add_argument("--scenario", choices=get_args(ReplayScenarioName), help="Offline replay fixture")
     parser.add_argument("--username", help="Your own TikTok handle")
     parser.add_argument("--diagnostic", action="store_true", default=None,
                         help="Manual real LIVE smoke test with FakeAIReplyEngine")
     parser.add_argument("--env-file", default=".env")
     args = parser.parse_args()
     overrides = {}
+    if args.scenario:
+        overrides["replay_scenario"] = args.scenario
     if args.diagnostic is not None:
         overrides["diagnostic"] = args.diagnostic
     if args.mode:

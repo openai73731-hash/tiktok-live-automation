@@ -221,6 +221,79 @@ FAKE_INTERVAL_SECONDS=1
 подключения к TikTok не создаются. Поле source остаётся tiktok: fake имитирует
 тот же входной контракт. Признак режима доступен в статусе и логах состояния.
 
+## Offline replay testing
+
+Stage 3A Offline Replay Harness проверяет integration layer без настоящего LIVE.
+Запускайте из корня проекта в PowerShell:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m app.main --mode replay --scenario live_with_comments
+```
+
+Доступные сценарии:
+
+| Scenario | Ожидаемое поведение |
+| --- | --- |
+| html_room_success | Штатный HTML parser → live-check → CONNECTED → ENDED |
+| html_fail_api_success | FailedParseRoomIdError → SAFE_API_FALLBACK → API → CONNECTED |
+| html_challenge | HARD challenge → NEED_OPERATOR; API не вызывается |
+| api_missing_room | HTML parse failure → API без roomId → NEED_OPERATOR |
+| live_with_comments | Hello → skipped; вопрос о программе → ready, requires_approval=true |
+| live_end | CONNECTED → ENDED → STOPPED |
+| temporary_disconnect | Transport failure → RECONNECTING → CONNECTING → CONNECTED |
+| rate_limit | HTTP 429 → NEED_OPERATOR без повторов/fallback |
+| security_event | CONNECTED → SDK AccessControlEvent → NEED_OPERATOR |
+
+Все сценарии конечные. Успешные соединения завершаются синтетическим LiveEndEvent.
+`--scenario` обязателен для replay и запрещён для других режимов. Эквивалентные
+переменные настроек — LIVE_MODE=replay и REPLAY_SCENARIO=<name>. Handle всегда
+`@replay`, provider всегда `fake`, даже если в project.yaml выбран другой provider.
+YAML не меняется. `--diagnostic` для replay не требуется: безопасная telemetry и
+операторский формат вывода включаются автоматически.
+
+Общая цепочка: установленные SDK routes/parsers → RoomConnection (security guards,
+guarded fallback, live-check) → LiveListener → Comment → LiveService →
+CommentProcessor → FakeAIReplyEngine → ReplySuggestion. State machine, reconnect
+и cleanup не копируются. Replay использует настоящие классы SDK-событий на входе
+существующих callbacks; в AI передаётся только внутренняя модель Comment.
+Временные задержки backoff сокращены до 1–4 мс, алгоритм и конечный бюджет сохраняются.
+
+`config/replay_scenarios/*.json` — минимальные синтетические HTML/JSON и события,
+с вымышленным положительным ID 101. В них нет сохранённых TikTok responses, cookies,
+реальных headers, URL или аккаунтов. Только синтетический Content-Type создаётся
+в памяти. ReplayWeb подставляется под штатные SDK routes и возвращает Response
+в памяти: HTTP-клиенты, signer и WebSocket вообще не создаются. Неожиданный путь,
+порядок запросов или лишняя сессия приводят к FAIL, а не сетевому fallback.
+Тесты запрещают sockets/DNS/HTTP-клиенты внутри уже работающего event loop;
+служебный socketpair самого asyncio на Windows создаётся до этого запрета.
+
+В конце выводится `REPLAY RESULT: PASS` или `FAIL`, имя сценария, фактический порядок
+состояний, число обработанных комментариев/предложений и конечное состояние.
+PASS требует совпадения состояний, запросов, статусов предложений, provider/approval,
+числа сессий, потребления fixtures и завершения принадлежащих replay задач.
+Сценарий с ожидаемым NEED_OPERATOR также возвращает PASS и код 0.
+Несовпадение ожиданий — код 1; ошибка конфигурации — код 2. В real-режиме
+NEED_OPERATOR по-прежнему возвращает код 2. При отмене незавершённый replay
+не печатает PASS. Полный отчёт также записывается как `replay_result` в JSONL.
+
+Запуск всех сценариев:
+
+```powershell
+$replayScenarios = @(
+    "html_room_success", "html_fail_api_success", "html_challenge", "api_missing_room",
+    "live_with_comments", "live_end", "temporary_disconnect", "rate_limit", "security_event"
+)
+foreach ($replayScenario in $replayScenarios) {
+    & ".\.venv\Scripts\python.exe" -m app.main --mode replay --scenario $replayScenario
+    if ($LASTEXITCODE -ne 0) { throw "Replay failed: $replayScenario" }
+}
+```
+
+Replay проверяет архитектуру и поведение integration layer, **не доказывает текущую
+совместимость с реальным TikTok**. Он не проверяет настоящие HTTP-ответы, подпись,
+WebSocket handshake или сетевую доставку protobuf. Финальный manual real smoke test
+на собственном LIVE всё равно обязателен. Ни один предложенный ответ не отправляется.
+
 ## Собственный реальный LIVE
 
 Запустите эфир вручную. В .env укажите свой handle:
@@ -476,7 +549,8 @@ YAML-файлы также загружаются относительно те�
 
 | Переменная | По умолчанию | Назначение |
 | --- | --- | --- |
-| LIVE_MODE | fake | real или fake |
+| LIVE_MODE | fake | real, fake или replay |
+| REPLAY_SCENARIO | не задано | Обязательное имя fixture только для replay; CLI --scenario |
 | TIKTOK_USERNAME | пусто | Обязателен только для real |
 | DIAGNOSTIC | false | Диагностика real LIVE с FakeAIReplyEngine; CLI --diagnostic включает её |
 | LOG_LEVEL | INFO | Уровень файла: DEBUG/INFO/WARNING/ERROR |
@@ -498,7 +572,8 @@ YAML-файлы также загружаются относительно те�
 Числа, режим и username валидируются при старте. Бесконечные и отрицательные
 интервалы не допускаются. При FAKE_REPEAT=true интервал должен быть больше нуля.
 Для CLI передаваемые аргументы --mode/--username/--diagnostic имеют самый высокий приоритет.
-DIAGNOSTIC=true допускается только с LIVE_MODE=real.
+DIAGNOSTIC=true допускается с LIVE_MODE=real или replay; replay и без флага
+выводит безопасную lookup telemetry и использует fake provider.
 Консоль показывает INFO и выше независимо от уровня файла.
 
 ## Логи
@@ -643,7 +718,8 @@ Comment → CommentProcessor → ReplySuggestion, последовательно
 Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12.0: **263 tests passed**; fake CLI выводит все три сообщения
+Проверено на Python 3.12.0: **294 tests passed**; все 9 replay-сценариев отдельно
+запущены через CLI и завершились с PASS; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive
 есть два DeprecationWarning, связанных с websockets legacy API.
@@ -666,6 +742,7 @@ tiktok-live-automation/
 │   │   │   ├── diagnostics.py
 │   │   │   ├── listener.py
 │   │   │   ├── models.py
+│   │   │   ├── replay.py
 │   │   │   ├── security.py
 │   │   │   └── service.py
 │   │   ├── ai/
@@ -686,10 +763,12 @@ tiktok-live-automation/
 │       ├── test_config_models.py
 │       ├── test_diagnostic.py
 │       ├── test_room_lookup_diagnostics.py
+│       ├── test_replay.py
 │       ├── test_listener.py
 │       ├── test_logging.py
 │       └── test_service.py
 ├── config/
+│   ├── replay_scenarios/
 │   ├── .gitkeep
 │   ├── project.yaml
 │   ├── bot_knowledge.yaml

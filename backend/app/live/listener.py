@@ -29,76 +29,91 @@ class SDKLogFilter(logging.Filter):
         return False
 
 
+class RoomConnection:
+    """Shared SDK lookup, security guards and live-check for real and replay."""
+
+    def __init__(self, *, diagnostic=False, operator_required=None):
+        from TikTokLive.client.web.routes.fetch_room_id_live_html import FetchRoomIdLiveHTMLRoute
+
+        self.diagnostic = diagnostic
+        self.operator_required = operator_required
+        self.pending = False
+        self.diagnostics = RoomLookupDiagnostics(FetchRoomIdLiveHTMLRoute.SIGI_PATTERN, enabled=diagnostic)
+
+    async def check_response(self, response):
+        if await self.diagnostics.observe_response(response):
+            raise AmbiguousSDKState()
+        response.raise_for_status()
+        self.diagnostics.parsing()
+
+    def bind(self, web):
+        web.fetch_room_id_from_html = self.diagnostics.wrap("html", web.fetch_room_id_from_html)
+        web.fetch_room_id_from_api = self.diagnostics.wrap("api", web.fetch_room_id_from_api)
+
+    def stopped(self):
+        return self.operator_required and self.operator_required()
+
+    async def resolve(self, web, unique_id):
+        from TikTokLive.client.errors import UserOfflineError
+        from TikTokLive.client.web.routes.fetch_room_id_live_html import FailedParseRoomIdError
+
+        self.pending = True
+        try:
+            if self.stopped():
+                raise AmbiguousSDKState()
+            try:
+                room_id = await web.fetch_room_id_from_html(unique_id)
+            except FailedParseRoomIdError:
+                if not self.diagnostics.allow_api_fallback() or self.stopped():
+                    raise
+                if self.diagnostic:
+                    logger.info("SAFE_API_FALLBACK", extra={"fields": {
+                        "request_stage": "safe_api_fallback",
+                    }})
+                room_id = await web.fetch_room_id_from_api(unique_id)
+            if not positive_room_id(room_id):
+                raise AmbiguousSDKState()
+            room_id = int(room_id)
+        except UserOfflineError:
+            raise
+        except Exception as exc:
+            if LiveListener.retryable(exc):
+                raise AmbiguousSDKState() from exc
+            raise
+        self.pending = False
+        if self.stopped():
+            raise AmbiguousSDKState()
+        if self.diagnostic:
+            logger.info("connection_stage", extra={"fields": {"request_stage": "live_check"}})
+        # Bypass the SDK __call__ that catches cancellation as well as errors.
+        alive = await web.fetch_is_live.fetch_is_live_room_ids(room_id)
+        if len(alive) != 1 or type(alive[0]) is not bool:
+            raise AmbiguousSDKState()
+        if not alive[0]:
+            raise UserOfflineError()
+        if self.diagnostic:
+            logger.info("connection_stage", extra={"fields": {"request_stage": "sdk_start"}})
+        return room_id
+
+
 def create_sdk_client(
     *, unique_id: str, diagnostic: bool = False,
     operator_required: Callable[[], bool] | None = None,
 ) -> Any:
     """Small, version-pinned adapter; imported lazily so fake mode stays offline."""
     from TikTokLive import TikTokLiveClient
-    from TikTokLive.client.errors import UserOfflineError
-    from TikTokLive.client.web.routes.fetch_room_id_live_html import (
-        FailedParseRoomIdError, FetchRoomIdLiveHTMLRoute,
-    )
     from TikTokLive.events import ControlEvent, LiveEndEvent, WebsocketResponseEvent
     from TikTokLive.proto import ControlAction
 
-    diagnostics = RoomLookupDiagnostics(FetchRoomIdLiveHTMLRoute.SIGI_PATTERN, enabled=diagnostic)
-
-    async def check_response(response):
-        if await diagnostics.observe_response(response):
-            # Only structural HARD signals stop here. Generic auth text is
-            # telemetry, not a reason to preempt the installed HTML parser.
-            # A HARD signal still wins over valid embedded LIVE data.
-            raise AmbiguousSDKState()
-        # Run before SDK routes can parse an error page or conceal its status.
-        response.raise_for_status()
-        diagnostics.parsing()
+    connection = RoomConnection(diagnostic=diagnostic, operator_required=operator_required)
 
     class ReadOnlyTikTokClient(TikTokLiveClient):
+        @property
+        def _room_lookup_pending(self):
+            return connection.pending
+
         async def start(self):
-            self._room_lookup_pending = True
-            # Resolve outside upstream's unconditional fallback. Only an
-            # observed normal HTTP 200 HTML parse failure permits one API call.
-            try:
-                if operator_required and operator_required():
-                    raise AmbiguousSDKState()
-                try:
-                    room_id = await self.web.fetch_room_id_from_html(self.unique_id)
-                except FailedParseRoomIdError:
-                    if (not diagnostics.allow_api_fallback()
-                            or (operator_required and operator_required())):
-                        raise
-                    if diagnostic:
-                        logger.info("SAFE_API_FALLBACK", extra={"fields": {
-                            "request_stage": "safe_api_fallback",
-                        }})
-                    room_id = await self.web.fetch_room_id_from_api(self.unique_id)
-                if not positive_room_id(room_id):
-                    raise AmbiguousSDKState()
-                room_id = int(room_id)
-            except UserOfflineError:
-                raise  # Preserve the existing explicit offline policy.
-            except Exception as exc:
-                # Lookup transport/5xx failures are not permission to probe
-                # another endpoint or restart lookup. Other phases retain
-                # their bounded reconnect policy.
-                if LiveListener.retryable(exc):
-                    raise AmbiguousSDKState() from exc
-                raise
-            self._room_lookup_pending = False
-            if operator_required and operator_required():
-                raise AmbiguousSDKState()
-            if diagnostic:
-                logger.info("connection_stage", extra={"fields": {"request_stage": "live_check"}})
-            # The SDK __call__ catches BaseException (including cancellation).
-            # Use its underlying route to keep Ctrl+C and timeouts cancellable.
-            alive = await self.web.fetch_is_live.fetch_is_live_room_ids(room_id)
-            if len(alive) != 1 or type(alive[0]) is not bool:
-                raise AmbiguousSDKState()
-            if not alive[0]:
-                raise UserOfflineError()
-            if diagnostic:
-                logger.info("connection_stage", extra={"fields": {"request_stage": "sdk_start"}})
+            room_id = await connection.resolve(self.web, self.unique_id)
             return await super().start(room_id=room_id, fetch_live_check=False)
 
         async def _parse_webcast_response_message(self, **kwargs):
@@ -123,13 +138,46 @@ def create_sdk_client(
 
     client = ReadOnlyTikTokClient(
         unique_id=unique_id,
-        web_kwargs={"httpx_kwargs": {"event_hooks": {"response": [check_response]}}},
+        web_kwargs={"httpx_kwargs": {"event_hooks": {"response": [connection.check_response]}}},
     )
     client.ignore_broken_payload = True
     client.parse_error_ignorelist = []
     # Guards run in every real session; telemetry remains diagnostic-only.
-    client.web.fetch_room_id_from_html = diagnostics.wrap("html", client.web.fetch_room_id_from_html)
-    client.web.fetch_room_id_from_api = diagnostics.wrap("api", client.web.fetch_room_id_from_api)
+    connection.bind(client.web)
+    return client
+
+
+def create_replay_client(session, driver, *, operator_required):
+    """Use installed SDK routes/events over a network-incapable fixture transport."""
+    from TikTokLive.client.web.routes.fetch_room_id_live_html import FetchRoomIdLiveHTMLRoute
+    from TikTokLive.client.web.routes.fetch_room_id_api import FetchRoomIdAPIRoute
+    from TikTokLive.client.web.routes.fetch_is_live import FetchIsLiveRoute
+    from TikTokLive.events import AccessControlEvent, CommentEvent, ConnectEvent, LiveEndEvent
+    from app.live.replay import ReplayClient, ReplayWeb
+
+    connection = RoomConnection(diagnostic=True, operator_required=operator_required)
+    web = ReplayWeb(session, driver, connection.check_response)
+    web.fetch_room_id_from_html = FetchRoomIdLiveHTMLRoute(web)
+    web.fetch_room_id_from_api = FetchRoomIdAPIRoute(web)
+    web.fetch_is_live = FetchIsLiveRoute(web)
+    connection.bind(web)
+
+    def event_from_fixture(frame):
+        if frame.type == "connect":
+            return ConnectEvent(unique_id="replay", room_id=1)
+        if frame.type == "comment":
+            return CommentEvent.from_dict({
+                "user": {"displayId": frame.username, "id": "1"}, "content": frame.text,
+            })
+        if frame.type == "end":
+            return LiveEndEvent()
+        if frame.type == "security":
+            return AccessControlEvent()
+        raise ValueError("Unsupported replay event")
+
+    client = ReplayClient(session, driver, web, connection, event_from_fixture)
+    # Reuse the real session's SDKLogFilter for the installed route logger too.
+    client.logger = web.fetch_is_live._logger
     return client
 
 
@@ -424,5 +472,8 @@ class LiveListener(BaseListener):
 
 
 def create_listener(settings: Settings, queue: asyncio.Queue[Comment]) -> Listener:
+    if settings.live_mode == "replay":
+        from app.live.replay import ReplayListener
+        return ReplayListener(settings, queue)
     listener_type = FakeLiveListener if settings.live_mode == "fake" else LiveListener
     return listener_type(settings, queue)

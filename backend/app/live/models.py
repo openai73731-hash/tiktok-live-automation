@@ -35,7 +35,7 @@ class LiveStatus(BaseModel):
     model_config = ConfigDict(frozen=True)
     state: LiveState = LiveState.IDLE
     username: str
-    mode: Literal["real", "fake"]
+    mode: Literal["real", "fake", "replay"]
     reason: str | None = None
     terminal_state: LiveState | None = None
     updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))

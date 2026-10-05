@@ -25,8 +25,18 @@
   an API key requirement or network/API implementation in this stage.
 - Stage 3A diagnostic pipeline: LiveListener -> LiveService -> CommentProcessor
   -> FakeAIReplyEngine -> ReplySuggestion -> operator console/JSONL. The
-  --diagnostic flag requires real mode and forces the fake provider without
+  --diagnostic flag requires real or replay mode and forces the fake provider without
   modifying YAML. Every suggestion still requires operator approval; none is sent.
+- Stage 3A offline replay is authorized: --mode replay --scenario <known-name>.
+  It uses synthetic fixtures, the shared RoomConnection lookup/security/live-check
+  logic, installed SDK parsers/events, and the existing LiveListener state machine.
+  Replay transports must never create HTTP clients, sockets, DNS requests or
+  signing/WebSocket connections, and must fail closed on unplanned fixture access.
+  SDK imports remain confined to listener.py. Replay always uses @replay and the
+  FakeAIReplyEngine; no delivery is implemented. Expected NEED_OPERATOR is a PASS
+  only if the complete scenario expectations and cleanup checks match. Replay
+  success never verifies current TikTok compatibility or replaces manual real LIVE
+  smoke testing. The default mode remains fake.
 - Diagnostic runtime states: STARTING, CONNECTING, CONNECTED, RECONNECTING,
   ENDED, NEED_OPERATOR, STOPPED. Preserve terminal_state after STOPPED and
   exit code 2 for operator intervention. Reconnect uses bounded exponential
