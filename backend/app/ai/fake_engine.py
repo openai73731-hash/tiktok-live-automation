@@ -70,3 +70,5 @@ class FakeAIReplyEngine:
             fact_ids=ids, needs_operator=not all((translation, reply, reply_ru)),
         )
 
+    async def aclose(self) -> None:
+        pass

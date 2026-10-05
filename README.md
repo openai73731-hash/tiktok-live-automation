@@ -30,7 +30,7 @@ CAPTCHA, security challenge, login request, неизвестный UI и нео�
 Этап 1 готов: конфигурация, модели, чтение LIVE, консоль, JSONL, fake listener,
 unit tests. Этап 2 реализован: CommentProcessor, ReplySuggestion,
 AI-интерфейс, FakeAIReplyEngine, переводы для оператора и safety/business rules.
-OpenAI API key не требуется. Отправка комментариев, Android automation,
+Fake provider не требует OpenAI API key. Отправка комментариев, Android automation,
 перезапуски и frontend не входят в этот этап.
 
 Stage 3A подготавливает ручную проверку существующего listener на собственном
@@ -43,15 +43,18 @@ FailedParseRoomIdError. Во втором HTML lookup получил HTTP 200, t
 Точное совпадение старого regex не сохранялось, поэтому конкретное слово,
 сработавшее на этих ответах, ретроспективно установить нельзя.
 
-Последний предоставленный оператором smoke test 2026-10-05 подтвердил guarded API
-room lookup после HTML parse failure, получение валидного roomId, live-check,
-SDK start и реальный CONNECTED. Затем два UnknownEvent ошибочно вызвали
-NEED_OPERATOR → STOPPED. Обработка unmapped-сообщений исправлена, но реальные
-CommentEvent пока не проверены: следующий smoke test выполняет оператор вручную.
+**Stage 3A VERIFIED ON REAL OWN LIVE.** По последнему сообщению оператора,
+smoke test собственного @antilame подтвердил room lookup, guarded API fallback,
+получение roomId, live-check, SDK start, CONNECTED, реальные CommentEvent,
+преобразование в Comment, CommentProcessor → FakeAI → ReplySuggestion,
+безопасное игнорирование UnknownEvent и LiveEndEvent → ENDED → STOPPED.
+Точная fixture-фраза обработана, а вариант `Is bot trading automatically?`
+показал ограниченность FakeAI. Stage 3B добавляет настоящий OpenAI provider;
+интеграция проверена mock-транспортом, качество и доступ к платному API ещё не подтверждены.
 
 ## Второй этап: предложения ответа
 
-CommentProcessor использует простые признаки вопроса, просьбы о помощи или проблемы.
+Для FakeAI CommentProcessor использует простые признаки вопроса, просьбы о помощи или проблемы.
 Это эвристика, а не универсальный классификатор намерений. Например, вопрос без
 знака вопроса и сообщение It is not working тоже обрабатываются. Приветствия
 и благодарности из fake-сценариев переводятся, но не получают ответа.
@@ -80,10 +83,10 @@ needs_operator относится к отдельному комментарию
 Будущий NEED_OPERATOR у supervisor относится к управлению устройством и эфиром.
 Отправка и интерфейс подтверждения пока отсутствуют: результат виден в консоли/JSONL.
 
-OpenAIReplyEngine — только заглушка будущего provider. Она не импортирует SDK,
-не обращается к API, не читает ключи и честно возвращает ошибку через процессор.
-Если выбрать ai.provider=openai, комментарии потребуют оператора. Для работы
-этого этапа оставьте ai.provider=fake. Другой provider реализует тот же Protocol.
+OpenAIReplyEngine реализован в Stage 3B. Он определяет необходимость ответа
+структурированным результатом модели; эвристика FakeAI не блокирует его решение.
+Выбор движка вынесен в factory, CommentProcessor не содержит веток по provider.
+По умолчанию остаётся ai.provider=fake; другие адаптеры реализуют тот же Protocol.
 
 ### Настройки продукта и знания
 
@@ -97,6 +100,8 @@ product:
   platform: "Pocket Option"
 ai:
   provider: fake
+  model: gpt-6-luna
+  reasoning_effort: none
   max_reply_sentences: 2
   max_reply_chars: 240
   max_comment_chars: 1000
@@ -302,6 +307,125 @@ Replay проверяет архитектуру и поведение integrati
 WebSocket handshake или сетевую доставку protobuf. Финальный manual real smoke test
 на собственном LIVE всё равно обязателен. Ни один предложенный ответ не отправляется.
 
+## Stage 3B: OpenAI provider
+
+Используется официальный Python SDK `openai==3.24.0`, `AsyncOpenAI.responses.parse`
+и Responses API. Проверены локальные сигнатуры SDK и
+[Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+По [официальному описанию модели](https://developers.openai.com/api/docs/models/gpt-6-luna),
+`gpt-6-luna` поддерживает Responses, Structured Outputs и reasoning effort `none`.
+Доступ конкретного API-проекта проверяется только ручным запросом.
+
+Provider и модель выбираются в `config/project.yaml`:
+
+```yaml
+ai:
+  provider: fake
+  model: gpt-6-luna
+  reasoning_effort: none
+  max_reply_sentences: 2
+  max_reply_chars: 240
+  max_comment_chars: 1000
+  operator_language: ru
+  timeout_seconds: 10
+```
+
+Для обычной работы через OpenAI измените только `provider: openai`.
+Модель можно заменить, например, на `gpt-6.1-sol`, без изменения Python;
+выбранная модель должна поддерживать Responses/Structured Outputs и указанный
+reasoning effort. Неизвестный provider — ошибка конфигурации.
+`--diagnostic` и replay всегда принудительно используют FakeAI, даже при openai в YAML.
+Обычный `--mode fake` выбирает источник комментариев, а provider берёт из YAML:
+при `provider: openai` такой запуск тоже обращается к платному API.
+
+### Строгий контракт и grounding
+
+LLM возвращает только `detected_language`, `operator_translation`, `should_reply`,
+`intent`, `fact_ids` и `reason`. Pydantic schema передаётся в Structured Outputs
+со strict=true и additionalProperties=false. Все поля обязательны; перевод
+может быть null. Intent — facts/no_promises/unknown/none, reason — фиксированный
+код. Поля suggested_reply в ответе модели нет.
+
+Viewer comment передаётся отдельным user message, правила и approved knowledge —
+в instructions. Комментарий не может расширять базу знаний. Приложение составляет
+ответ и перевод ответа из **точных утверждённых формулировок** выбранных fact_ids
+или safe response из `config/bot_knowledge.yaml`; затем ReplySafetyPolicy проверяет
+оба текста. Неизвестные/повторные/пустые fact_ids для facts, отсутствующие переводы,
+неподдерживаемый язык ответа и нарушения лимитов требуют оператора. Сейчас
+approved тексты есть для en/ru/es. Свободные перефразирования LLM запрещены.
+
+Перевод комментария создаёт модель: проверка наличия кириллицы для ru отсеивает
+явно непереведённый английский текст, но не доказывает правильность перевода.
+Модель также может неверно выбрать intent или релевантные факты. Это ограничения
+качества, требующие ручной оценки; каждый результат имеет requires_approval=true.
+Никакой отправки комментариев нет.
+
+### Ключ и ручной AI smoke test без TikTok
+
+Обновите зависимости из корня проекта:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m pip install -e ".[dev]"
+```
+
+Введите ключ скрыто в текущем окне PowerShell, без сохранения значения в истории команд:
+
+```powershell
+$openaiKeyInput = Read-Host "OPENAI_API_KEY" -AsSecureString
+$env:OPENAI_API_KEY = [System.Net.NetworkCredential]::new("", $openaiKeyInput).Password
+Remove-Variable openaiKeyInput
+```
+
+Переменная действует в этом окне и запускаемых из него процессах. Для постоянной
+локальной настройки допустима строка OPENAI_API_KEY в игнорируемом `.env`;
+ключ нельзя помещать в YAML, README, Git или присылать в чат. `.env.example`
+содержит только пустой placeholder. Settings скрывает ключ в repr/serialization.
+Без ключа OpenAI возвращает needs_operator до создания HTTP-клиента; fake ключ не нужен.
+
+Отдельный ручной тест **делает один платный запрос OpenAI**, но не создаёт TikTok listener:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m app.main --ai-smoke "Is bot trading automatically?"
+```
+
+`--ai-smoke` явно выбирает OpenAI, даже при provider=fake, берёт model/reasoning из
+YAML и не меняет файл. LIVE_MODE/DIAGNOSTIC из окружения не запускают LIVE в этом
+режиме; сочетание с --mode/--username/--scenario/--diagnostic запрещено.
+Вывод содержит original, detected_language, translation, should_reply, fact_ids,
+suggested_reply, reply_translation, provider, model, status, requires_approval.
+JSONL-событие — ai_smoke_result. Exit code 0 для ready/skipped, 2 для needs_operator.
+После теста при необходимости удалите ключ из текущего окружения:
+
+```powershell
+Remove-Item Env:OPENAI_API_KEY
+```
+
+### Ошибки, ресурсы и будущие адаптеры
+
+Один lazy async-клиент принадлежит процессору, переиспользуется между комментариями
+и закрывается при CLI/FastAPI shutdown и отмене. Очередь и последовательное
+потребление сохраняют backpressure. Общий timeout задаётся ai.timeout_seconds;
+SDK retries выключены, output ограничен 2000 токенами, store=false.
+Timeout, 429, network/API errors, отказ модели, partial/malformed output дают
+needs_operator для текущего комментария. Следующий продолжает обрабатываться.
+Ошибки журналируются только как provider/model/error_type; SDK/transport logs
+подавляются, request payload, Authorization и exception body не печатаются.
+
+Endpoint фиксирован: `https://api.openai.com/v1`. OPENAI_BASE_URL игнорируется,
+redirects и proxy-настройки окружения отключены. Generic base_url отсутствует.
+AIReplyEngine Protocol (`generate`, `aclose`) и factory отделяют движки от процессора:
+
+| Provider | Статус | Подключение и ключ |
+| --- | --- | --- |
+| fake | Реализован, default | Без сети и ключа |
+| openai | Реализован | Официальный API, OPENAI_API_KEY |
+| deepseek | Будущий отдельный адаптер | DEEPSEEK_API_KEY |
+| lmstudio | Будущий локальный адаптер | localhost OpenAI-compatible endpoint, без OPENAI_API_KEY |
+
+Добавление будущего адаптера меняет factory/config, а не CommentProcessor.
+DeepSeek и LM Studio сейчас не реализованы. Платный smoke test и реальный LIVE
+агент самостоятельно не запускал.
+
 ## Собственный реальный LIVE
 
 Запустите эфир вручную. В .env укажите свой handle:
@@ -354,7 +478,7 @@ Handle задаётся без URL; начальный @ разрешён.
 
 ### Manual real LIVE smoke test
 
-После исправления UnknownEvent следующий ручной запуск для собственного @antilame:
+Повторный диагностический запуск для собственного @antilame (Stage 3A уже подтверждён):
 
 ```powershell
 & ".\.venv\Scripts\python.exe" -m app.main --mode real --username "@antilame" --diagnostic
@@ -584,7 +708,7 @@ security guards. Оригинальный SDK пробует API после лю
 `html.parse_room_id`, строка 61 установленного SDK — отсутствует точный тег
 SIGI_STATE. Причина сокращённого HTML-ответа пока не установлена. Последний
 операторский smoke test уже подтвердил API fallback и CONNECTED на реальном LIVE;
-проверка реальных комментариев остаётся ручным действием оператора. Поле
+следующий операторский запуск подтвердил также реальные комментарии и ENDED → STOPPED. Поле
 `challenge_reason_codes` позволит различать конкретные правила классификатора,
 не публикуя HTML или roomId.
 
@@ -604,6 +728,7 @@ YAML-файлы также загружаются относительно те�
 | Переменная | По умолчанию | Назначение |
 | --- | --- | --- |
 | LIVE_MODE | fake | real, fake или replay |
+| OPENAI_API_KEY | пусто | Только OpenAI provider; секрет из окружения/игнорируемого .env |
 | REPLAY_SCENARIO | не задано | Обязательное имя fixture только для replay; CLI --scenario |
 | TIKTOK_USERNAME | пусто | Обязателен только для real |
 | DIAGNOSTIC | false | Диагностика real LIVE с FakeAIReplyEngine; CLI --diagnostic включает её |
@@ -637,7 +762,7 @@ logs/app.jsonl содержит отдельный JSON на строку: times
 Комментатор и текст сохраняются в логе; храните каталог локально.
 События подключения, отключения, ошибок, переполнения очереди и остановки логируются.
 reply_suggestion содержит полную карточку в поле suggestion; reply_blocked содержит
-идентификаторы нарушенных проверок, ai_provider_failed — тип ошибки без секретов.
+идентификаторы нарушенных проверок, ai_provider_failed — provider/model/error_type без секретов.
 LOG_LEVEL=INFO сохраняет все эти действия. Более высокий уровень сокращает лог.
 
 Ротация ограничивает объём. .env и содержимое logs исключены из Git.
@@ -762,7 +887,7 @@ malformed events, переполнение очереди, backoff, остано
 завершение и отмена, изоляция чужих asyncio-задач, callback, JSONL/ротация,
 FastAPI lifespan/health и архитектурная граница импортов. Тесты этапа 2 проверяют
 отбор комментариев, языки/переводы, YAML, grounding, финансовые запреты, ограничения
-длины, поддельные/ошибочные ответы provider, timeout/отмену, OpenAI-заглушку,
+длины, поддельные/ошибочные ответы provider, timeout/отмену, OpenAI provider без ключа,
 сквозной fake pipeline и UTF-8 в отдельном запуске CLI.
 Stage 3A дополнительно проверяет диагностический CLI, реальный SDK emitter →
 Comment → CommentProcessor → ReplySuggestion, последовательности состояний,
@@ -772,11 +897,16 @@ Comment → CommentProcessor → ReplySuggestion, последовательно
 Регрессии UnknownEvent проверяют реальный SDK parser и emitter, продолжение
 после одного/двух событий, отсутствие Comment/AI для них, следующую карточку
 ready/fake/approval, сохранение security/control guards и редактирование metadata.
+Stage 3B тестирует установленный OpenAI SDK через in-memory HTTP transport:
+строгую JSON schema, model/reasoning из YAML, переводы, выбор фактов, prompt injection,
+финальный safety gate, API/network errors, отказ/partial output, продолжение после
+ошибок, фиксированный endpoint, отсутствие утечек ключа и lifecycle CLI/FastAPI/Ctrl+C.
+Основной pytest не делает платных запросов OpenAI.
 
 Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12.0: **316 tests passed**; все 10 replay-сценариев отдельно
+Проверено на Python 3.12.0: **362 tests passed**; все 10 replay-сценариев отдельно
 запущены через CLI и завершились с PASS; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive

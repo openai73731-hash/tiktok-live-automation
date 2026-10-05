@@ -3,7 +3,7 @@ import asyncio
 import logging
 import re
 
-from app.ai.engine import AIReplyEngine
+from app.ai.engine import AIReplyEngine, ProviderNotConfiguredError
 from app.ai.knowledge import KnowledgeBase, ProjectConfig
 from app.ai.models import ReplyDraft, ReplyRequest, ReplySuggestion
 from app.ai.safety import ReplySafetyPolicy
@@ -39,6 +39,7 @@ class CommentProcessor:
         base = {
             "username": comment.username, "original_text": comment.text,
             "provider": self.engine.name, "detected_language": "und",
+            "model": getattr(self.engine, "model", None),
             "operator_translation": None,
         }
 
@@ -61,8 +62,11 @@ class CommentProcessor:
             draft = ReplyDraft.model_validate(raw)
         except Exception as exc:
             logger.error("ai_provider_failed", extra={"fields": {
-                "provider": self.engine.name, "error_type": type(exc).__name__,
+                "provider": self.engine.name, "model": base["model"],
+                "error_type": type(exc).__name__,
             }})
+            if isinstance(exc, ProviderNotConfiguredError):
+                return abstain("Provider не настроен: задайте его API key в окружении.")
             return abstain("Не удалось подготовить ответ; требуется оператор.")
         base.update(
             detected_language=draft.detected_language,
@@ -70,7 +74,7 @@ class CommentProcessor:
         )
         if draft.needs_operator or draft.detected_language == "und" or not draft.operator_translation:
             return abstain("Нет надёжного перевода или знания для этого сообщения; требуется оператор.")
-        if not candidate:
+        if not (candidate if draft.should_reply is None else draft.should_reply):
             return abstain("Приветствие или сообщение без запроса ответа.", status="skipped")
         if draft.response_kind == "none":
             return abstain("Сообщение похоже на вопрос, но движок не подготовил ответ.")
@@ -99,3 +103,13 @@ class CommentProcessor:
             "suggestion": suggestion.model_dump(mode="json"),
         }})
         return suggestion
+
+    async def aclose(self) -> None:
+        try:
+            async with asyncio.timeout(5):
+                await self.engine.aclose()
+        except Exception as exc:
+            logger.error("ai_provider_cleanup_failed", extra={"fields": {
+                "provider": self.engine.name, "model": getattr(self.engine, "model", None),
+                "error_type": type(exc).__name__,
+            }})

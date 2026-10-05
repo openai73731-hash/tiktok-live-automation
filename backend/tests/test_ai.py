@@ -325,7 +325,8 @@ async def test_cancellation_is_not_swallowed(project, knowledge):
 
 async def test_openai_seam_requires_no_key_and_has_no_api_calls(project, knowledge, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    processor = CommentProcessor(OpenAIReplyEngine(), project, knowledge)
+    from pydantic import SecretStr
+    processor = CommentProcessor(OpenAIReplyEngine(project.ai, api_key=SecretStr("")), project, knowledge)
     result = await processor.process(viewer("Is it automatic?"))
     assert result.provider == "openai"
     assert result.status == "needs_operator"

@@ -49,18 +49,22 @@ class ConsoleFormatter(logging.Formatter):
                     f"  final state: {fields['final_state']}\n"
                     f"  terminal state: {fields['terminal_state']}\n"
                     f"  failed checks: {', '.join(fields['failed_checks']) or 'none'}")
-        if record.msg == "reply_suggestion":
+        if record.msg in {"reply_suggestion", "ai_smoke_result"}:
             item = fields["suggestion"]
             safe = lambda value: console_text(str(value)) if value else "—"
-            if self.diagnostic:
+            if self.diagnostic or record.msg == "ai_smoke_result":
                 return (
                     f"[{time}] ReplySuggestion @{safe(item['username'])}:\n"
                     f"  status: {item['status']}\n"
                     f"  original: {safe(item['original_text'])}\n"
+                    f"  detected_language: {safe(item['detected_language'])}\n"
+                    f"  should_reply: {str(item['should_reply']).lower()}\n"
+                    f"  fact_ids: {item['fact_ids']}\n"
                     f"  translation: {safe(item['operator_translation'])}\n"
                     f"  suggested_reply: {safe(item['suggested_reply'])}\n"
                     f"  reply_translation: {safe(item['reply_translation'])}\n"
                     f"  provider: {safe(item['provider'])}\n"
+                    f"  model: {safe(item.get('model'))}\n"
                     f"  requires_approval: {str(item['requires_approval']).lower()}\n"
                     f"  reason: {safe(item['reason'])}\n"
                 )

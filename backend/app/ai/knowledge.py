@@ -26,6 +26,8 @@ class ProductConfig(ConfigModel):
 
 class AIConfig(ConfigModel):
     provider: Literal["fake", "openai"] = "fake"
+    model: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
     max_reply_sentences: int = Field(default=2, ge=1, le=2)
     max_reply_chars: int = Field(default=240, ge=40, le=400)
     max_comment_chars: int = Field(default=1000, ge=50, le=10_000)

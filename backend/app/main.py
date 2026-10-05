@@ -11,7 +11,7 @@ import yaml
 
 from app.ai.factory import create_processor
 from app.config import ReplayScenarioName, Settings
-from app.live.models import LiveState
+from app.live.models import Comment, LiveState
 from app.live.service import LiveService
 from app.logging_config import LOGGER_NAME, configure_logging
 
@@ -32,6 +32,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            await processor.aclose()
 
     application = FastAPI(title="TikTok LIVE Assistant", lifespan=lifespan)
 
@@ -59,8 +60,24 @@ async def run_listener(settings: Settings) -> int:
         return 0 if result["passed"] else 1
     processor = create_processor(settings)
     service = LiveService(settings, on_comment=processor.handle)
-    await service.run()
+    try:
+        await service.run()
+    finally:
+        await processor.aclose()
     return 2 if service.status.terminal_state == LiveState.OPERATOR_REQUIRED else 0
+
+
+async def run_ai_smoke(settings: Settings, text: str) -> int:
+    """Explicit operator action: one OpenAI request, no LIVE service constructed."""
+    processor = create_processor(settings, ai_smoke=True)
+    try:
+        suggestion = await processor.process(Comment(username="ai_smoke", text=text))
+        logging.getLogger(LOGGER_NAME).info("ai_smoke_result", extra={"fields": {
+            "suggestion": suggestion.model_dump(mode="json"),
+        }})
+        return 2 if suggestion.status == "needs_operator" else 0
+    finally:
+        await processor.aclose()
 
 
 def cli() -> None:
@@ -71,8 +88,14 @@ def cli() -> None:
     parser.add_argument("--diagnostic", action="store_true", default=None,
                         help="Manual real LIVE smoke test with FakeAIReplyEngine")
     parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--ai-smoke", metavar="COMMENT", help="One explicit OpenAI test without TikTok")
     args = parser.parse_args()
     overrides = {}
+    if args.ai_smoke is not None:
+        if args.mode or args.username or args.scenario or args.diagnostic:
+            parser.error("--ai-smoke cannot be combined with LIVE/replay options")
+        overrides.update(live_mode="fake", diagnostic=False, replay_scenario=None,
+                         tiktok_username="", fake_repeat=False)
     if args.scenario:
         overrides["replay_scenario"] = args.scenario
     if args.diagnostic is not None:
@@ -92,7 +115,8 @@ def cli() -> None:
         parser.error(details)
     configure_logging(settings)
     try:
-        code = asyncio.run(run_listener(settings))
+        code = asyncio.run(run_ai_smoke(settings, args.ai_smoke) if args.ai_smoke is not None
+                           else run_listener(settings))
     except (OSError, ValueError, yaml.YAMLError) as exc:
         logging.getLogger(LOGGER_NAME).error("configuration_failed", extra={
             "fields": {"error_type": type(exc).__name__,

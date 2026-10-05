@@ -7,9 +7,10 @@ product:
 
 ai:
   provider: fake
+  model: gpt-6-luna
+  reasoning_effort: none
   max_reply_sentences: 2
   max_reply_chars: 240
   max_comment_chars: 1000
   operator_language: ru
   timeout_seconds: 10
-

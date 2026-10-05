@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ReplayScenarioName = Literal[
@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     replay_scenario: ReplayScenarioName | None = None
     tiktok_username: str = ""
     diagnostic: bool = False
+    openai_api_key: SecretStr = Field(default=SecretStr(""), repr=False, exclude=True)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_dir: Path = Path("logs")
     log_max_bytes: int = Field(default=5_242_880, ge=1024)

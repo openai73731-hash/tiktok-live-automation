@@ -222,7 +222,10 @@ async def run_replay(settings: Settings) -> dict:
         suggestions.append(await processor.handle(comment))
 
     service = LiveService(settings, on_comment=handle)
-    await service.run()
+    try:
+        await service.run()
+    finally:
+        await processor.aclose()
     result = service.listener.replay.result(settings.replay_scenario, service.status, comments, suggestions)
     logger.info("replay_result", extra={"fields": result})
     return result

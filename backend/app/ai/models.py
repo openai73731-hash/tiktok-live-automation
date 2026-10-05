@@ -20,6 +20,8 @@ class ReplyRequest(BaseModel):
 class ReplyDraft(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
     detected_language: str = Field(pattern=r"^[a-z]{2,3}$")
+    # None preserves the fixture engine's deterministic candidate heuristic.
+    should_reply: bool | None = None
     operator_translation: str | None = None
     response_kind: ResponseKind = "none"
     suggested_reply: str | None = None
@@ -43,6 +45,7 @@ class ReplySuggestion(BaseModel):
     status: Literal["ready", "skipped", "needs_operator"]
     fact_ids: tuple[str, ...] = ()
     provider: str
+    model: str | None = None
     # A ready suggestion has NEVER been approved or sent.
     requires_approval: Literal[True] = True
     timestamp: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))

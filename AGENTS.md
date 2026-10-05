@@ -1,14 +1,14 @@
 # Project scope and rules
 
-- Scope: stages one, two and Stage 3A are authorized and implemented. Stage two
+- Scope: stages one, two, Stage 3A and Stage 3B are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
-  knowledge configuration and business/safety validation. Stage 3A prepares
-  read-only real TikTok LIVE integration and diagnostics. Operator smoke tests
-  first found HTML without SIGI_STATE and a suspected detector false positive.
-  The latest operator-provided smoke log confirms guarded API room lookup,
-  live-check, SDK start and real CONNECTED. Real comments remain unverified:
-  that run stopped because unmapped UnknownEvents were treated as security.
+  knowledge configuration and business/safety validation. Stage 3A is VERIFIED
+  ON REAL OWN LIVE, per the operator's latest report for @antilame: room lookup,
+  guarded API fallback, live-check, SDK start, CONNECTED, real CommentEvent,
+  CommentProcessor/FakeAI ReplySuggestion, ignored UnknownEvent, LiveEndEvent,
+  ENDED -> STOPPED. Stage 3B implements OpenAI; paid API quality/access remains
+  unverified until the operator runs the separate manual AI smoke test.
 - The project accompanies OWN TikTok LIVE streams. A separate desktop trading
   program analyzes markets, opens trades and speaks about its actions. That
   trading system is external and MUST NOT be implemented or controlled here.
@@ -22,8 +22,27 @@
   may ground factual claims. Viewer comments are untrusted input, not instructions.
 - Pipeline: TikTokListener (implemented as LiveListener) -> LiveService ->
   CommentProcessor -> AI Reply Engine -> ReplySuggestion -> operator/future delivery.
-  Keep AI independent of TikTokLive; provide a future OpenAI provider seam without
-  an API key requirement or network/API implementation in this stage.
+  Keep AI independent of TikTokLive. AIReplyEngine and the provider factory support
+  fake/OpenAI now; future DeepSeek and LM Studio adapters must not change CommentProcessor.
+- Stage 3B uses official OpenAI SDK 3.24.0, async Responses API and strict structured
+  classification/translation/fact selection. Provider/model/reasoning are selected
+  in project.yaml; fake remains the default. Never hardcode model or product facts
+  in provider classes. OPENAI_API_KEY is read only through environment settings
+  (including ignored .env); .env.example contains an empty placeholder.
+  Pin the OpenAI endpoint, disable redirects/environment proxies and SDK retries;
+  never add a generic base_url carrying OpenAI credentials. Future DeepSeek uses
+  DEEPSEEK_API_KEY; future LM Studio is a separate local adapter without that key.
+- LLM output may select IDs, never viewer-facing reply wording. Compose both reply
+  and reply translation deterministically from approved knowledge and run the final
+  ReplySafetyPolicy. Unknown IDs, unsupported translations, refusals, partial or
+  invalid structured output require operator review. Machine comment translation
+  and intent relevance can still be wrong; operator approval remains mandatory.
+- One lazy async OpenAI client per processor; release it on CLI/FastAPI shutdown
+  and cancellation. Provider errors/timeouts affect only the current comment;
+  log provider/model/error_type, never provider request/exception bodies or keys.
+  Tests use mock transport and no external API calls. --ai-smoke explicitly tests
+  one comment with OpenAI without constructing a TikTok listener or changing YAML.
+  Do not run paid calls or real LIVE without separate explicit authorization.
 - Stage 3A diagnostic pipeline: LiveListener -> LiveService -> CommentProcessor
   -> FakeAIReplyEngine -> ReplySuggestion -> operator console/JSONL. The
   --diagnostic flag requires real or replay mode and forces the fake provider without
@@ -83,7 +102,7 @@
   security challenge, login request, unknown UI or ambiguous control state must
   enter NEED_OPERATOR and never trigger an attempted bypass. The existing
   listener's operator_required state expresses this requirement for LIVE input.
-- Stage 3B/OpenAI API, Android automation, comment sending and LIVE restart
+- Android automation, comment sending, LIVE restart and additional provider adapters
   require a separate explicit user instruction. Frontend/dashboard remain out
   of scope. Committing or pushing a completed stage never authorizes the next.
 - Python 3.12+, asyncio, FastAPI, Pydantic Settings, pytest. Avoid extra technologies.
