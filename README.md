@@ -33,6 +33,10 @@ AI-интерфейс, FakeAIReplyEngine, переводы для операто
 OpenAI API key не требуется. Отправка комментариев, Android automation,
 перезапуски и frontend не входят в этот этап.
 
+Stage 3A подготавливает ручную проверку существующего listener на собственном
+реальном LIVE: диагностический вывод, проверка контракта TikTokLive 7.0.1,
+ограниченные повторы и shutdown. Реальное подключение ещё не проверено.
+
 ## Второй этап: предложения ответа
 
 CommentProcessor использует простые признаки вопроса, просьбы о помощи или проблемы.
@@ -212,21 +216,6 @@ FAKE_INTERVAL_SECONDS=1
 подключения к TikTok не создаются. Поле source остаётся tiktok: fake имитирует
 тот же входной контракт. Признак режима доступен в статусе и логах состояния.
 
-## Уже подготовленная рабочая копия
-
-Если используете копию, созданную в этой сессии, зависимости уже установлены
-в соседней рабочей виртуальной среде. Её можно запустить без новой установки:
-
-```powershell
-Set-Location 'C:/Users/user/Documents/Codex/2026-10-05/tiktok-live-automation-tiktok-live-1/outputs/tiktok-live-automation'
-& '../../work/.venv/Scripts/python.exe' -m app.main --mode fake
-& '../../work/.venv/Scripts/python.exe' -m pytest -q
-```
-
-При переносе проекта в другую папку создайте новую .venv по инструкции выше;
-саму виртуальную среду переносить не нужно. В C:/dev эта сессия не смогла
-создать файлы из-за отказа в доступе.
-
 ## Собственный реальный LIVE
 
 Запустите эфир вручную. В .env укажите свой handle:
@@ -255,11 +244,15 @@ Handle задаётся без URL; начальный @ разрешён.
 - ConnectEvent меняет состояние на connected.
 - CommentEvent преобразуется в Comment; повреждённое событие пропускается с логом.
 - Временные сетевые ошибки и offline вызывают повтор подключения с задержкой
-  2, 4, 8, …, максимум 60 секунд. Задержки настраиваются.
+  2, 4, 8, …, максимум 60 секунд. Задержки настраиваются. По умолчанию допускается
+  пять повторов за запуск после исходной попытки; затем NEED_OPERATOR → STOPPED.
+  Счётчик и задержка не сбрасываются после короткого подключения, чтобы разрывы
+  соединения не создавали бесконечный цикл запросов.
 - При обычном разрыве соединения чтение подключается заново. Возможны
   повторные комментарии и пропуски во время разрыва: replay/deduplication не реализованы.
-- LiveEndEvent завершает чтение с состоянием ended. Эфир не перезапускается.
-- AccessControlEvent, RoomVerifyEvent, PerceptionEvent, UnknownEvent и
+- LiveEndEvent завершает чтение: ENDED → очистка ресурсов → STOPPED.
+  Эфир не перезапускается.
+- AccessControlEvent, RoomVerifyEvent, PerceptionEvent, UnauthorizedMemberEvent, UnknownEvent и
   неклассифицированные ошибки останавливают listener с operator_required.
   Это консервативная политика: даже сигнал проверки, относящийся к другому
   зрителю, может потребовать ручного разбора.
@@ -268,6 +261,82 @@ Handle задаётся без URL; начальный @ разрешён.
 - Оператор разбирает причину вручную и самостоятельно заново запускает программу.
   CLI возвращает код 2 для operator_required.
 - Ctrl+C отменяет принадлежащие приложению задачи и освобождает соединения.
+
+### Manual real LIVE smoke test
+
+Выполняйте команды в Windows PowerShell. Нужна установленная локальная `.venv`
+из раздела установки. `ACCOUNT` замените на handle своего аккаунта вручную.
+Диагностика всегда использует FakeAIReplyEngine, даже если в project.yaml выбран
+другой provider; YAML при этом не изменяется. Обычный режим сохраняет выбор из YAML.
+Ни одно предложение ответа не отправляется в TikTok.
+
+1. Откройте PowerShell в корне репозитория.
+2. Запустите собственный TikTok LIVE вручную.
+3. С другого TikTok-аккаунта откройте этот LIVE.
+4. Выполните:
+
+   ```powershell
+   & ".\.venv\Scripts\python.exe" -m app.main --mode real --username "@ACCOUNT" --diagnostic
+   ```
+
+5. Убедитесь, что после STARTING и CONNECTING появилось CONNECTED.
+6. С другого аккаунта напишите `Hello`.
+7. Проверьте появление комментария в консоли. Приветствие получает `skipped`.
+8. Напишите `Is this bot trading automatically?`.
+9. Проверьте ReplySuggestion: `status: ready`, перевод `Этот бот торгует автоматически?`,
+   ответ на английском, перевод ответа на русский, `provider: fake`,
+   `requires_approval: true`. Это результат существующего CommentProcessor.
+10. Завершите LIVE вручную.
+11. Проверьте `ENDED` с причиной `LiveEndEvent`.
+12. Приложение завершится автоматически после очистки и обработки принятых
+    комментариев. Если оно ещё работает, нажмите Ctrl+C. Для отдельной проверки
+    Ctrl+C повторите запуск во время собственного LIVE и прервите приложение.
+13. Проверьте `STOPPED`, возврат приглашения PowerShell и отсутствие traceback.
+    `$LASTEXITCODE` должен быть `0`; при NEED_OPERATOR приложение возвращает `2`.
+
+Пример последовательности:
+
+```text
+[16:30:01] STARTING @account
+[16:30:02] CONNECTING @account
+[16:30:05] CONNECTED @account
+[16:31:14] @john92:
+Is this bot trading automatically?
+[16:31:14] ReplySuggestion @john92:
+  status: ready
+  translation: Этот бот торгует автоматически?
+  suggested_reply: The software analyzes the market automatically. The software opens trades automatically.
+  reply_translation: Программа автоматически анализирует рынок. Программа автоматически открывает сделки.
+  provider: fake
+  requires_approval: true
+[16:35:01] ENDED @account (LiveEndEvent)
+[16:35:01] STOPPED @account (LiveEndEvent)
+```
+
+Временный разрыв: CONNECTED → RECONNECTING → CONNECTING → CONNECTED.
+`reconnect_scheduled` показывает `attempt`, `delay_seconds`, `error_type`, без текста
+исключения. Ошибка/ограничение: NEED_OPERATOR → очистка → STOPPED без повторов.
+В JSONL и `/health` состояния записываются в нижнем регистре; `operator_required`
+сохранён для совместимости и отображается как NEED_OPERATOR в диагностике.
+`terminal_state` сохраняет `ended` или `operator_required` после STOPPED.
+Статус `needs_operator` отдельной карточки не останавливает listener: неизвестные
+FakeAIReplyEngine фразы требуют ручного перевода и ответа.
+
+### Troubleshooting
+
+| Симптом | Действие оператора |
+| --- | --- |
+| Account offline / UserOfflineError | Убедитесь вручную, что собственный LIVE действительно идёт. Приложение повторяет подключение с backoff в пределах лимита; эфир не запускает. |
+| Username not found / UserNotFoundError | Проверьте handle без URL и доступность LIVE в приложении TikTok. Ошибка может означать ограничение, поэтому автоматического fallback нет. |
+| HTTP 403 | NEED_OPERATOR: доступ запрещён. Проверьте доступность вручную; не добавляйте cookies/sessionid и не обходите ограничение. |
+| HTTP 429 | NEED_OPERATOR: ограничение частоты. Не запускайте частые повторы; дождитесь снятия ограничения и решите вручную, когда повторить smoke test. |
+| Signature error / SignAPIError | NEED_OPERATOR: не удалось получить подпись. Проверьте доступность сервиса и совместимость установленного SDK вручную. Ключи, fingerprint и sessionid автоматически не подбираются. |
+| Network error / ConnectError / TimeoutError | Ограниченный exponential backoff; проверьте интернет. HTTP/WS 500/502/503/504 допускают повтор, исчерпание лимита требует оператора. Ошибки сервиса подписи консервативно требуют оператора. |
+| NEED_OPERATOR / AmbiguousSDKState / FailedParseRoomIdError | Чтение остановлено. Возможны проверка, login request, неизвестный формат или приостановка платформой. Разберите причину вручную в TikTok; повторный запуск — только после этого. |
+
+Для диагностики используйте консоль и `Get-Content '.\logs\app.jsonl' -Tail 30`.
+Не включайте raw/debug-логи SDK: они могут содержать секреты. Код HTTP и тип ошибки
+не требуют публикации URL запроса, cookies или полного exception payload.
 
 На этом этапе видны только сигналы, которые отдаёт библиотека. Диалоги Android
 и CAPTCHA на экране телефона не обнаруживаются: Android UI ещё не подключён.
@@ -286,6 +355,7 @@ YAML-файлы также загружаются относительно те�
 | --- | --- | --- |
 | LIVE_MODE | fake | real или fake |
 | TIKTOK_USERNAME | пусто | Обязателен только для real |
+| DIAGNOSTIC | false | Диагностика real LIVE с FakeAIReplyEngine; CLI --diagnostic включает её |
 | LOG_LEVEL | INFO | Уровень файла: DEBUG/INFO/WARNING/ERROR |
 | LOG_DIR | logs | Каталог JSONL-логов |
 | LOG_MAX_BYTES | 5242880 | Размер файла до ротации |
@@ -293,7 +363,8 @@ YAML-файлы также загружаются относительно те�
 | QUEUE_SIZE | 1000 | Максимум комментариев в очереди |
 | RECONNECT_INITIAL_SECONDS | 2 | Начальная задержка повтора |
 | RECONNECT_MAX_SECONDS | 60 | Верхняя граница задержки |
-| CONNECT_TIMEOUT_SECONDS | 30 | Таймаут установки соединения |
+| RECONNECT_MAX_ATTEMPTS | 5 | Максимум повторов за запуск (1–100), затем NEED_OPERATOR |
+| CONNECT_TIMEOUT_SECONDS | 30 | Таймаут до ConnectEvent, включая HTTP и WebSocket handshake |
 | SHUTDOWN_TIMEOUT_SECONDS | 5 | Лимит каждого шага освобождения ресурсов |
 | FAKE_INTERVAL_SECONDS | 1 | Пауза между fake-комментариями |
 | FAKE_REPEAT | false | Повторять три сообщения |
@@ -303,7 +374,8 @@ YAML-файлы также загружаются относительно те�
 
 Числа, режим и username валидируются при старте. Бесконечные и отрицательные
 интервалы не допускаются. При FAKE_REPEAT=true интервал должен быть больше нуля.
-Для CLI передаваемые аргументы --mode/--username имеют самый высокий приоритет.
+Для CLI передаваемые аргументы --mode/--username/--diagnostic имеют самый высокий приоритет.
+DIAGNOSTIC=true допускается только с LIVE_MODE=real.
 Консоль показывает INFO и выше независимо от уровня файла.
 
 ## Логи
@@ -396,6 +468,29 @@ await client.web.close(). client.connect()/run()/close() не использую
 в 7.0.1 их путь cleanup вызывает run_until_complete и затрагивает чужие задачи.
 Это проверяется тестом на установленном клиенте, без сети.
 
+Review Stage 3A по metadata/README и исходникам установленной версии выявил:
+
+- `start()` автоматически пробует API после ошибки HTML, включая security/unknown.
+  Локальный ReadOnlyTikTokClient получает room ID один раз и передаёт его в
+  `start(room_id=..., fetch_live_check=False)` после отдельной проверки LIVE.
+  HTTP response hook отклоняет ошибки и redirects до разбора ответа. Сбой
+  неизвестного формата останавливает приложение, даже если SDK мог бы продолжить.
+- Обёртка SDK для live-check ловит даже отмену. Адаптер вызывает её underlying
+  route, сохраняя Ctrl+C и таймаут; никакого периодического мониторинга нет.
+- SDK может пропускать повреждённые события и выводить raw payload. Адаптер
+  останавливается на неразобранном событии; SDK-логи подавляются в рамках сессии.
+  Приложение пишет только тип исключения и свои структурированные события.
+- SDK при ControlEvent сам создаёт disconnect task; адаптер оставляет завершение
+  listener. STREAM_ENDED даёт LiveEndEvent, STREAM_SUSPENDED и неизвестные действия
+  требуют оператора. Известные pause/unpause не запускают управление эфиром.
+- Cleanup SDK не гарантирует освобождение heartbeat при исключении и не закрывает
+  отдельный HTTP-пул подписи. Listener отменяет heartbeat именно своего клиента,
+  закрывает оба HTTP-пула и свой socket task. Чужие задачи не перечисляются и
+  не отменяются. Доступ к `_ws._ping_loop` и signer `_async_client` изолирован
+  в listener и проверяется контрактными тестами закреплённой версии.
+
+Версия SDK и зависимости не менялись. Архитектурная цепочка и AI-контракты сохранены.
+
 Библиотека неофициальная, зависит от изменений TikTok и внешнего сервиса подписи.
 Реальное соединение нельзя гарантировать по результатам unit tests.
 Реальный LIVE в этой сессии не подключался. Лицензия библиотеки указана на PyPI
@@ -415,11 +510,16 @@ FastAPI lifespan/health и архитектурная граница импор�
 отбор комментариев, языки/переводы, YAML, grounding, финансовые запреты, ограничения
 длины, поддельные/ошибочные ответы provider, timeout/отмену, OpenAI-заглушку,
 сквозной fake pipeline и UTF-8 в отдельном запуске CLI.
+Stage 3A дополнительно проверяет диагностический CLI, реальный SDK emitter →
+Comment → CommentProcessor → ReplySuggestion, последовательности состояний,
+лимит повторов, HTTP/WS security errors, отсутствие fallback, ControlEvent,
+повреждённые protobuf, heartbeat/signing cleanup и настоящий SIGINT в тестовом
+процессе с подменённым подключением.
 
-Тесты блокируют внешние сокеты; loopback разрешён для внутренней работы asyncio
+Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12: **113 tests passed**; fake CLI выводит все три сообщения
+Проверено на Python 3.12.0: **144 tests passed**; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive
 есть два DeprecationWarning, связанных с websockets legacy API.
@@ -458,6 +558,7 @@ tiktok-live-automation/
 │       ├── conftest.py
 │       ├── test_ai.py
 │       ├── test_config_models.py
+│       ├── test_diagnostic.py
 │       ├── test_listener.py
 │       ├── test_logging.py
 │       └── test_service.py
@@ -476,3 +577,5 @@ tiktok-live-automation/
 
 Runtime-файлы logs/app.jsonl, __pycache__ и .pytest_cache в дерево не включены.
 Переход к следующему этапу — только по отдельной команде пользователя.
+#   t i k t o k - l i v e - a u t o m a t i o n  
+ 
