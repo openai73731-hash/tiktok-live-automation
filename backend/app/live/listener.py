@@ -5,6 +5,7 @@ SDK objects never cross this boundary.
 """
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -152,7 +153,8 @@ def create_replay_client(session, driver, *, operator_required):
     from TikTokLive.client.web.routes.fetch_room_id_live_html import FetchRoomIdLiveHTMLRoute
     from TikTokLive.client.web.routes.fetch_room_id_api import FetchRoomIdAPIRoute
     from TikTokLive.client.web.routes.fetch_is_live import FetchIsLiveRoute
-    from TikTokLive.events import AccessControlEvent, CommentEvent, ConnectEvent, LiveEndEvent
+    from TikTokLive.events import AccessControlEvent, CommentEvent, ConnectEvent, LiveEndEvent, UnknownEvent
+    from TikTokLive.proto import ProtoMessageFetchResult, ProtoMessageFetchResultBaseProtoMessage
     from app.live.replay import ReplayClient, ReplayWeb
 
     connection = RoomConnection(diagnostic=True, operator_required=operator_required)
@@ -173,6 +175,12 @@ def create_replay_client(session, driver, *, operator_required):
             return LiveEndEvent()
         if frame.type == "security":
             return AccessControlEvent()
+        if frame.type == "unknown":
+            return UnknownEvent(raw=ProtoMessageFetchResult(messages=[
+                ProtoMessageFetchResultBaseProtoMessage(
+                    method="WebcastReplayUnmappedMessage", payload=b"synthetic",
+                ),
+            ]))
         raise ValueError("Unsupported replay event")
 
     client = ReplayClient(session, driver, web, connection, event_from_fixture)
@@ -252,6 +260,36 @@ def comment_from_event(event: Any) -> Comment:
     )
 
 
+def unknown_event_metadata(event: Any) -> dict:
+    """Outer-envelope candidates only; never attribute a method to this event.
+
+    payload_length sums unmapped payload sizes in the outer response, so multiple
+    UnknownEvents from that response repeat the same aggregate. No body is decoded.
+    """
+    from TikTokLive.events.proto_events import EVENT_MAPPINGS
+    from TikTokLive.proto import ProtoMessageFetchResult
+
+    raw = getattr(event, "raw", None)
+    if not isinstance(raw, ProtoMessageFetchResult):
+        return {}
+    candidates = []
+    payload_length = 0
+    for message in raw.messages:
+        if message.method in EVENT_MAPPINGS:
+            continue
+        method = message.method
+        safe_method = (method if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,95}", method)
+                       else "invalid_or_redacted")
+        if len(candidates) < 16 and safe_method not in candidates:
+            candidates.append(safe_method)
+        payload_length += len(message.payload)
+    return {
+        "unknown_method_candidates": candidates,
+        "payload_length": payload_length,
+        "is_first_response": raw.is_first,
+    }
+
+
 class LiveListener(BaseListener):
     def __init__(
         self, settings: Settings, queue: asyncio.Queue[Comment],
@@ -263,6 +301,7 @@ class LiveListener(BaseListener):
         self.halt = asyncio.Event()
         self.connected = asyncio.Event()
         self.dropped_comments = 0
+        self.unknown_event_count = 0
 
     def on_comment(self, event: Any) -> None:
         if self.halt.is_set():
@@ -300,6 +339,15 @@ class LiveListener(BaseListener):
         self.halt.set()
         self.set_state(LiveState.OPERATOR_REQUIRED, type(event).__name__)
 
+    def on_unknown(self, event: Any) -> None:
+        if self.halt.is_set():
+            return
+        self.unknown_event_count += 1
+        fields = {"unknown_event_count": self.unknown_event_count}
+        if self.settings.diagnostic or self.settings.live_mode == "replay":
+            fields.update(unknown_event_metadata(event))
+        logger.info("UNKNOWN_EVENT_IGNORED", extra={"fields": fields})
+
     async def _session(self) -> None:
         from TikTokLive.events import (
             AccessControlEvent, CommentEvent, ConnectEvent, DisconnectEvent,
@@ -331,7 +379,7 @@ class LiveListener(BaseListener):
                 (RoomVerifyEvent, self.on_security),
                 (PerceptionEvent, self.on_security),
                 (UnauthorizedMemberEvent, self.on_security),
-                (UnknownEvent, self.on_security),
+                (UnknownEvent, self.on_unknown),
             ):
                 client.add_listener(event, handler)
             # connect()/run()/close() in 7.0.1 invoke loop-wide cleanup.

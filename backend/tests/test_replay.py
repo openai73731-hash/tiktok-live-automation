@@ -62,11 +62,14 @@ async def test_every_replay_scenario_with_all_network_entrypoints_blocked(name, 
     if name == "temporary_disconnect":
         assert result["states_visited"] == ["STARTING", "CONNECTING", "CONNECTED",
             "RECONNECTING", "CONNECTING", "CONNECTED", "ENDED", "STOPPED"]
-    if name == "live_with_comments":
+    if name in {"live_with_comments", "unknown_events_then_comments"}:
         assert result["comments_processed"] == result["reply_suggestions"] == 2
         assert result["suggestion_statuses"] == ["skipped", "ready"]
     raw = (tmp_path / "app.jsonl").read_text(encoding="utf-8")
     records = [json.loads(line) for line in raw.splitlines()]
+    ignored = [r for r in records if r["event"] == "UNKNOWN_EVENT_IGNORED"]
+    assert [r["unknown_event_count"] for r in ignored] == (
+        [1, 2] if name == "unknown_events_then_comments" else [])
     for record in records:
         if record["event"] == "reply_suggestion":
             item = record["suggestion"]

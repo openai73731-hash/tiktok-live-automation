@@ -37,11 +37,17 @@ Stage 3A подготавливает ручную проверку сущест
 реальном LIVE: диагностический вывод, проверка контракта TikTokLive 7.0.1,
 ограниченные повторы и shutdown. Два ручных smoke test остановились на
 FailedParseRoomIdError. Во втором HTML lookup получил HTTP 200, text/html,
-1155 байт без ожидаемого SIGI_STATE. Успешное подключение пока не подтверждено.
+1155 байт без ожидаемого SIGI_STATE.
 В следующих операторских запусках старый детектор заблокировал ответы размером
 1155 и 244370 байт; второй содержал валидный SIGI_STATE и поле roomId.
 Точное совпадение старого regex не сохранялось, поэтому конкретное слово,
 сработавшее на этих ответах, ретроспективно установить нельзя.
+
+Последний предоставленный оператором smoke test 2026-10-05 подтвердил guarded API
+room lookup после HTML parse failure, получение валидного roomId, live-check,
+SDK start и реальный CONNECTED. Затем два UnknownEvent ошибочно вызвали
+NEED_OPERATOR → STOPPED. Обработка unmapped-сообщений исправлена, но реальные
+CommentEvent пока не проверены: следующий smoke test выполняет оператор вручную.
 
 ## Второй этап: предложения ответа
 
@@ -239,6 +245,7 @@ Stage 3A Offline Replay Harness проверяет integration layer без на
 | html_challenge | HARD challenge → NEED_OPERATOR; API не вызывается |
 | api_missing_room | HTML parse failure → API без roomId → NEED_OPERATOR |
 | live_with_comments | Hello → skipped; вопрос о программе → ready, requires_approval=true |
+| unknown_events_then_comments | Два UnknownEvent игнорируются → Hello: skipped → вопрос: ready → ENDED → STOPPED |
 | live_end | CONNECTED → ENDED → STOPPED |
 | temporary_disconnect | Transport failure → RECONNECTING → CONNECTING → CONNECTED |
 | rate_limit | HTTP 429 → NEED_OPERATOR без повторов/fallback |
@@ -281,7 +288,8 @@ NEED_OPERATOR по-прежнему возвращает код 2. При отм
 ```powershell
 $replayScenarios = @(
     "html_room_success", "html_fail_api_success", "html_challenge", "api_missing_room",
-    "live_with_comments", "live_end", "temporary_disconnect", "rate_limit", "security_event"
+    "live_with_comments", "live_end", "temporary_disconnect", "rate_limit", "security_event",
+    "unknown_events_then_comments"
 )
 foreach ($replayScenario in $replayScenarios) {
     & ".\.venv\Scripts\python.exe" -m app.main --mode replay --scenario $replayScenario
@@ -330,10 +338,13 @@ Handle задаётся без URL; начальный @ разрешён.
   повторные комментарии и пропуски во время разрыва: replay/deduplication не реализованы.
 - LiveEndEvent завершает чтение: ENDED → очистка ресурсов → STOPPED.
   Эфир не перезапускается.
-- AccessControlEvent, RoomVerifyEvent, PerceptionEvent, UnauthorizedMemberEvent, UnknownEvent и
+- AccessControlEvent, RoomVerifyEvent, PerceptionEvent, UnauthorizedMemberEvent и
   неклассифицированные ошибки останавливают listener с operator_required.
   Это консервативная политика: даже сигнал проверки, относящийся к другому
   зрителю, может потребовать ручного разбора.
+- UnknownEvent означает неизвестный библиотеке тип webcast message. Listener пишет
+  UNKNOWN_EVENT_IGNORED и продолжает работу; Comment и вызов AI не создаются.
+  STREAM_SUSPENDED и неизвестный ControlAction по-прежнему требуют NEED_OPERATOR.
 - HTTP 403/429, ошибки подписи и ограничения доступа не ретраятся автоматически.
   На этапе room lookup HTTP/transport errors требуют оператора без повторов.
   В остальных фазах HTTP 500/502/503/504 и ошибки транспорта допускают повтор подключения.
@@ -342,6 +353,15 @@ Handle задаётся без URL; начальный @ разрешён.
 - Ctrl+C отменяет принадлежащие приложению задачи и освобождает соединения.
 
 ### Manual real LIVE smoke test
+
+После исправления UnknownEvent следующий ручной запуск для собственного @antilame:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m app.main --mode real --username "@antilame" --diagnostic
+```
+
+Проверьте, что UNKNOWN_EVENT_IGNORED не меняет CONNECTED, а следующий реальный
+вопрос создаёт ReplySuggestion с provider=fake и requires_approval=true.
 
 Выполняйте команды в Windows PowerShell. Нужна установленная локальная `.venv`
 из раздела установки. `ACCOUNT` замените на handle своего аккаунта вручную.
@@ -413,7 +433,41 @@ FakeAIReplyEngine фразы требуют ручного перевода и �
 | Network error / ConnectError / TimeoutError | Ошибка HTTP/транспорта или connect deadline во время room lookup требует оператора без fallback и повторов. В остальных фазах действует bounded backoff для transient errors; исчерпание лимита требует оператора. Ошибки сервиса подписи консервативно требуют оператора. |
 | NEED_OPERATOR / AmbiguousSDKState / FailedParseRoomIdError | Чтение остановлено. Возможны проверка, login request, неизвестный формат или приостановка платформой. Разберите причину вручную в TikTok; повторный запуск — только после этого. |
 
-Для диагностики используйте консоль и `Get-Content '.\logs\app.jsonl' -Tail 30`.
+Для диагностики используйте консоль и `Get-Content '.\logs\app.jsonl' -Encoding UTF8 -Tail 30`.
+
+### Диагностика unmapped webcast messages
+
+В установленном TikTokLive 7.0.1 `_parse_webcast_response()` выдаёт ConnectEvent,
+если outer response имеет `is_first`, затем разбирает каждое внутреннее сообщение.
+`_parse_webcast_response_message()` ищет `message.method` в `EVENT_MAPPINGS`;
+если соответствия нет, возвращает WebsocketResponseEvent и UnknownEvent.
+UnknownEvent хранит только внешний `ProtoMessageFetchResult` в `raw`, поэтому
+конкретный породивший его inner message по самому событию определить нельзя.
+
+Прежняя регистрация UnknownEvent в `on_security` останавливала LIVE сразу после
+подключения. Теперь отдельный обработчик игнорирует его без изменения состояния,
+очереди Comment и AI pipeline. Название метода, даже со словами security/login,
+не является security-сигналом. Известные security events и структурные control
+guards работают независимо и сохраняют NEED_OPERATOR.
+
+В real `--diagnostic` и replay событие `UNKNOWN_EVENT_IGNORED` содержит:
+
+- `unknown_method_candidates`: первые 16 уникальных unmapped-имён из outer response,
+  после исключения методов из EVENT_MAPPINGS. Допустимы 1–96 ASCII-символов:
+  первая латинская буква, далее буквы, цифры и `_`. Остальное заменяется на
+  `invalid_or_redacted`; длинные значения не обрезаются до потенциального секрета.
+- `payload_length`: сумма длин payload всех unmapped messages внешнего ответа,
+  без декодирования содержимого. Это не размер одного точно определённого события.
+- `unknown_event_count`: число проигнорированных UnknownEvent за жизнь listener,
+  включая повторные подключения.
+- `is_first_response`: фактический `raw.is_first` установленного SDK.
+
+Несколько UnknownEvent из одного outer response повторяют кандидатов и суммарный
+размер; их нельзя суммировать как уникальный сетевой трафик. Кандидаты могут быть
+усечены до 16, размер учитывает все unmapped messages. В обычном real-режиме
+логируется только счётчик. Payload bytes, protobuf body, raw event/response,
+cursor, ws_params, URL, cookies, headers, tokens, roomId и данные пользователей
+в эти записи не включаются.
 Не включайте raw/debug-логи SDK: они могут содержать секреты. Код HTTP и тип ошибки
 не требуют публикации URL запроса, cookies или полного exception payload.
 
@@ -528,9 +582,9 @@ security guards. Оригинальный SDK пробует API после лю
 
 Второй операторский smoke test установил точное место прежнего сбоя:
 `html.parse_room_id`, строка 61 установленного SDK — отсутствует точный тег
-SIGI_STATE. Причина сокращённого HTML-ответа и доступность API на реальном LIVE
-пока не установлены. Проверки нового fallback выполнены без внешней сети;
-повторный реальный smoke test остаётся ручным действием оператора. Новое поле
+SIGI_STATE. Причина сокращённого HTML-ответа пока не установлена. Последний
+операторский smoke test уже подтвердил API fallback и CONNECTED на реальном LIVE;
+проверка реальных комментариев остаётся ручным действием оператора. Поле
 `challenge_reason_codes` позволит различать конкретные правила классификатора,
 не публикуя HTML или roomId.
 
@@ -593,7 +647,7 @@ LOG_LEVEL=INFO сохраняет все эти действия. Более в�
 Поиск ошибок:
 
 ```powershell
-Get-Content './logs/app.jsonl' -Tail 30
+Get-Content './logs/app.jsonl' -Encoding UTF8 -Tail 30
 ```
 
 ## Архитектура
@@ -677,7 +731,8 @@ Review Stage 3A по metadata/README и исходникам установле�
 - Обёртка SDK для live-check ловит даже отмену. Адаптер вызывает её underlying
   route, сохраняя Ctrl+C и таймаут; никакого периодического мониторинга нет.
 - SDK может пропускать повреждённые события и выводить raw payload. Адаптер
-  останавливается на неразобранном событии; SDK-логи подавляются в рамках сессии.
+  останавливается на повреждённом известном событии; unmapped UnknownEvent
+  безопасно игнорируется. SDK-логи подавляются в рамках сессии.
   Приложение пишет только тип исключения и свои структурированные события.
 - SDK при ControlEvent сам создаёт disconnect task; адаптер оставляет завершение
   listener. STREAM_ENDED даёт LiveEndEvent, STREAM_SUSPENDED и неизвестные действия
@@ -703,7 +758,7 @@ Review Stage 3A по metadata/README и исходникам установле�
 ```
 
 Проверяются настройки и приоритеты, модели, реальный формат SDK-событий,
-malformed events, переполнение очереди, backoff, остановка на security/unknown,
+malformed events, переполнение очереди, backoff, остановка на security/unknown control,
 завершение и отмена, изоляция чужих asyncio-задач, callback, JSONL/ротация,
 FastAPI lifespan/health и архитектурная граница импортов. Тесты этапа 2 проверяют
 отбор комментариев, языки/переводы, YAML, grounding, финансовые запреты, ограничения
@@ -714,11 +769,14 @@ Comment → CommentProcessor → ReplySuggestion, последовательно
 лимит повторов, HTTP/WS security errors, условный fallback и запреты на него, ControlEvent,
 повреждённые protobuf, heartbeat/signing cleanup и настоящий SIGINT в тестовом
 процессе с подменённым подключением.
+Регрессии UnknownEvent проверяют реальный SDK parser и emitter, продолжение
+после одного/двух событий, отсутствие Comment/AI для них, следующую карточку
+ready/fake/approval, сохранение security/control guards и редактирование metadata.
 
 Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12.0: **294 tests passed**; все 9 replay-сценариев отдельно
+Проверено на Python 3.12.0: **316 tests passed**; все 10 replay-сценариев отдельно
 запущены через CLI и завершились с PASS; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive

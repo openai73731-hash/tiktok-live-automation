@@ -1,0 +1,63 @@
+{
+  "sessions": [
+    {
+      "responses": [
+        {
+          "stage": "html",
+          "status": 200,
+          "content_type": "text/html",
+          "body": "<html><a href=\"/login\">Log in</a><script id=\"SIGI_STATE\" type=\"application/json\">{\"LiveRoom\": {\"liveRoomUserInfo\": {\"user\": {\"roomId\": \"101\", \"status\": 2}}}}</script></html>"
+        },
+        {
+          "stage": "live_check",
+          "status": 200,
+          "content_type": "application/json",
+          "body": "{\"data\": [{\"alive\": true}]}"
+        }
+      ],
+      "events": [
+        {
+          "type": "connect"
+        },
+        {
+          "type": "unknown"
+        },
+        {
+          "type": "unknown"
+        },
+        {
+          "type": "comment",
+          "username": "test_user",
+          "text": "Hello"
+        },
+        {
+          "type": "comment",
+          "username": "test_user2",
+          "text": "Is this bot trading automatically?"
+        },
+        {
+          "type": "end"
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "states": [
+      "starting",
+      "connecting",
+      "connected",
+      "ended",
+      "stopped"
+    ],
+    "requests": [
+      "html",
+      "live_check"
+    ],
+    "comments": 2,
+    "suggestions": [
+      "skipped",
+      "ready"
+    ],
+    "terminal_state": "ended"
+  }
+}

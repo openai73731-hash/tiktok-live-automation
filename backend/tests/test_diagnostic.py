@@ -61,7 +61,8 @@ def test_diagnostic_forces_fake_provider_without_editing_yaml(tmp_path):
     assert "openai" in path.read_text(encoding="utf-8")
 
 
-async def test_cli_pipeline_from_installed_sdk_events(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("unknown_count", [0, 1, 2])
+async def test_cli_pipeline_from_installed_sdk_events(unknown_count, monkeypatch, tmp_path, capsys):
     client = create_sdk_client(unique_id="owner")
     closed = AsyncMock(wraps=client.web.close)
     monkeypatch.setattr(client.web, "close", closed)
@@ -69,6 +70,8 @@ async def test_cli_pipeline_from_installed_sdk_events(monkeypatch, tmp_path, cap
 
     async def socket_loop():
         client.emit(ConnectEvent.get_type(), ConnectEvent(unique_id="owner", room_id=1))
+        for _ in range(unknown_count):
+            client.emit(UnknownEvent.get_type(), UnknownEvent())
         for text in ("Hello", "Is this bot trading automatically?"):
             client.emit(CommentEvent.get_type(), CommentEvent.from_dict({
                 "user": {"displayId": "john92", "id": "123"}, "content": text,
@@ -94,6 +97,8 @@ async def test_cli_pipeline_from_installed_sdk_events(monkeypatch, tmp_path, cap
                   "requires_approval: true", "reply_translation:", "provider: fake"):
         assert value in output
     items = records(tmp_path)
+    ignored = [r for r in items if r["event"] == "UNKNOWN_EVENT_IGNORED"]
+    assert [r["unknown_event_count"] for r in ignored] == list(range(1, unknown_count + 1))
     suggestions = [r["suggestion"] for r in items if r["event"] == "reply_suggestion"]
     assert [s["status"] for s in suggestions] == ["skipped", "ready"]
     assert suggestions[1]["fact_ids"] == ["automatic_analysis", "automatic_trades"]
@@ -140,7 +145,7 @@ async def test_retry_budget_exhaustion_stops(monkeypatch):
 
 
 @pytest.mark.parametrize("event", [AccessControlEvent(), RoomVerifyEvent(), PerceptionEvent(),
-                                  UnauthorizedMemberEvent(), UnknownEvent()])
+                                  UnauthorizedMemberEvent()])
 async def test_security_events_stop_without_retry(event, monkeypatch):
     listener = LiveListener(config(), asyncio.Queue())
 

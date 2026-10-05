@@ -8,7 +8,7 @@ import pytest
 from TikTokLive import TikTokLiveClient
 from TikTokLive.client.errors import UserOfflineError, WebcastBlockedError
 from TikTokLive.events import (
-    AccessControlEvent, CommentEvent, ConnectEvent, LiveEndEvent, UnknownEvent,
+    AccessControlEvent, CommentEvent, ConnectEvent, LiveEndEvent,
 )
 
 from app.config import Settings
@@ -129,10 +129,9 @@ async def test_unknown_or_security_error_never_retries(error, monkeypatch):
     assert listener.status.terminal_state == LiveState.OPERATOR_REQUIRED
 
 
-@pytest.mark.parametrize("event", [AccessControlEvent(), UnknownEvent()])
-def test_security_state_is_latched(event):
+def test_security_state_is_latched():
     listener = LiveListener(real_settings(), asyncio.Queue())
-    listener.on_security(event)
+    listener.on_security(AccessControlEvent())
     listener.on_disconnect(None)
     listener.on_connect(None)
     listener.on_end(None)

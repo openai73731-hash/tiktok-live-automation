@@ -29,7 +29,7 @@ class ResponseFixture(FixtureModel):
 
 
 class EventFixture(FixtureModel):
-    type: Literal["connect", "comment", "end", "transport_failure", "security"]
+    type: Literal["connect", "comment", "end", "transport_failure", "security", "unknown"]
     username: str = ""
     text: str = ""
 

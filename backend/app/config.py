@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ReplayScenarioName = Literal[
     "html_room_success", "html_fail_api_success", "html_challenge", "api_missing_room",
     "live_with_comments", "live_end", "temporary_disconnect", "rate_limit", "security_event",
+    "unknown_events_then_comments",
 ]
 
 

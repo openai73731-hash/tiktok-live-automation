@@ -5,9 +5,10 @@
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A prepares
   read-only real TikTok LIVE integration and diagnostics. Operator smoke tests
-  found HTML without SIGI_STATE and a suspected detector false positive on HTML
-  with valid SIGI_STATE and a roomId marker. A successful real connection is not
-  yet verified; historical logs do not identify the exact matched marker.
+  first found HTML without SIGI_STATE and a suspected detector false positive.
+  The latest operator-provided smoke log confirms guarded API room lookup,
+  live-check, SDK start and real CONNECTED. Real comments remain unverified:
+  that run stopped because unmapped UnknownEvents were treated as security.
 - The project accompanies OWN TikTok LIVE streams. A separate desktop trading
   program analyzes markets, opens trades and speaks about its actions. That
   trading system is external and MUST NOT be implemented or controlled here.
@@ -60,9 +61,19 @@
 - Transport/HTTP failures during room lookup require an operator; explicit
   HTML UserOfflineError and reconnects in other phases retain bounded backoff.
 - CAPTCHA, verification, security challenge, login/access restrictions, HTTP
-  403/429, signature errors and unknown/ambiguous SDK states require an operator
+  403/429, signature errors and unknown/ambiguous control states require an operator
   without retries or bypass. Ctrl+C must release this client's socket, heartbeat
   and both HTTP pools without cancelling unrelated asyncio tasks or a traceback.
+- TikTokLive 7.0.1 UnknownEvent means an unmapped webcast message, not a security
+  state. Log UNKNOWN_EVENT_IGNORED and continue without creating Comment or AI work.
+  Diagnostic/replay metadata is limited to unknown_method_candidates (up to 16
+  unique ASCII identifiers of 1-96 characters; invalid values are redacted),
+  payload_length (aggregate bytes of unmapped messages in the outer response),
+  unknown_event_count (listener lifetime), and is_first_response. The SDK retains
+  only the outer response: never claim a candidate is the exact triggering method.
+  Never log bodies/envelopes or classify security by words in method names.
+  AccessControlEvent, RoomVerifyEvent, PerceptionEvent, UnauthorizedMemberEvent,
+  STREAM_SUSPENDED and unknown ControlAction still require NEED_OPERATOR.
 - Real LIVE smoke tests are manual and only for the user's own stream. Do not
   start a LIVE or use an account handle unless the user supplies and authorizes it.
 - Separate future control pipeline: LiveSupervisor -> AndroidController ->
@@ -92,7 +103,7 @@
   holds finite demo scenarios. Do not mix demonstration fixtures with market data.
 - Before changing the SDK version, inspect the installed version's metadata,
   README and implementation; run adapter contract and shutdown tests.
-- Unknown/security states stop the listener and require operator intervention.
+- Unknown control/security states stop the listener and require operator intervention.
   Never solve or bypass CAPTCHA or verification.
 - Never log credentials, cookies, signed connection URLs or raw SDK payloads.
 - .env, virtual environments and runtime logs stay outside version control.
