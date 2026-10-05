@@ -22,8 +22,9 @@ def html(user):
 
 
 @asynccontextmanager
-async def mocked_client(handler, *, diagnostic=True):
-    client = create_sdk_client(unique_id="owner", diagnostic=diagnostic)
+async def mocked_client(handler, *, diagnostic=True, operator_required=None):
+    client = create_sdk_client(unique_id="owner", diagnostic=diagnostic,
+                               operator_required=operator_required)
     original = client.web.httpx_client
     client.web._httpx = httpx.AsyncClient(
         transport=httpx.MockTransport(handler), event_hooks=original.event_hooks,
@@ -92,7 +93,7 @@ async def test_api_lookup_actual_sdk_parser(payload, expected, exception, caplog
         return httpx.Response(200, json=payload)
 
     async with mocked_client(transport) as client:
-        # Explicit offline contract test of the route, NOT a runtime fallback.
+        # Direct offline contract test of the installed route.
         if exception:
             with pytest.raises(exception):
                 await client.web.fetch_room_id_from_api("owner")
@@ -279,3 +280,310 @@ async def test_response_hook_reads_stream_and_cancellation_stays_cancellable(cap
         with pytest.raises(asyncio.CancelledError):
             await task
     assert results(caplog)[0]["exception_type"] == "CancelledError"
+
+
+@pytest.mark.parametrize("diagnostic", [False, True])
+@pytest.mark.parametrize("html_body", [
+    '<html><h1>Public LIVE</h1></html>',
+    html({"status": 2}),
+    '<script id="SIGI_STATE" type="application/json">{broken</script>',
+])
+async def test_guarded_api_fallback_success(html_body, diagnostic, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    paths = []
+
+    def transport(request):
+        paths.append(request.url.path)
+        if request.url.path == "/@owner/live":
+            return httpx.Response(200, text=html_body, headers={"content-type": "text/html"})
+        if request.url.path == "/api-live/user/room/":
+            assert request.url.params["uniqueId"] == "owner"
+            return httpx.Response(200, json={"message": "", "data": {"user": {"roomId": "123"}}})
+        assert request.url.path == "/webcast/room/check_alive/"
+        return httpx.Response(200, json={"data": [{"alive": True}]})
+
+    async with mocked_client(transport, diagnostic=diagnostic) as client:
+        socket_task = asyncio.create_task(asyncio.sleep(0))
+        start = AsyncMock(return_value=socket_task)
+        monkeypatch.setattr(TikTokLiveClient, "start", start)
+        assert await client.start() is socket_task
+        await socket_task
+        start.assert_awaited_once_with(room_id=123, fetch_live_check=False)
+    assert paths == ["/@owner/live", "/api-live/user/room/", "/webcast/room/check_alive/"]
+    events = [r.msg for r in caplog.records]
+    if diagnostic:
+        assert events == ["room_lookup_started", "room_lookup_result", "SAFE_API_FALLBACK",
+                          "room_lookup_started", "room_lookup_result", "connection_stage",
+                          "connection_stage"]
+        first, second = results(caplog)
+        assert first["exception_type"] == "FailedParseRoomIdError"
+        assert first["blocked_or_challenge"] is False
+        assert second["room_lookup_strategy"] == "api"
+        assert second["parsed_room_id"] is True
+    else:
+        assert events == []
+
+
+@pytest.mark.parametrize("diagnostic", [False, True])
+@pytest.mark.parametrize("status,body,content_type", [
+    (401, '<html>Denied</html>', 'text/html'),
+    (403, '<html>Denied</html>', 'text/html'),
+    (429, '<html>Denied</html>', 'text/html'),
+    (302, '<html>Moved</html>', 'text/html'),
+    (503, '<html>Unavailable</html>', 'text/html'),
+    (200, '<html><div class="captcha-container"></div></html>', 'text/html'),
+    (200, '<html><form action="/login"></form></html>', 'text/html'),
+    (200, '<html><script>verification_required = true;</script></html>', 'text/html'),
+    (200, '<html><script src="/security/check.js"></script></html>', 'text/html'),
+    (200, '<html><div>Challenge required</div></html>', 'text/html'),
+    (200, 'unrecognised response', 'text/plain'),
+    (200, '{"data": {}}', 'application/json'),
+    (200, '', 'text/html'),
+])
+async def test_fallback_guards_in_both_modes(status, body, content_type, diagnostic, caplog):
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    paths = []
+
+    def transport(request):
+        paths.append(request.url.path)
+        return httpx.Response(status, text=body, headers={"content-type": content_type,
+            "location": "https://example.invalid/?token=PRIVATE_REDIRECT"})
+
+    async with mocked_client(transport, diagnostic=diagnostic) as client:
+        listener = LiveListener(Settings(_env_file=None, live_mode="real",
+            tiktok_username="owner", diagnostic=diagnostic), asyncio.Queue(),
+            client_factory=lambda **_: client)
+        await listener.run()
+    assert listener.status.state == LiveState.STOPPED
+    assert listener.status.terminal_state == LiveState.NEED_OPERATOR
+    assert paths == ["/@owner/live"]
+    assert not any(r.msg in {"SAFE_API_FALLBACK", "reconnect_scheduled"} for r in caplog.records)
+
+
+@pytest.mark.parametrize("status,payload", [
+    (200, 'not JSON'),
+    (200, {"message": ""}),
+    (200, {"message": "", "data": {}}),
+    (200, {"message": "", "data": {"user": {}}}),
+    *[(200, {"message": "", "data": {"user": {"roomId": value}}})
+      for value in [None, 0, -1, True, 123.5, "abc", " 123 "]],
+    (200, {"message": "verification_required", "data": {"user": {"roomId": "123"}}}),
+    (200, {"message": "rate_limit", "data": {"user": {"roomId": "123"}}}),
+    (401, {"message": ""}),
+    (403, {"message": ""}),
+    (429, {"message": ""}),
+    (503, {"message": ""}),
+    (302, ''),
+])
+async def test_api_failure_stops_without_further_routes_or_retries(status, payload, caplog):
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    paths = []
+
+    def transport(request):
+        paths.append(request.url.path)
+        if request.url.path == "/@owner/live":
+            return httpx.Response(200, text='<html>Public LIVE</html>')
+        assert request.url.path == "/api-live/user/room/"
+        if isinstance(payload, str):
+            return httpx.Response(status, text=payload)
+        return httpx.Response(status, json=payload)
+
+    async with mocked_client(transport) as client:
+        listener = LiveListener(Settings(_env_file=None, live_mode="real",
+            tiktok_username="owner", diagnostic=True), asyncio.Queue(),
+            client_factory=lambda **_: client)
+        await listener.run()
+    assert listener.status.state == LiveState.STOPPED
+    assert listener.status.terminal_state == LiveState.NEED_OPERATOR
+    assert paths == ["/@owner/live", "/api-live/user/room/"]
+    assert sum(r.msg == "SAFE_API_FALLBACK" for r in caplog.records) == 1
+    assert not any(r.msg == "reconnect_scheduled" for r in caplog.records)
+    api = results(caplog)[-1]
+    assert api["room_lookup_strategy"] == "api"
+    assert api["parsed_room_id"] is False
+    assert api["exception_type"] is not None
+
+
+@pytest.mark.parametrize("fail_stage", ["html", "api"])
+async def test_lookup_transport_failure_needs_operator(fail_stage, caplog):
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    paths = []
+
+    def transport(request):
+        paths.append(request.url.path)
+        if fail_stage == "api" and request.url.path == "/@owner/live":
+            return httpx.Response(200, text='<html>Public LIVE</html>')
+        raise httpx.ConnectError("PRIVATE_EXCEPTION_MARKER")
+
+    async with mocked_client(transport) as client:
+        listener = LiveListener(Settings(_env_file=None, live_mode="real",
+            tiktok_username="owner"), asyncio.Queue(), client_factory=lambda **_: client)
+        await listener.run()
+    assert listener.status.terminal_state == LiveState.NEED_OPERATOR
+    assert len(paths) == (1 if fail_stage == "html" else 2)
+    assert not any(r.msg == "reconnect_scheduled" for r in caplog.records)
+    assert results(caplog)[-1]["exception_type"] == "ConnectError"
+
+
+async def test_security_event_during_html_lookup_prevents_fallback(caplog):
+    from TikTokLive.events import AccessControlEvent
+
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    paths = []
+    listener = LiveListener(Settings(_env_file=None, live_mode="real",
+        tiktok_username="owner"), asyncio.Queue())
+
+    def transport(request):
+        paths.append(request.url.path)
+        listener.on_security(AccessControlEvent())
+        return httpx.Response(200, text='<html>Public LIVE</html>')
+
+    async with mocked_client(transport, operator_required=listener.halt.is_set) as client:
+        listener.client_factory = lambda **_: client
+        await listener.run()
+    assert listener.status.terminal_state == LiveState.NEED_OPERATOR
+    assert paths == ["/@owner/live"]
+    assert not any(r.msg == "SAFE_API_FALLBACK" for r in caplog.records)
+
+
+async def test_parse_error_without_observed_response_cannot_fallback(monkeypatch):
+    async with mocked_client(lambda _: pytest.fail("No request expected")) as client:
+        monkeypatch.setattr(client.web, "fetch_room_id_from_html",
+                            AsyncMock(side_effect=FailedParseRoomIdError("PRIVATE_ERROR")))
+        fallback = AsyncMock()
+        monkeypatch.setattr(client.web, "fetch_room_id_from_api", fallback)
+        with pytest.raises(FailedParseRoomIdError):
+            await client.start()
+        fallback.assert_not_awaited()
+
+
+async def test_fallback_connected_pipeline_and_logs_are_safe(monkeypatch, tmp_path, capsys):
+    from TikTokLive.events import CommentEvent, ConnectEvent, LiveEndEvent
+    from app.main import run_listener
+
+    settings = Settings(_env_file=None, live_mode="real", tiktok_username="owner",
+                        diagnostic=True, log_dir=tmp_path)
+    configure_logging(settings)
+    paths = []
+
+    def transport(request):
+        paths.append(request.url.path)
+        headers = {"set-cookie": "sessionid=PRIVATE_COOKIE",
+                   "location": "https://example.invalid/?token=PRIVATE_URL",
+                   "authorization": "Bearer PRIVATE_AUTH"}
+        if request.url.path == "/@owner/live":
+            return httpx.Response(200, text='<html>Public LIVE PRIVATE_HTML</html>', headers=headers)
+        if request.url.path == "/api-live/user/room/":
+            return httpx.Response(200, json={"message": "", "data": {"user": {
+                "roomId": "987654321001122"}}, "token": "PRIVATE_JSON"}, headers=headers)
+        assert request.url.path == "/webcast/room/check_alive/"
+        return httpx.Response(200, json={"data": [{"alive": True}]})
+
+    async with mocked_client(transport) as client:
+        disconnected = asyncio.Event()
+
+        async def socket_loop():
+            client.emit(ConnectEvent.get_type(), ConnectEvent(unique_id="owner", room_id=1))
+            client.emit(CommentEvent.get_type(), CommentEvent.from_dict({
+                "user": {"displayId": "viewer", "id": "123"},
+                "content": "Is this bot trading automatically?",
+            }))
+            client.emit(LiveEndEvent.get_type(), LiveEndEvent())
+            await disconnected.wait()
+
+        async def sdk_start(*_, **kwargs):
+            assert kwargs == {"room_id": 987654321001122, "fetch_live_check": False}
+            client._event_loop_task = asyncio.create_task(socket_loop())
+            return client._event_loop_task
+
+        monkeypatch.setattr(TikTokLiveClient, "start", sdk_start)
+        monkeypatch.setattr(client._ws, "disconnect", AsyncMock(side_effect=disconnected.set))
+        monkeypatch.setattr("app.live.listener.create_sdk_client", lambda **_: client)
+        client.web.cookies.set("sessionid", "PRIVATE_REQUEST_COOKIE")
+        client.web.params["token"] = "PRIVATE_QUERY"
+        assert await run_listener(settings) == 0
+    assert paths == ["/@owner/live", "/api-live/user/room/", "/webcast/room/check_alive/"]
+    raw = (tmp_path / "app.jsonl").read_text(encoding="utf-8")
+    output = capsys.readouterr()
+    for secret in ("PRIVATE_", "987654321001122", "sessionid", "https://"):
+        assert secret not in raw + output.out + output.err
+    items = [json.loads(line) for line in raw.splitlines()]
+    assert [r["state"] for r in items if r["event"] == "live_state"] == [
+        "starting", "connecting", "connected", "ended", "stopped",
+    ]
+    suggestion, = [r["suggestion"] for r in items if r["event"] == "reply_suggestion"]
+    assert suggestion["status"] == "ready"
+    assert suggestion["provider"] == "fake"
+    assert suggestion["requires_approval"] is True
+    assert "SAFE_API_FALLBACK" in output.out
+
+
+async def test_fallback_failure_logs_do_not_leak_payloads(tmp_path, capsys):
+    settings = Settings(_env_file=None, live_mode="real", tiktok_username="owner",
+                        diagnostic=True, log_dir=tmp_path)
+    configure_logging(settings)
+
+    def transport(request):
+        if request.url.path == "/@owner/live":
+            return httpx.Response(200, text='<html>Public LIVE PRIVATE_HTML</html>')
+        return httpx.Response(403, text="PRIVATE_BODY", headers={
+            "set-cookie": "sessionid=PRIVATE_COOKIE",
+            "location": "https://example.invalid/?token=PRIVATE_URL",
+        })
+
+    async with mocked_client(transport) as client:
+        listener = LiveListener(settings, asyncio.Queue(), client_factory=lambda **_: client)
+        await listener.run()
+    assert listener.status.terminal_state == LiveState.NEED_OPERATOR
+    raw = (tmp_path / "app.jsonl").read_text(encoding="utf-8")
+    output = capsys.readouterr()
+    for secret in ("PRIVATE_", "https://", "sessionid", "Traceback"):
+        assert secret not in raw + output.out + output.err
+
+
+@pytest.mark.parametrize("fail_stage", ["html", "api"])
+async def test_lookup_deadline_requires_operator_and_cleans_up(fail_stage, caplog):
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    paths = []
+
+    async def transport(request):
+        paths.append(request.url.path)
+        if fail_stage == "api" and request.url.path == "/@owner/live":
+            return httpx.Response(200, text='<html>Public LIVE</html>')
+        await asyncio.Event().wait()
+
+    async with mocked_client(transport) as client:
+        listener = LiveListener(Settings(_env_file=None, live_mode="real",
+            tiktok_username="owner", connect_timeout_seconds=0.1), asyncio.Queue(),
+            client_factory=lambda **_: client)
+        await listener.run()
+        assert client.web.httpx_client.is_closed
+    assert listener.status.state == LiveState.STOPPED
+    assert listener.status.terminal_state == LiveState.NEED_OPERATOR
+    assert len(paths) == (1 if fail_stage == "html" else 2)
+    assert not any(r.msg == "reconnect_scheduled" for r in caplog.records)
+
+
+async def test_cancelling_api_fallback_does_not_become_operator_error():
+    entered = asyncio.Event()
+    paths = []
+
+    async def transport(request):
+        paths.append(request.url.path)
+        if request.url.path == "/@owner/live":
+            return httpx.Response(200, text='<html>Public LIVE</html>')
+        entered.set()
+        await asyncio.Event().wait()
+
+    async with mocked_client(transport) as client:
+        listener = LiveListener(Settings(_env_file=None, live_mode="real",
+            tiktok_username="owner"), asyncio.Queue(), client_factory=lambda **_: client)
+        task = asyncio.create_task(listener.run())
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.web.httpx_client.is_closed
+    assert listener.status.state == LiveState.STOPPED
+    assert listener.status.terminal_state is None
+    assert paths == ["/@owner/live", "/api-live/user/room/"]

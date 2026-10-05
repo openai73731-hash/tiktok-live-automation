@@ -11,13 +11,40 @@ from app.logging_config import LOGGER_NAME
 logger = logging.getLogger(LOGGER_NAME)
 
 
-class RoomLookupDiagnostics:
-    """Observe existing SDK calls without selecting a different lookup route."""
+class InvalidRoomLookupResponse(RuntimeError):
+    """A lookup result is ambiguous and must not be used for connecting."""
 
-    def __init__(self, html_pattern: re.Pattern) -> None:
+
+def positive_room_id(value: Any) -> bool:
+    text = str(value)
+    return (
+        type(value) in (str, int) and text.isascii() and text.isdecimal()
+        and bool(text.strip("0"))
+    )
+
+
+class RoomLookupDiagnostics:
+    """Classify SDK lookups for guards; optionally emit allowlisted telemetry."""
+
+    def __init__(self, html_pattern: re.Pattern, *, enabled: bool = True) -> None:
         # Use the installed SDK's exact pattern, not a more permissive parser.
         self.html_pattern = html_pattern
+        self.enabled = enabled
         self.current: ContextVar[dict | None] = ContextVar("room_lookup", default=None)
+        self.last_result: ContextVar[dict | None] = ContextVar("room_lookup_result", default=None)
+
+    def allow_api_fallback(self) -> bool:
+        fields = self.last_result.get() or {}
+        return (
+            fields.get("room_lookup_strategy") == "html"
+            and fields.get("request_stage") == "sdk_parse"
+            and fields.get("http_status") == 200
+            and fields.get("response_category") == "html"
+            and fields.get("redirect") is False
+            and fields.get("blocked_or_challenge") is False
+            and fields.get("exception_type") == "FailedParseRoomIdError"
+            and fields.get("sdk_error_site") == "html.parse_room_id"
+        )
 
     def wrap(self, strategy: str, route):
         async def lookup(*args, **kwargs):
@@ -29,6 +56,7 @@ class RoomLookupDiagnostics:
                 "response_category": None,
                 "response_length": None,
                 "redirect": False,
+                "blocked_or_challenge": False,
                 "parsed_room_id": False,
                 "exception_type": None,
                 "sdk_error_site": None,
@@ -40,15 +68,23 @@ class RoomLookupDiagnostics:
                               embedded_json_valid=False)
             else:
                 fields.update(valid_json=False, data_present=False,
-                              user_present=False, room_id_field_present=False)
+                              user_present=False, room_id_field_present=False,
+                              room_id_value_valid=False)
+            self.last_result.set(None)
             token = self.current.set(fields)
-            logger.info("room_lookup_started", extra={"fields": fields.copy()})
+            if self.enabled:
+                logger.info("room_lookup_started", extra={"fields": fields.copy()})
             try:
                 result = await route(*args, **kwargs)
-                fields["parsed_room_id"] = (
-                    isinstance(result, (str, int)) and not isinstance(result, bool)
-                    and str(result).isascii() and str(result).isdecimal() and int(result) > 0
-                )
+                # Validate the original API value too: SDK int() accepts bools
+                # and truncates floats, which are not trustworthy room IDs.
+                if not positive_room_id(result) or (strategy == "api" and not (
+                    fields["http_status"] == 200
+                    and fields["response_category"] == "json"
+                    and fields["room_id_value_valid"]
+                )):
+                    raise InvalidRoomLookupResponse()
+                fields["parsed_room_id"] = True
                 fields["request_stage"] = "lookup_complete"
                 return result
             except asyncio.CancelledError:
@@ -71,7 +107,9 @@ class RoomLookupDiagnostics:
                     trace = trace.tb_next
                 raise
             finally:
-                logger.info("room_lookup_result", extra={"fields": fields.copy()})
+                self.last_result.set(fields.copy())
+                if self.enabled:
+                    logger.info("room_lookup_result", extra={"fields": fields.copy()})
                 self.current.reset(token)
 
         return lookup
@@ -103,14 +141,15 @@ class RoomLookupDiagnostics:
         html = media_type in {"text/html", "application/xhtml+xml"} or bool(
             re.match(r"\s*(?:<!doctype\s+html|<html|<head|<body|<script)\b", body, re.I)
         )
-        # These are indicative markers, not a universal challenge detector.
-        # Never use their absence as permission to retry or enable fallback.
-        challenge_like = html and bool(re.search(
-            r"<(?:title|h1)[^>]*>\s*(?:verify (?:to continue|you are human)|"
-            r"security (?:check|challenge)|access denied|captcha|log in|login)|"
-            r"\bid\s*=\s*['\"](?:captcha|challenge-form|verify-page)['\"]",
+        # Conservative indicators, including scripts/JSON errors, not just page
+        # titles. False positives require an operator; absence is not proof of
+        # safety and is only one of the fallback prerequisites.
+        challenge_like = bool(re.search(
+            r"captcha|challenge|verif(?:y|ication)|log[\s_-]?in|"
+            r"security|access[\s_-]?denied|rate[\s_-]?limit|unauthorized|forbidden",
             body, re.I,
         ))
+        fields["blocked_or_challenge"] = response.status_code in {401, 403, 429} or challenge_like
         if response.status_code in {401, 403, 429} or challenge_like:
             category = "blocked_or_challenge"
         elif fields["redirect"]:
@@ -145,6 +184,7 @@ class RoomLookupDiagnostics:
                 valid_json=valid_json, data_present=isinstance(data, dict),
                 user_present=isinstance(user, dict),
                 room_id_field_present=isinstance(user, dict) and "roomId" in user,
+                room_id_value_valid=isinstance(user, dict) and positive_room_id(user.get("roomId")),
             )
         return challenge_like
 

@@ -4,8 +4,9 @@
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A prepares
-  read-only real TikTok LIVE integration and diagnostics; the first manual
-  real LIVE smoke test remains an operator action, not a verified result.
+  read-only real TikTok LIVE integration and diagnostics. Two operator-run
+  smoke tests failed at HTML lookup; the second reported HTTP 200 HTML without
+  SIGI_STATE. A successful real connection is not yet verified.
 - The project accompanies OWN TikTok LIVE streams. A separate desktop trading
   program analyzes markets, opens trades and speaks about its actions. That
   trading system is external and MUST NOT be implemented or controlled here.
@@ -29,6 +30,17 @@
   ENDED, NEED_OPERATOR, STOPPED. Preserve terminal_state after STOPPED and
   exit code 2 for operator intervention. Reconnect uses bounded exponential
   backoff and a finite attempt budget; log attempt, delay and error type only.
+- Room ID strategy: HTML success -> live-check; only an observed HTTP 200 HTML
+  FailedParseRoomIdError from the SDK HTML parser, without redirect or security,
+  login, verification or challenge markers, permits one guarded API fallback via
+  the installed fetch_room_id_from_api route. API success -> live-check; any API
+  lookup failure -> NEED_OPERATOR -> STOPPED, without additional lookup/retries.
+  This partially restores TikTokLive 7.0.1 behavior with security guards, never
+  its unconditional fallback. Unknown categories and security events forbid
+  fallback. Guards apply in all real sessions; SAFE_API_FALLBACK and allowlisted
+  lookup telemetry are diagnostic-only. Never log room IDs or raw responses.
+- Transport/HTTP failures during room lookup require an operator; explicit
+  HTML UserOfflineError and reconnects in other phases retain bounded backoff.
 - CAPTCHA, verification, security challenge, login/access restrictions, HTTP
   403/429, signature errors and unknown/ambiguous SDK states require an operator
   without retries or bypass. Ctrl+C must release this client's socket, heartbeat

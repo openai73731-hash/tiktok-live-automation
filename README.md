@@ -35,8 +35,9 @@ OpenAI API key не требуется. Отправка комментарие�
 
 Stage 3A подготавливает ручную проверку существующего listener на собственном
 реальном LIVE: диагностический вывод, проверка контракта TikTokLive 7.0.1,
-ограниченные повторы и shutdown. Первый ручной smoke test остановился на
-FailedParseRoomIdError; успешное реальное подключение пока не подтверждено.
+ограниченные повторы и shutdown. Два ручных smoke test остановились на
+FailedParseRoomIdError. Во втором HTML lookup получил HTTP 200, text/html,
+1155 байт без ожидаемого SIGI_STATE. Успешное подключение пока не подтверждено.
 
 ## Второй этап: предложения ответа
 
@@ -257,7 +258,8 @@ Handle задаётся без URL; начальный @ разрешён.
   Это консервативная политика: даже сигнал проверки, относящийся к другому
   зрителю, может потребовать ручного разбора.
 - HTTP 403/429, ошибки подписи и ограничения доступа не ретраятся автоматически.
-  HTTP 500/502/503/504 и ошибки транспорта допускают повтор подключения.
+  На этапе room lookup HTTP/transport errors требуют оператора без повторов.
+  В остальных фазах HTTP 500/502/503/504 и ошибки транспорта допускают повтор подключения.
 - Оператор разбирает причину вручную и самостоятельно заново запускает программу.
   CLI возвращает код 2 для operator_required.
 - Ctrl+C отменяет принадлежащие приложению задачи и освобождает соединения.
@@ -331,7 +333,7 @@ FakeAIReplyEngine фразы требуют ручного перевода и �
 | HTTP 403 | NEED_OPERATOR: доступ запрещён. Проверьте доступность вручную; не добавляйте cookies/sessionid и не обходите ограничение. |
 | HTTP 429 | NEED_OPERATOR: ограничение частоты. Не запускайте частые повторы; дождитесь снятия ограничения и решите вручную, когда повторить smoke test. |
 | Signature error / SignAPIError | NEED_OPERATOR: не удалось получить подпись. Проверьте доступность сервиса и совместимость установленного SDK вручную. Ключи, fingerprint и sessionid автоматически не подбираются. |
-| Network error / ConnectError / TimeoutError | Ограниченный exponential backoff; проверьте интернет. HTTP/WS 500/502/503/504 допускают повтор, исчерпание лимита требует оператора. Ошибки сервиса подписи консервативно требуют оператора. |
+| Network error / ConnectError / TimeoutError | Ошибка HTTP/транспорта или connect deadline во время room lookup требует оператора без fallback и повторов. В остальных фазах действует bounded backoff для transient errors; исчерпание лимита требует оператора. Ошибки сервиса подписи консервативно требуют оператора. |
 | NEED_OPERATOR / AmbiguousSDKState / FailedParseRoomIdError | Чтение остановлено. Возможны проверка, login request, неизвестный формат или приостановка платформой. Разберите причину вручную в TikTok; повторный запуск — только после этого. |
 
 Для диагностики используйте консоль и `Get-Content '.\logs\app.jsonl' -Tail 30`.
@@ -340,8 +342,9 @@ FakeAIReplyEngine фразы требуют ручного перевода и �
 
 ### Safe room ID diagnostics
 
-Только в real mode с `--diagnostic` появляются `room_lookup_started` и
-`room_lookup_result`. Дополнительных сетевых запросов диагностика не делает.
+Только в real mode с `--diagnostic` появляются `room_lookup_started`,
+`room_lookup_result` и `SAFE_API_FALLBACK`. Проверки безопасности и условный
+fallback действуют также без diagnostic; сам вывод не создаёт новых запросов.
 Команда из PowerShell, уже открытого в корне репозитория:
 
 ```powershell
@@ -351,16 +354,18 @@ FakeAIReplyEngine фразы требуют ручного перевода и �
 `room_lookup_strategy` — `html` или `api`; `request_stage` показывает последний
 достигнутый этап: `request_started`, `http_response`, `sdk_parse`, `lookup_complete`.
 Логируются `http_status`, `content_type`, `response_category`, `response_length`
-(число байт декодированного HTTP body), `redirect`, `parsed_room_id` и
+(число байт декодированного HTTP body), `redirect`, `blocked_or_challenge`, `parsed_room_id` и
 `exception_type`. До получения ответа неизвестные поля равны `null`.
 Content-Type нормализуется по белому списку MIME-типов; параметры заголовка
 отбрасываются, незнакомое значение заменяется на `other`, отсутствие — `missing`.
 
 Категории: `html`, `json`, `redirect`, `blocked_or_challenge`, `empty`, `unexpected`.
-`blocked_or_challenge` означает HTTP 401/403/429 или характерные HTML-маркеры
-проверки/логина. Это эвристический признак, а не доказательство CAPTCHA;
-отсутствие признака не доказывает безопасность ответа и не разрешает fallback.
-Обнаруженные HTML-маркеры проверки останавливают diagnostic lookup с
+`blocked_or_challenge` означает HTTP 401/403/429 или маркеры проверки/логина
+в ответе, включая scripts и JSON: captcha, challenge, verify/verification,
+login, security, access denied, rate limit, unauthorized, forbidden.
+Это консервативная эвристика с возможными ложными срабатываниями, например
+на обычную ссылку login. Отсутствие маркеров не доказывает безопасность ответа;
+для fallback обязательны все условия ниже. Обнаруженные маркеры останавливают lookup с
 `AmbiguousSDKState` → NEED_OPERATOR даже при наличии room ID или HTTP 503;
 повторов и перехода к другому endpoint не происходит.
 
@@ -374,9 +379,10 @@ HTML-поля:
 - `parsed_room_id`: SDK-метод вернул положительный числовой ID. Сам ID не выводится.
 
 API-поля: `valid_json`, `data_present`, `user_present`, `room_id_field_present`
-для пути `data.user.roomId`, а также `parsed_room_id`. `data_present` и
-`user_present` означают наличие объектов ожидаемого типа. API-метод инструментирован
-и проверен без сети, но **автоматически после ошибки HTML не вызывается**.
+для пути `data.user.roomId`, а также `room_id_value_valid` и `parsed_room_id`.
+`data_present` и `user_present` означают наличие объектов ожидаемого типа.
+ID должен быть положительным целым или строкой ASCII-цифр; null, bool, дробь,
+ноль, отрицательные значения и строки с пробелами отклоняются. Сам ID не выводится.
 
 При исключении из room parser также выводятся `sdk_error_site`
 (`html.parse_room_id` или `api.parse_room_id`) и `sdk_error_line` — номер строки
@@ -385,27 +391,43 @@ body, headers, cookies, query parameters и URL не выводятся и не 
 диагностикой. После успешного lookup отдельный `connection_stage` показывает
 переход к `live_check`, затем к `sdk_start`.
 
-Разбор первого smoke test по установленному TikTokLive 7.0.1:
+### Guarded room ID strategy
 
-- Наш `ReadOnlyTikTokClient.start()` сначала выполняет
-  `int(await self.web.fetch_room_id_from_html(self.unique_id))`. Вызванный
-  `FetchRoomIdLiveHTMLRoute.__call__()` передаёт HTML в `parse_room_id()`.
-  Именно там FailedParseRoomIdError выбрасывается при отсутствии точного
-  `SIGI_STATE`, невалидном JSON внутри него или отсутствующем/null `roomId`.
-  Старый лог содержит лишь тип исключения и не различает эти три ветки.
-- Оригинальный `TikTokLiveClient.start()` сначала пробует HTML, затем после
-  любого Exception, кроме UserOfflineError, вызывает API
-  `/api-live/user/room/`, читая `data.user.roomId`. API lookup не требует
-  browser cookies в интерфейсе вызова, но штатный fallback не проверяет,
-  была ли первоначальная ошибка security response.
-- Stage 3A отключил этот fallback. Поэтому изменение действительно может
-  мешать обычному lookup, если публичный HTML поменял формат, а API ещё работает.
-  Это подозрение, а не подтверждённая причина: успешный просмотр в браузере
-  не доказывает, что HTTP-клиент получил такой же ответ.
-- Live-check (`/webcast/room/check_alive/`) и `start(room_id=..., fetch_live_check=False)`
-  происходят только после HTML lookup. В первом smoke test до них не дошло.
-  Для различения смены HTML-формата и ограничения нужен повторный ручной тест
-  с безопасными полями; fallback и остальные стратегии пока не меняются.
+```text
+HTML
+  ├─ success → live_check
+  └─ normal 200 HTML parse failure
+        ↓
+     SAFE_API_FALLBACK (один запрос)
+        ├─ roomId found → live_check → sdk_start → CONNECTED
+        └─ failure → NEED_OPERATOR → STOPPED
+```
+
+Fallback разрешён только при `FailedParseRoomIdError` именно из
+`FetchRoomIdLiveHTMLRoute.parse_room_id()` и одновременно: HTTP 200,
+`response_category=html`, `redirect=false`, `blocked_or_challenge=false`,
+отсутствие security/login/verification/challenge-маркеров и сигнала остановки
+listener. Без наблюдённого HTTP-ответа переход к API запрещён.
+
+Вызывается установленный `client.web.fetch_room_id_from_api(username)`
+(TikTokLive 7.0.1 `FetchRoomIdAPIRoute.__call__`): `/api-live/user/room/`,
+путь `data.user.roomId`. Пригоден только HTTP 200 JSON с корректным положительным ID.
+Non-JSON, отсутствующие data/user/roomId, null, некорректный ID, security response,
+redirect и HTTP/transport errors завершают lookup без других способов и повторов.
+HTTP 401/403/429, неизвестные категории и security events никогда не разрешают fallback.
+
+Это частичное восстановление штатного поведения TikTokLive 7.0.1 с дополнительными
+security guards. Оригинальный SDK пробует API после любого HTML Exception,
+кроме UserOfflineError; такой безусловный путь остаётся отключённым.
+После положительного ID адаптер выполняет `/webcast/room/check_alive/`, затем
+`start(room_id=..., fetch_live_check=False)`. Существующий pipeline комментариев
+и обязательное одобрение предложений оператором сохранены.
+
+Второй операторский smoke test установил точное место прежнего сбоя:
+`html.parse_room_id`, строка 61 установленного SDK — отсутствует точный тег
+SIGI_STATE. Причина сокращённого HTML-ответа и доступность API на реальном LIVE
+пока не установлены. Проверки нового fallback выполнены без внешней сети;
+повторный реальный smoke test остаётся ручным действием оператора.
 
 На этом этапе видны только сигналы, которые отдаёт библиотека. Диалоги Android
 и CAPTCHA на экране телефона не обнаруживаются: Android UI ещё не подключён.
@@ -540,7 +562,8 @@ await client.web.close(). client.connect()/run()/close() не использую
 Review Stage 3A по metadata/README и исходникам установленной версии выявил:
 
 - `start()` автоматически пробует API после ошибки HTML, включая security/unknown.
-  Локальный ReadOnlyTikTokClient получает room ID один раз и передаёт его в
+  Локальный ReadOnlyTikTokClient разрешает только описанный выше guarded fallback
+  и передаёт проверенный ID в
   `start(room_id=..., fetch_live_check=False)` после отдельной проверки LIVE.
   HTTP response hook отклоняет ошибки и redirects до разбора ответа. Сбой
   неизвестного формата останавливает приложение, даже если SDK мог бы продолжить.
@@ -581,14 +604,14 @@ FastAPI lifespan/health и архитектурная граница импор�
 сквозной fake pipeline и UTF-8 в отдельном запуске CLI.
 Stage 3A дополнительно проверяет диагностический CLI, реальный SDK emitter →
 Comment → CommentProcessor → ReplySuggestion, последовательности состояний,
-лимит повторов, HTTP/WS security errors, отсутствие fallback, ControlEvent,
+лимит повторов, HTTP/WS security errors, условный fallback и запреты на него, ControlEvent,
 повреждённые protobuf, heartbeat/signing cleanup и настоящий SIGINT в тестовом
 процессе с подменённым подключением.
 
 Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12.0: **168 tests passed**; fake CLI выводит все три сообщения
+Проверено на Python 3.12.0: **227 tests passed**; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive
 есть два DeprecationWarning, связанных с websockets legacy API.

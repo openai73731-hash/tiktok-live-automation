@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from app.config import Settings
-from app.live.diagnostics import RoomLookupDiagnostics
+from app.live.diagnostics import RoomLookupDiagnostics, positive_room_id
 from app.live.models import Comment, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
 
@@ -29,32 +29,63 @@ class SDKLogFilter(logging.Filter):
         return False
 
 
-def create_sdk_client(*, unique_id: str, diagnostic: bool = False) -> Any:
+def create_sdk_client(
+    *, unique_id: str, diagnostic: bool = False,
+    operator_required: Callable[[], bool] | None = None,
+) -> Any:
     """Small, version-pinned adapter; imported lazily so fake mode stays offline."""
     from TikTokLive import TikTokLiveClient
     from TikTokLive.client.errors import UserOfflineError
-    from TikTokLive.client.web.routes.fetch_room_id_live_html import FetchRoomIdLiveHTMLRoute
+    from TikTokLive.client.web.routes.fetch_room_id_live_html import (
+        FailedParseRoomIdError, FetchRoomIdLiveHTMLRoute,
+    )
     from TikTokLive.events import ControlEvent, LiveEndEvent, WebsocketResponseEvent
     from TikTokLive.proto import ControlAction
 
-    diagnostics = RoomLookupDiagnostics(FetchRoomIdLiveHTMLRoute.SIGI_PATTERN) if diagnostic else None
+    diagnostics = RoomLookupDiagnostics(FetchRoomIdLiveHTMLRoute.SIGI_PATTERN, enabled=diagnostic)
 
     async def check_response(response):
-        if diagnostics and await diagnostics.observe_response(response):
+        if await diagnostics.observe_response(response):
             # A challenge must stop even if stale embedded data has a room ID
             # or the HTTP status would normally permit a transient retry.
             raise AmbiguousSDKState()
         # Run before SDK routes can parse an error page or conceal its status.
         response.raise_for_status()
-        if diagnostics:
-            diagnostics.parsing()
+        diagnostics.parsing()
 
     class ReadOnlyTikTokClient(TikTokLiveClient):
         async def start(self):
-            # Upstream start() falls back to a second endpoint even on CAPTCHA
-            # or 403. Resolve once, outside that fallback, and fail closed.
-            room_id = int(await self.web.fetch_room_id_from_html(self.unique_id))
-            if room_id <= 0:
+            self._room_lookup_pending = True
+            # Resolve outside upstream's unconditional fallback. Only an
+            # observed normal HTTP 200 HTML parse failure permits one API call.
+            try:
+                if operator_required and operator_required():
+                    raise AmbiguousSDKState()
+                try:
+                    room_id = await self.web.fetch_room_id_from_html(self.unique_id)
+                except FailedParseRoomIdError:
+                    if (not diagnostics.allow_api_fallback()
+                            or (operator_required and operator_required())):
+                        raise
+                    if diagnostic:
+                        logger.info("SAFE_API_FALLBACK", extra={"fields": {
+                            "request_stage": "safe_api_fallback",
+                        }})
+                    room_id = await self.web.fetch_room_id_from_api(self.unique_id)
+                if not positive_room_id(room_id):
+                    raise AmbiguousSDKState()
+                room_id = int(room_id)
+            except UserOfflineError:
+                raise  # Preserve the existing explicit offline policy.
+            except Exception as exc:
+                # Lookup transport/5xx failures are not permission to probe
+                # another endpoint or restart lookup. Other phases retain
+                # their bounded reconnect policy.
+                if LiveListener.retryable(exc):
+                    raise AmbiguousSDKState() from exc
+                raise
+            self._room_lookup_pending = False
+            if operator_required and operator_required():
                 raise AmbiguousSDKState()
             if diagnostic:
                 logger.info("connection_stage", extra={"fields": {"request_stage": "live_check"}})
@@ -95,11 +126,9 @@ def create_sdk_client(*, unique_id: str, diagnostic: bool = False) -> Any:
     )
     client.ignore_broken_payload = True
     client.parse_error_ignorelist = []
-    if diagnostics:
-        # Instrument both existing routes; start() still calls HTML only.
-        # Wrapping the API route does NOT enable or probe the SDK fallback.
-        client.web.fetch_room_id_from_html = diagnostics.wrap("html", client.web.fetch_room_id_from_html)
-        client.web.fetch_room_id_from_api = diagnostics.wrap("api", client.web.fetch_room_id_from_api)
+    # Guards run in every real session; telemetry remains diagnostic-only.
+    client.web.fetch_room_id_from_html = diagnostics.wrap("html", client.web.fetch_room_id_from_html)
+    client.web.fetch_room_id_from_api = diagnostics.wrap("api", client.web.fetch_room_id_from_api)
     return client
 
 
@@ -235,6 +264,7 @@ class LiveListener(BaseListener):
             client = create_sdk_client(
                 unique_id=self.settings.tiktok_username,
                 diagnostic=self.settings.diagnostic and self.settings.live_mode == "real",
+                operator_required=self.halt.is_set,
             )
         sdk_logger = getattr(client, "logger", None)
         sdk_filter = SDKLogFilter()
@@ -278,6 +308,12 @@ class LiveListener(BaseListener):
             )
             if socket_task in done:
                 await socket_task
+        except TimeoutError:
+            # The overall connection deadline can cancel HTTP before HTTPX's
+            # own timeout fires. Do not restart a lookup in that case either.
+            if getattr(client, "_room_lookup_pending", False):
+                raise AmbiguousSDKState() from None
+            raise
         finally:
             waiters = [task for task in (halt_task, connected_task) if task is not None]
             for task in waiters:
