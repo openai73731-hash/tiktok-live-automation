@@ -4,9 +4,10 @@
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A prepares
-  read-only real TikTok LIVE integration and diagnostics. Two operator-run
-  smoke tests failed at HTML lookup; the second reported HTTP 200 HTML without
-  SIGI_STATE. A successful real connection is not yet verified.
+  read-only real TikTok LIVE integration and diagnostics. Operator smoke tests
+  found HTML without SIGI_STATE and a suspected detector false positive on HTML
+  with valid SIGI_STATE and a roomId marker. A successful real connection is not
+  yet verified; historical logs do not identify the exact matched marker.
 - The project accompanies OWN TikTok LIVE streams. A separate desktop trading
   program analyzes markets, opens trades and speaks about its actions. That
   trading system is external and MUST NOT be implemented or controlled here.
@@ -31,14 +32,21 @@
   exit code 2 for operator intervention. Reconnect uses bounded exponential
   backoff and a finite attempt budget; log attempt, delay and error type only.
 - Room ID strategy: HTML success -> live-check; only an observed HTTP 200 HTML
-  FailedParseRoomIdError from the SDK HTML parser, without redirect or security,
-  login, verification or challenge markers, permits one guarded API fallback via
+  FailedParseRoomIdError from the SDK HTML parser, without redirect or HARD
+  security signals, permits one guarded API fallback via
   the installed fetch_room_id_from_api route. API success -> live-check; any API
   lookup failure -> NEED_OPERATOR -> STOPPED, without additional lookup/retries.
   This partially restores TikTokLive 7.0.1 behavior with security guards, never
   its unconditional fallback. Unknown categories and security events forbid
   fallback. Guards apply in all real sessions; SAFE_API_FALLBACK and allowlisted
   lookup telemetry are diagnostic-only. Never log room IDs or raw responses.
+- Distinguish HARD response signals (401/403/429, explicit CAPTCHA/verification
+  or challenge structure/active state, access restrictions) from SOFT text and
+  generic auth UI. Generic login links, strings and script URLs do not block
+  parsing or guarded fallback. A login wall/interstitial without valid LIVE
+  state is HARD; a true CAPTCHA/challenge remains HARD with valid LIVE state.
+  Never classify by response length. challenge_reason_codes must contain only
+  predefined identifiers, never matched text, payload fragments or URLs.
 - Transport/HTTP failures during room lookup require an operator; explicit
   HTML UserOfflineError and reconnects in other phases retain bounded backoff.
 - CAPTCHA, verification, security challenge, login/access restrictions, HTTP

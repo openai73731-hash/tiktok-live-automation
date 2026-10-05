@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from app.logging_config import LOGGER_NAME
+from app.live.security import classify_security
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -57,6 +58,7 @@ class RoomLookupDiagnostics:
                 "response_length": None,
                 "redirect": False,
                 "blocked_or_challenge": False,
+                "challenge_reason_codes": [],
                 "parsed_room_id": False,
                 "exception_type": None,
                 "sdk_error_site": None,
@@ -141,28 +143,7 @@ class RoomLookupDiagnostics:
         html = media_type in {"text/html", "application/xhtml+xml"} or bool(
             re.match(r"\s*(?:<!doctype\s+html|<html|<head|<body|<script)\b", body, re.I)
         )
-        # Conservative indicators, including scripts/JSON errors, not just page
-        # titles. False positives require an operator; absence is not proof of
-        # safety and is only one of the fallback prerequisites.
-        challenge_like = bool(re.search(
-            r"captcha|challenge|verif(?:y|ication)|log[\s_-]?in|"
-            r"security|access[\s_-]?denied|rate[\s_-]?limit|unauthorized|forbidden",
-            body, re.I,
-        ))
-        fields["blocked_or_challenge"] = response.status_code in {401, 403, 429} or challenge_like
-        if response.status_code in {401, 403, 429} or challenge_like:
-            category = "blocked_or_challenge"
-        elif fields["redirect"]:
-            category = "redirect"
-        elif not response.content.strip():
-            category = "empty"
-        elif valid_json:
-            category = "json"
-        elif html:
-            category = "html"
-        else:
-            category = "unexpected"
-        fields["response_category"] = category
+        has_live_state = False
         if fields["room_lookup_strategy"] == "html":
             match = self.html_pattern.search(body)
             fields["expected_embedded_json_marker_found"] = match is not None
@@ -177,6 +158,7 @@ class RoomLookupDiagnostics:
             for key in ("LiveRoom", "liveRoomUserInfo", "user"):
                 user = user.get(key) if isinstance(user, dict) else None
             fields["expected_room_id_marker_found"] = isinstance(user, dict) and "roomId" in user
+            has_live_state = isinstance(user, dict) and positive_room_id(user.get("roomId"))
         else:
             data = payload.get("data") if isinstance(payload, dict) else None
             user = data.get("user") if isinstance(data, dict) else None
@@ -186,7 +168,28 @@ class RoomLookupDiagnostics:
                 room_id_field_present=isinstance(user, dict) and "roomId" in user,
                 room_id_value_valid=isinstance(user, dict) and positive_room_id(user.get("roomId")),
             )
-        return challenge_like
+        blocked, reasons = classify_security(
+            status=response.status_code, body=body, payload=payload,
+            is_html=html, has_live_state=has_live_state,
+        )
+        fields["blocked_or_challenge"] = blocked
+        fields["challenge_reason_codes"] = reasons
+        if blocked:
+            category = "blocked_or_challenge"
+        elif fields["redirect"]:
+            category = "redirect"
+        elif not response.content.strip():
+            category = "empty"
+        elif valid_json:
+            category = "json"
+        elif html:
+            category = "html"
+        else:
+            category = "unexpected"
+        fields["response_category"] = category
+        # Preserve HTTPStatusError for status guards; structural hard blocks
+        # raise AmbiguousSDKState in the adapter even on a successful status.
+        return blocked and response.status_code not in {401, 403, 429}
 
     def parsing(self) -> None:
         fields = self.current.get()

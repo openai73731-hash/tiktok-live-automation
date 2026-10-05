@@ -38,6 +38,10 @@ Stage 3A подготавливает ручную проверку сущест
 ограниченные повторы и shutdown. Два ручных smoke test остановились на
 FailedParseRoomIdError. Во втором HTML lookup получил HTTP 200, text/html,
 1155 байт без ожидаемого SIGI_STATE. Успешное подключение пока не подтверждено.
+В следующих операторских запусках старый детектор заблокировал ответы размером
+1155 и 244370 байт; второй содержал валидный SIGI_STATE и поле roomId.
+Точное совпадение старого regex не сохранялось, поэтому конкретное слово,
+сработавшее на этих ответах, ретроспективно установить нельзя.
 
 ## Второй этап: предложения ответа
 
@@ -354,20 +358,46 @@ fallback действуют также без diagnostic; сам вывод не
 `room_lookup_strategy` — `html` или `api`; `request_stage` показывает последний
 достигнутый этап: `request_started`, `http_response`, `sdk_parse`, `lookup_complete`.
 Логируются `http_status`, `content_type`, `response_category`, `response_length`
-(число байт декодированного HTTP body), `redirect`, `blocked_or_challenge`, `parsed_room_id` и
+(число байт декодированного HTTP body), `redirect`, `blocked_or_challenge`,
+`challenge_reason_codes`, `parsed_room_id` и
 `exception_type`. До получения ответа неизвестные поля равны `null`.
 Content-Type нормализуется по белому списку MIME-типов; параметры заголовка
 отбрасываются, незнакомое значение заменяется на `other`, отсутствие — `missing`.
 
 Категории: `html`, `json`, `redirect`, `blocked_or_challenge`, `empty`, `unexpected`.
-`blocked_or_challenge` означает HTTP 401/403/429 или маркеры проверки/логина
-в ответе, включая scripts и JSON: captcha, challenge, verify/verification,
-login, security, access denied, rate limit, unauthorized, forbidden.
-Это консервативная эвристика с возможными ложными срабатываниями, например
-на обычную ссылку login. Отсутствие маркеров не доказывает безопасность ответа;
-для fallback обязательны все условия ниже. Обнаруженные маркеры останавливают lookup с
-`AmbiguousSDKState` → NEED_OPERATOR даже при наличии room ID или HTTP 503;
-повторов и перехода к другому endpoint не происходит.
+`blocked_or_challenge` теперь означает только HARD сигнал. Раньше regex по всему
+body превращал даже обычное слово login или ссылку на security.js в блокировку,
+до запуска SDK parser и независимо от LIVE-структуры. Это и создавало возможность
+false positive. Raw HTML не сохранялся; конкретный маркер прежнего ответа неизвестен.
+
+Классификация основана на структуре, а не размере HTML:
+
+- HARD: HTTP 401/403/429; явные CAPTCHA-контейнеры, verification/challenge формы
+  и заголовки; активные флаги `captcha_required=true`, `verification_required=true`
+  и аналогичные явные состояния. Они блокируют даже страницу с валидным LIVE state.
+  SDK AccessControl/security events по-прежнему требуют оператора.
+- Login wall (заголовок входа, форма с action `/login` или явный wall-контейнер)
+  и общий interstitial-контейнер требуют оператора при отсутствии валидного LIVE
+  state. Для этого SIGI_STATE должен содержать положительный roomId; наличие
+  ключа со значением null не считается валидным LIVE state.
+- SOFT: generic login/auth UI, слова captcha/security/verification и ссылки на
+  JS-файлы. Они сами по себе не блокируют SDK parser и guarded fallback.
+  Отключённые флаги и словари переводов не считаются активным challenge-state.
+
+`challenge_reason_codes` содержит только фиксированные идентификаторы из
+`live/security.py`, без совпавшего текста: `http_401`, `http_403`, `http_429`,
+`captcha_marker`, `verification_marker`, `security_challenge_marker`,
+`login_interstitial_marker`, `challenge_interstitial_marker`,
+`access_restriction_marker`, `rate_limit_marker`; soft-коды —
+`generic_login_text`, `generic_captcha_text`, `generic_verification_text`,
+`generic_security_text`, `generic_rate_limit_text`.
+В одном ответе могут быть и HARD, и SOFT коды; любой HARD побеждает.
+Это ограниченный структурный детектор, а не универсальная проверка безопасности.
+
+HARD приводит к NEED_OPERATOR без fallback. HTTP-ошибки сохраняют свой тип;
+структурные блокировки дают `AmbiguousSDKState`. При отсутствии HARD HTML
+передаётся штатному SDK parser: валидный roomId → live-check; обычная ошибка
+извлечения → проверка условий guarded fallback. Отдельного порога размера нет.
 
 HTML-поля:
 
@@ -406,7 +436,7 @@ HTML
 Fallback разрешён только при `FailedParseRoomIdError` именно из
 `FetchRoomIdLiveHTMLRoute.parse_room_id()` и одновременно: HTTP 200,
 `response_category=html`, `redirect=false`, `blocked_or_challenge=false`,
-отсутствие security/login/verification/challenge-маркеров и сигнала остановки
+отсутствие HARD security-сигналов и сигнала остановки
 listener. Без наблюдённого HTTP-ответа переход к API запрещён.
 
 Вызывается установленный `client.web.fetch_room_id_from_api(username)`
@@ -427,7 +457,9 @@ security guards. Оригинальный SDK пробует API после лю
 `html.parse_room_id`, строка 61 установленного SDK — отсутствует точный тег
 SIGI_STATE. Причина сокращённого HTML-ответа и доступность API на реальном LIVE
 пока не установлены. Проверки нового fallback выполнены без внешней сети;
-повторный реальный smoke test остаётся ручным действием оператора.
+повторный реальный smoke test остаётся ручным действием оператора. Новое поле
+`challenge_reason_codes` позволит различать конкретные правила классификатора,
+не публикуя HTML или roomId.
 
 На этом этапе видны только сигналы, которые отдаёт библиотека. Диалоги Android
 и CAPTCHA на экране телефона не обнаруживаются: Android UI ещё не подключён.
@@ -611,7 +643,7 @@ Comment → CommentProcessor → ReplySuggestion, последовательно
 Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12.0: **227 tests passed**; fake CLI выводит все три сообщения
+Проверено на Python 3.12.0: **263 tests passed**; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive
 есть два DeprecationWarning, связанных с websockets legacy API.
@@ -634,6 +666,7 @@ tiktok-live-automation/
 │   │   │   ├── diagnostics.py
 │   │   │   ├── listener.py
 │   │   │   ├── models.py
+│   │   │   ├── security.py
 │   │   │   └── service.py
 │   │   ├── ai/
 │   │   │   ├── __init__.py

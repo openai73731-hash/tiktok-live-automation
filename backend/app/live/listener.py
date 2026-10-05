@@ -46,8 +46,9 @@ def create_sdk_client(
 
     async def check_response(response):
         if await diagnostics.observe_response(response):
-            # A challenge must stop even if stale embedded data has a room ID
-            # or the HTTP status would normally permit a transient retry.
+            # Only structural HARD signals stop here. Generic auth text is
+            # telemetry, not a reason to preempt the installed HTML parser.
+            # A HARD signal still wins over valid embedded LIVE data.
             raise AmbiguousSDKState()
         # Run before SDK routes can parse an error page or conceal its status.
         response.raise_for_status()

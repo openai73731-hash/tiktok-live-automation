@@ -334,8 +334,8 @@ async def test_guarded_api_fallback_success(html_body, diagnostic, monkeypatch, 
     (200, '<html><div class="captcha-container"></div></html>', 'text/html'),
     (200, '<html><form action="/login"></form></html>', 'text/html'),
     (200, '<html><script>verification_required = true;</script></html>', 'text/html'),
-    (200, '<html><script src="/security/check.js"></script></html>', 'text/html'),
-    (200, '<html><div>Challenge required</div></html>', 'text/html'),
+    (200, '<html><h1>Security check</h1></html>', 'text/html'),
+    (200, '<html><main id="challenge-interstitial">Challenge required</main></html>', 'text/html'),
     (200, 'unrecognised response', 'text/plain'),
     (200, '{"data": {}}', 'application/json'),
     (200, '', 'text/html'),
@@ -587,3 +587,174 @@ async def test_cancelling_api_fallback_does_not_become_operator_error():
     assert listener.status.state == LiveState.STOPPED
     assert listener.status.terminal_state is None
     assert paths == ["/@owner/live", "/api-live/user/room/"]
+
+
+@pytest.mark.parametrize("soft_markup", [
+    '<a href="/login">Log in</a>',
+    '<p>login</p>',
+    '<div id="login-modal">Generic auth UI</div><form action="/login"></form>',
+    '<script src="/security/check.js"></script><script src="/captcha.js"></script>',
+    '<script type="application/json">{"labels":{"verification":"Verify", "login":"Log in"},'
+    '"captcha_required":false}</script>',
+])
+@pytest.mark.parametrize("diagnostic", [False, True])
+async def test_large_live_page_soft_markers_reach_sdk_parser(soft_markup, diagnostic, monkeypatch, caplog):
+    from TikTokLive.client.web.routes.fetch_room_id_live_html import FetchRoomIdLiveHTMLRoute
+    from app.live.security import SOFT_REASON_PATTERNS
+
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    body = '<html><head><title>Public LIVE</title></head><body>' + soft_markup
+    body += '<!-- normal app shell -->' * 10_000 + html({"roomId": "123", "status": 2}) + '</body></html>'
+    paths = []
+    parser_calls = []
+    original_parse = FetchRoomIdLiveHTMLRoute.parse_room_id
+
+    def parse(page):
+        parser_calls.append(True)
+        return original_parse(page)
+
+    monkeypatch.setattr(FetchRoomIdLiveHTMLRoute, "parse_room_id", staticmethod(parse))
+
+    def transport(request):
+        paths.append(request.url.path)
+        if request.url.path == "/@owner/live":
+            return httpx.Response(200, text=body, headers={"content-type": "text/html"})
+        assert request.url.path == "/webcast/room/check_alive/"
+        return httpx.Response(200, json={"data": [{"alive": True}]})
+
+    async with mocked_client(transport, diagnostic=diagnostic) as client:
+        socket_task = asyncio.create_task(asyncio.sleep(0))
+        start = AsyncMock(return_value=socket_task)
+        monkeypatch.setattr(TikTokLiveClient, "start", start)
+        assert await client.start() is socket_task
+        await socket_task
+        start.assert_awaited_once_with(room_id=123, fetch_live_check=False)
+    assert parser_calls == [True]
+    assert paths == ["/@owner/live", "/webcast/room/check_alive/"]
+    assert not any(r.msg == "SAFE_API_FALLBACK" for r in caplog.records)
+    if diagnostic:
+        item, = results(caplog)
+        assert item["blocked_or_challenge"] is False
+        assert item["response_category"] == "html"
+        assert item["parsed_room_id"] is True
+        assert item["expected_embedded_json_marker_found"] is True
+        assert item["embedded_json_valid"] is True
+        assert item["expected_room_id_marker_found"] is True
+        assert item["challenge_reason_codes"]
+        assert set(item["challenge_reason_codes"]) <= SOFT_REASON_PATTERNS.keys()
+    else:
+        assert not results(caplog)
+
+
+@pytest.mark.parametrize("with_live_state", [False, True])
+@pytest.mark.parametrize("status,hard_markup,reason", [
+    (401, '', 'http_401'), (403, '', 'http_403'), (429, '', 'http_429'),
+    (200, '<div id="captcha">Solve puzzle</div>', 'captcha_marker'),
+    (200, '<h1>Verify <span>you are human</span></h1>', 'verification_marker'),
+    (200, '<form id="challenge-form"></form>', 'security_challenge_marker'),
+    (200, '<script>verification_required = true;</script>', 'verification_marker'),
+    (200, '<script type="application/json">{"security":{"captcha_required":true}}</script>', 'captcha_marker'),
+    (200, '<script type="application/json">{"state":"security_challenge"}</script>', 'security_challenge_marker'),
+])
+async def test_structural_hard_signals_win_over_live_state(status, hard_markup, reason, with_live_state,
+                                                        monkeypatch, caplog):
+    from TikTokLive.client.web.routes.fetch_room_id_live_html import FetchRoomIdLiveHTMLRoute
+    from app.live.security import CHALLENGE_REASON_CODES
+
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    body = '<html>' + hard_markup + (html({"roomId": "123"}) if with_live_state else '') + '</html>'
+    paths = []
+
+    def transport(request):
+        paths.append(request.url.path)
+        return httpx.Response(status, text=body, headers={"content-type": "text/html"})
+
+    # No SDK parsing, live-check, signing or API may follow a HARD block.
+    monkeypatch.setattr(FetchRoomIdLiveHTMLRoute, "parse_room_id",
+                        staticmethod(lambda _: pytest.fail("Parser must not run on HARD block")))
+    async with mocked_client(transport) as client:
+        listener = LiveListener(Settings(_env_file=None, live_mode="real",
+            tiktok_username="owner"), asyncio.Queue(), client_factory=lambda **_: client)
+        await listener.run()
+    assert listener.status.state == LiveState.STOPPED
+    assert listener.status.terminal_state == LiveState.NEED_OPERATOR
+    assert paths == ["/@owner/live"]
+    item, = results(caplog)
+    assert item["blocked_or_challenge"] is True
+    assert item["request_stage"] == "http_response"
+    assert item["expected_room_id_marker_found"] is with_live_state
+    assert reason in item["challenge_reason_codes"]
+    assert set(item["challenge_reason_codes"]) <= CHALLENGE_REASON_CODES
+
+
+@pytest.mark.parametrize("markup,blocked,reason", [
+    ('<a href="/login">Login</a>', False, 'generic_login_text'),
+    ('<script src="/security/check.js"></script>', False, 'generic_security_text'),
+    ('<div>Public LIVE</div>', False, None),
+    ('<title>Log in to continue</title>', True, 'login_interstitial_marker'),
+    ('<form action="/login"></form>', True, 'login_interstitial_marker'),
+    ('<main id="challenge-interstitial"></main>', True, 'challenge_interstitial_marker'),
+])
+async def test_small_html_uses_structure_not_length(markup, blocked, reason, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="tiktok_assistant")
+    body = '<html>' + markup + '</html>'
+    body += ' ' * (1155 - len(body))
+    paths = []
+
+    def transport(request):
+        paths.append(request.url.path)
+        if request.url.path == "/@owner/live":
+            return httpx.Response(200, text=body, headers={"content-type": "text/html"})
+        if request.url.path == "/api-live/user/room/":
+            return httpx.Response(200, json={"message": "", "data": {"user": {"roomId": "123"}}})
+        assert request.url.path == "/webcast/room/check_alive/"
+        return httpx.Response(200, json={"data": [{"alive": True}]})
+
+    async with mocked_client(transport) as client:
+        if blocked:
+            with pytest.raises(AmbiguousSDKState):
+                await client.start()
+        else:
+            socket_task = asyncio.create_task(asyncio.sleep(0))
+            monkeypatch.setattr(TikTokLiveClient, "start", AsyncMock(return_value=socket_task))
+            assert await client.start() is socket_task
+            await socket_task
+    item = results(caplog)[0]
+    assert item["response_length"] == 1155
+    assert item["blocked_or_challenge"] is blocked
+    if reason:
+        assert reason in item["challenge_reason_codes"]
+    if blocked:
+        assert paths == ["/@owner/live"]
+        assert not any(r.msg == "SAFE_API_FALLBACK" for r in caplog.records)
+    else:
+        assert item["exception_type"] == "FailedParseRoomIdError"
+        assert item["sdk_error_line"] == 61
+        assert paths == ["/@owner/live", "/api-live/user/room/", "/webcast/room/check_alive/"]
+        assert sum(r.msg == "SAFE_API_FALLBACK" for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("hard", [False, True])
+async def test_challenge_reason_codes_are_allowlisted_and_payload_free(hard, tmp_path, capsys):
+    from app.live.security import CHALLENGE_REASON_CODES
+
+    configure_logging(Settings(_env_file=None, live_mode="real", tiktok_username="owner",
+                               diagnostic=True, log_dir=tmp_path))
+    body = '<html><a href="/login?token=PRIVATE_URL">login PRIVATE_TEXT</a>'
+    body += ('<div id="captcha" data-secret="PRIVATE_ATTRIBUTE"></div>' if hard else '')
+    body += html({"roomId": "987654321001122", "uniqueId": "PRIVATE_USER"}) + '</html>'
+    async with mocked_client(lambda _: httpx.Response(200, text=body,
+        headers={"content-type": "text/html", "set-cookie": "sessionid=PRIVATE_COOKIE"})) as client:
+        if hard:
+            with pytest.raises(AmbiguousSDKState):
+                await client.web.fetch_room_id_from_html("owner")
+        else:
+            await client.web.fetch_room_id_from_html("owner")
+    raw = (tmp_path / "app.jsonl").read_text(encoding="utf-8")
+    output = capsys.readouterr()
+    for value in ("PRIVATE_", "987654321001122", "<html>", "sessionid", "data-secret", "/login?"):
+        assert value not in raw + output.out + output.err
+    for record in map(json.loads, raw.splitlines()):
+        codes = record["challenge_reason_codes"]
+        assert isinstance(codes, list)
+        assert all(type(code) is str and code in CHALLENGE_REASON_CODES for code in codes)
