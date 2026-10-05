@@ -1,0 +1,100 @@
+"""Select comments, isolate provider failures and return operator suggestions."""
+import asyncio
+import logging
+import re
+
+from app.ai.engine import AIReplyEngine
+from app.ai.knowledge import KnowledgeBase, ProjectConfig
+from app.ai.models import ReplyDraft, ReplyRequest, ReplySuggestion
+from app.ai.safety import ReplySafetyPolicy
+from app.live.models import Comment
+from app.logging_config import LOGGER_NAME
+
+logger = logging.getLogger(LOGGER_NAME)
+
+
+def is_reply_candidate(text: str) -> bool:
+    text = text.casefold()
+    return bool(re.search(
+        r"[?？]|^\s*(is|are|does|do|can|will)\b|\b(how|what|why|where|when|help|explain|"
+        r"please|tell me)\b|\b(как|что|почему|где|когда|можно|"
+        r"помоги\w*|объясни\w*)\b|\b(cómo|qué|por qué|ayuda)\b|"
+        r"not working|doesn't work|не работает|ошибка|no funciona",
+        text,
+    ))
+
+
+class CommentProcessor:
+    def __init__(
+        self, engine: AIReplyEngine, project: ProjectConfig,
+        knowledge: KnowledgeBase, *, safety: ReplySafetyPolicy | None = None,
+    ) -> None:
+        self.engine = engine
+        self.project = project
+        self.knowledge = knowledge
+        self.safety = safety or ReplySafetyPolicy()
+
+    async def process(self, comment: Comment) -> ReplySuggestion:
+        candidate = is_reply_candidate(comment.text)
+        base = {
+            "username": comment.username, "original_text": comment.text,
+            "provider": self.engine.name, "detected_language": "und",
+            "operator_translation": None,
+        }
+
+        def abstain(reason: str, status: str = "needs_operator") -> ReplySuggestion:
+            return ReplySuggestion(
+                **base, should_reply=False, suggested_reply=None,
+                reply_translation=None, reason=reason, status=status,
+            )
+
+        if len(comment.text) > self.project.ai.max_comment_chars:
+            return abstain("Сообщение слишком длинное для автоматической подготовки ответа.")
+        request = ReplyRequest(
+            original_text=comment.text, is_candidate=candidate,
+            project=self.project, knowledge=self.knowledge,
+        )
+        try:
+            async with asyncio.timeout(self.project.ai.timeout_seconds):
+                raw = await self.engine.generate(request)
+            # Validate the boundary even if a future provider returns a dict.
+            draft = ReplyDraft.model_validate(raw)
+        except Exception as exc:
+            logger.error("ai_provider_failed", extra={"fields": {
+                "provider": self.engine.name, "error_type": type(exc).__name__,
+            }})
+            return abstain("Не удалось подготовить ответ; требуется оператор.")
+        base.update(
+            detected_language=draft.detected_language,
+            operator_translation=draft.operator_translation,
+        )
+        if draft.needs_operator or draft.detected_language == "und" or not draft.operator_translation:
+            return abstain("Нет надёжного перевода или знания для этого сообщения; требуется оператор.")
+        if not candidate:
+            return abstain("Приветствие или сообщение без запроса ответа.", status="skipped")
+        if draft.response_kind == "none":
+            return abstain("Сообщение похоже на вопрос, но движок не подготовил ответ.")
+        issues = self.safety.violations(request, draft)
+        if issues:
+            logger.warning("reply_blocked", extra={"fields": {
+                "provider": self.engine.name, "rules": list(issues),
+            }})
+            return abstain("Ответ не прошёл проверку фактов, языка или ограничений; требуется оператор.")
+        reason = (
+            "Вопрос о результате торговли; ответ без финансовых обещаний."
+            if draft.response_kind == "no_promises" else
+            "Нет подтверждённых сведений; предложен честный ответ об ограничении знаний."
+            if draft.response_kind == "unknown" else
+            "Вопрос о программе; ответ основан на утверждённых фактах."
+        )
+        return ReplySuggestion(
+            **base, should_reply=True, suggested_reply=draft.suggested_reply,
+            reply_translation=draft.reply_translation, fact_ids=draft.fact_ids,
+            reason=reason, status="ready",
+        )
+
+    async def handle(self, comment: Comment) -> None:
+        suggestion = await self.process(comment)
+        logger.info("reply_suggestion", extra={"fields": {
+            "suggestion": suggestion.model_dump(mode="json"),
+        }})

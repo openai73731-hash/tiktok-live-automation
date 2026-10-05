@@ -1,0 +1,98 @@
+# Deterministic DEMO fixtures, not a general-purpose translator.
+# Each group contains equivalent comments; unknown text requires the operator.
+scenarios:
+  - language: en
+    comments: ["How does the bot work?"]
+    translations:
+      ru: "Как работает бот?"
+      es: "¿Cómo funciona el bot?"
+    response_kind: facts
+    fact_ids: [automatic_analysis, automatic_trades]
+  - language: en
+    comments: ["Is it automatic?"]
+    translations:
+      ru: "Это работает автоматически?"
+      es: "¿Es automático?"
+    response_kind: facts
+    fact_ids: [automatic_analysis, automatic_trades]
+  - language: en
+    comments: ["Is this bot trading automatically?"]
+    translations:
+      ru: "Этот бот торгует автоматически?"
+      es: "¿Este bot opera automáticamente?"
+    response_kind: facts
+    fact_ids: [automatic_analysis, automatic_trades]
+  - language: en
+    comments: ["Does the software speak?"]
+    translations:
+      ru: "Программа комментирует свои действия голосом?"
+      es: "¿El programa habla?"
+    response_kind: facts
+    fact_ids: [voice_commentary]
+  - language: en
+    comments: ["Hello!", "Hi!"]
+    translations: {ru: "Привет!", es: "¡Hola!"}
+    response_kind: none
+  - language: en
+    comments: ["Thanks!", "Thank you!"]
+    translations: {ru: "Спасибо!", es: "¡Gracias!"}
+    response_kind: none
+  - language: en
+    comments: ["Can you guarantee profit?"]
+    translations:
+      ru: "Можете гарантировать прибыль?"
+      es: "¿Puedes garantizar ganancias?"
+    response_kind: no_promises
+  - language: en
+    comments: ["What is the win rate?"]
+    translations:
+      ru: "Какой процент прибыльных сделок?"
+      es: "¿Cuál es la tasa de operaciones ganadoras?"
+    response_kind: unknown
+  - language: en
+    comments: ["Is this platform regulated?"]
+    translations:
+      ru: "Эта платформа регулируется?"
+      es: "¿Esta plataforma está regulada?"
+    response_kind: unknown
+  - language: en
+    comments: ["It is not working"]
+    translations:
+      ru: "Это не работает."
+      es: "No funciona."
+    response_kind: unknown
+  - language: ru
+    comments: ["Этот бот торгует автоматически?"]
+    translations:
+      en: "Is this bot trading automatically?"
+      es: "¿Este bot opera automáticamente?"
+    response_kind: facts
+    fact_ids: [automatic_analysis, automatic_trades]
+  - language: ru
+    comments: ["Можете гарантировать прибыль?"]
+    translations:
+      en: "Can you guarantee profit?"
+      es: "¿Puedes garantizar ganancias?"
+    response_kind: no_promises
+  - language: ru
+    comments: ["Привет!"]
+    translations: {en: "Hello!", es: "¡Hola!"}
+    response_kind: none
+  - language: es
+    comments: ["¿Este bot opera automáticamente?"]
+    translations:
+      ru: "Этот бот торгует автоматически?"
+      en: "Is this bot trading automatically?"
+    response_kind: facts
+    fact_ids: [automatic_analysis, automatic_trades]
+  - language: es
+    comments: ["¿Puedes garantizar ganancias?"]
+    translations:
+      ru: "Можете гарантировать прибыль?"
+      en: "Can you guarantee profit?"
+    response_kind: no_promises
+  - language: es
+    comments: ["¡Hola!"]
+    translations: {ru: "Привет!", en: "Hello!"}
+    response_kind: none
+

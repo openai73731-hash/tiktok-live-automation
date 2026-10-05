@@ -1,0 +1,38 @@
+# Operator-approved facts about the EXTERNAL trading program.
+# Stable IDs allow replies and tests to track exactly which facts were used.
+# English text is canonical; translations must be reviewed when facts change.
+facts:
+  - id: automatic_analysis
+    text: "The software analyzes the market automatically."
+    translations:
+      ru: "Программа автоматически анализирует рынок."
+      es: "El programa analiza el mercado automáticamente."
+  - id: automatic_trades
+    text: "The software opens trades automatically."
+    translations:
+      ru: "Программа автоматически открывает сделки."
+      es: "El programa abre operaciones automáticamente."
+  - id: voice_commentary
+    text: "The software provides spoken commentary about its actions."
+    translations:
+      ru: "Программа голосом комментирует свои действия."
+      es: "El programa comenta sus acciones por voz."
+
+forbidden_claims:
+  - guaranteed_profit
+  - guaranteed_income
+  - guaranteed_win_rate
+  - invented_performance_metrics
+  - invented_platform_facts
+  - financial_promises
+
+safe_responses:
+  no_promises:
+    en: "Profit is not guaranteed and trading involves risk."
+    ru: "Прибыль не гарантирована, а торговля связана с риском."
+    es: "Las ganancias no están garantizadas y operar implica riesgos."
+  unknown:
+    en: "I don't have verified information about that."
+    ru: "У меня нет подтверждённой информации об этом."
+    es: "No tengo información verificada sobre eso."
+

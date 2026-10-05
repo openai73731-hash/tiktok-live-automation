@@ -1,0 +1,15 @@
+stream:
+  language: en
+
+product:
+  name: "Trading Bot"
+  platform: "Pocket Option"
+
+ai:
+  provider: fake
+  max_reply_sentences: 2
+  max_reply_chars: 240
+  max_comment_chars: 1000
+  operator_language: ru
+  timeout_seconds: 10
+
