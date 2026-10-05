@@ -28,12 +28,28 @@ class JsonFormatter(logging.Formatter):
 
 
 class ConsoleFormatter(logging.Formatter):
+    def __init__(self, diagnostic: bool = False):
+        super().__init__()
+        self.diagnostic = diagnostic
+
     def format(self, record: logging.LogRecord) -> str:
         fields = getattr(record, "fields", {})
         time = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
         if record.msg == "reply_suggestion":
             item = fields["suggestion"]
             safe = lambda value: console_text(str(value)) if value else "—"
+            if self.diagnostic:
+                return (
+                    f"[{time}] ReplySuggestion @{safe(item['username'])}:\n"
+                    f"  status: {item['status']}\n"
+                    f"  original: {safe(item['original_text'])}\n"
+                    f"  translation: {safe(item['operator_translation'])}\n"
+                    f"  suggested_reply: {safe(item['suggested_reply'])}\n"
+                    f"  reply_translation: {safe(item['reply_translation'])}\n"
+                    f"  provider: {safe(item['provider'])}\n"
+                    f"  requires_approval: {str(item['requires_approval']).lower()}\n"
+                    f"  reason: {safe(item['reason'])}\n"
+                )
             action = {
                 "ready": "Предложение не отправлено. Решение — за оператором.",
                 "skipped": "Ответ не требуется.",
@@ -51,10 +67,17 @@ class ConsoleFormatter(logging.Formatter):
             )
         if record.msg == "comment_received":
             return (
-                f"[{time}] {console_text(fields['username'])}:\n"
+                f"[{time}] {'@' if self.diagnostic else ''}{console_text(fields['username'])}:\n"
                 f"{console_text(fields['text'])}\n"
             )
         if record.msg == "live_state":
+            if self.diagnostic:
+                state = {"operator_required": "NEED_OPERATOR"}.get(
+                    fields['state'], fields['state'].upper(),
+                )
+                reason = console_text(fields.get('reason') or '')
+                suffix = f" ({reason})" if reason else ""
+                return f"[{time}] {state} @{console_text(fields['username'])}{suffix}"
             suffix = f" ({fields['reason']})" if fields.get("reason") else ""
             mode = " [fake]" if fields["mode"] == "fake" else ""
             return (
@@ -85,7 +108,7 @@ def configure_logging(settings: Settings) -> logging.Logger:
     file_handler.setFormatter(JsonFormatter())
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
-    console.setFormatter(ConsoleFormatter())
+    console.setFormatter(ConsoleFormatter(settings.diagnostic))
     logger.addHandler(file_handler)
     logger.addHandler(console)
     return logger

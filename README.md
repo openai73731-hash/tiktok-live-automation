@@ -577,6 +577,3 @@ tiktok-live-automation/
 
 Runtime-файлы logs/app.jsonl, __pycache__ и .pytest_cache в дерево не включены.
 Переход к следующему этапу — только по отдельной команде пользователя.
-#   t i k t o k - l i v e - a u t o m a t i o n  
- #   t i k t o k - l i v e - a u t o m a t i o n  
- 

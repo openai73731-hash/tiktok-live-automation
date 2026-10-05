@@ -18,13 +18,16 @@ class Comment(BaseModel):
 
 class LiveState(StrEnum):
     IDLE = "idle"
+    STARTING = "starting"
     CONNECTING = "connecting"
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
-    RETRYING = "retrying"
+    RECONNECTING = "reconnecting"
+    RETRYING = "reconnecting"  # Compatibility for existing consumers.
     OFFLINE = "offline"
     ENDED = "ended"
     OPERATOR_REQUIRED = "operator_required"
+    NEED_OPERATOR = "operator_required"
     STOPPED = "stopped"
 
 
@@ -34,5 +37,5 @@ class LiveStatus(BaseModel):
     username: str
     mode: Literal["real", "fake"]
     reason: str | None = None
+    terminal_state: LiveState | None = None
     updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
-

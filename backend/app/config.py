@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     live_mode: Literal["real", "fake"] = "fake"
     tiktok_username: str = ""
+    diagnostic: bool = False
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_dir: Path = Path("logs")
     log_max_bytes: int = Field(default=5_242_880, ge=1024)
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
     queue_size: int = Field(default=1000, ge=1, le=100_000)
     reconnect_initial_seconds: float = Field(default=2, gt=0, allow_inf_nan=False)
     reconnect_max_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+    reconnect_max_attempts: int = Field(default=5, ge=1, le=100)
     connect_timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
     shutdown_timeout_seconds: float = Field(default=5, gt=0, allow_inf_nan=False)
     fake_interval_seconds: float = Field(default=1, ge=0, allow_inf_nan=False)
@@ -40,6 +42,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_modes(self) -> Self:
+        if self.diagnostic and self.live_mode != "real":
+            raise ValueError("Diagnostic mode requires LIVE_MODE=real")
         if self.live_mode == "real" and not self.tiktok_username:
             raise ValueError("TIKTOK_USERNAME is required for LIVE_MODE=real")
         if self.reconnect_max_seconds < self.reconnect_initial_seconds:

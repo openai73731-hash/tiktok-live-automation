@@ -91,7 +91,8 @@ async def test_temporary_error_retries_then_end_stops(monkeypatch):
     monkeypatch.setattr(listener, "_session", session)
     await asyncio.wait_for(listener.run(), 1)
     assert len(calls) == 2
-    assert listener.status.state == LiveState.ENDED
+    assert listener.status.state == LiveState.STOPPED
+    assert listener.status.terminal_state == LiveState.ENDED
 
 
 async def test_offline_retries_with_bounded_exponential_delay(monkeypatch):
@@ -124,7 +125,8 @@ async def test_unknown_or_security_error_never_retries(error, monkeypatch):
     monkeypatch.setattr(listener, "_session", session)
     await listener.run()
     session.assert_awaited_once()
-    assert listener.status.state == LiveState.OPERATOR_REQUIRED
+    assert listener.status.state == LiveState.STOPPED
+    assert listener.status.terminal_state == LiveState.OPERATOR_REQUIRED
 
 
 @pytest.mark.parametrize("event", [AccessControlEvent(), UnknownEvent()])
@@ -179,7 +181,8 @@ async def test_sdk_dispatch_and_shutdown_do_not_cancel_other_tasks(monkeypatch):
     try:
         await asyncio.wait_for(listener.run(), 2)
         assert listener.queue.qsize() == 1
-        assert listener.status.state == LiveState.ENDED
+        assert listener.status.state == LiveState.STOPPED
+        assert listener.status.terminal_state == LiveState.ENDED
         closed.assert_awaited_once()
         assert not unrelated.done()
     finally:
@@ -236,4 +239,3 @@ def test_http_security_and_service_error_policy(status, expected):
     response = httpx.Response(status, request=request)
     error = httpx.HTTPStatusError("test", request=request, response=response)
     assert LiveListener.retryable(error) is expected
-

@@ -17,6 +17,73 @@ logger = logging.getLogger(LOGGER_NAME)
 StateCallback = Callable[[LiveStatus], None]
 
 
+class AmbiguousSDKState(RuntimeError):
+    """An SDK response cannot safely be interpreted as a LIVE state."""
+
+
+class SDKLogFilter(logging.Filter):
+    """SDK diagnostics may contain payloads, cookies or signed URLs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return False
+
+
+def create_sdk_client(*, unique_id: str) -> Any:
+    """Small, version-pinned adapter; imported lazily so fake mode stays offline."""
+    from TikTokLive import TikTokLiveClient
+    from TikTokLive.client.errors import UserOfflineError
+    from TikTokLive.events import ControlEvent, LiveEndEvent, WebsocketResponseEvent
+    from TikTokLive.proto import ControlAction
+
+    async def check_response(response):
+        # Run before SDK routes can parse an error page or conceal its status.
+        response.raise_for_status()
+
+    class ReadOnlyTikTokClient(TikTokLiveClient):
+        async def start(self):
+            # Upstream start() falls back to a second endpoint even on CAPTCHA
+            # or 403. Resolve once, outside that fallback, and fail closed.
+            room_id = int(await self.web.fetch_room_id_from_html(self.unique_id))
+            if room_id <= 0:
+                raise AmbiguousSDKState()
+            # The SDK __call__ catches BaseException (including cancellation).
+            # Use its underlying route to keep Ctrl+C and timeouts cancellable.
+            alive = await self.web.fetch_is_live.fetch_is_live_room_ids(room_id)
+            if len(alive) != 1 or type(alive[0]) is not bool:
+                raise AmbiguousSDKState()
+            if not alive[0]:
+                raise UserOfflineError()
+            return await super().start(room_id=room_id, fetch_live_check=False)
+
+        async def _parse_webcast_response_message(self, **kwargs):
+            events = await super()._parse_webcast_response_message(**kwargs)
+            if not events or all(type(event) is WebsocketResponseEvent for event in events):
+                # Upstream silently skips malformed known protobuf events.
+                raise AmbiguousSDKState()
+            return events
+
+        async def handle_custom_event(self, response, event):
+            if isinstance(event, ControlEvent):
+                if event.action == ControlAction.STREAM_ENDED:
+                    # The listener owns disconnect; upstream spawns an untracked
+                    # disconnect task here, racing our cleanup.
+                    return LiveEndEvent().parse(response.payload)
+                if event.action not in {
+                    ControlAction.STREAM_PAUSED, ControlAction.STREAM_UNPAUSED,
+                }:
+                    # Suspension and unrecognised control actions need a human.
+                    raise AmbiguousSDKState()
+            return await super().handle_custom_event(response, event)
+
+    client = ReadOnlyTikTokClient(
+        unique_id=unique_id,
+        web_kwargs={"httpx_kwargs": {"event_hooks": {"response": [check_response]}}},
+    )
+    client.ignore_broken_payload = True
+    client.parse_error_ignorelist = []
+    return client
+
+
 class Listener(Protocol):
     status: LiveStatus
 
@@ -38,6 +105,9 @@ class BaseListener:
     def set_state(self, state: LiveState, reason: str | None = None) -> None:
         self.status = self.status.model_copy(update={
             "state": state, "reason": reason,
+            "terminal_state": state if state in {
+                LiveState.ENDED, LiveState.OPERATOR_REQUIRED,
+            } else self.status.terminal_state,
             "updated_at": datetime.now(UTC),
         })
         logger.info("live_state", extra={"fields": self.status.model_dump(mode="json")})
@@ -94,6 +164,7 @@ class LiveListener(BaseListener):
         super().__init__(settings, queue, on_state)
         self.client_factory = client_factory
         self.halt = asyncio.Event()
+        self.connected = asyncio.Event()
         self.dropped_comments = 0
 
     def on_comment(self, event: Any) -> None:
@@ -116,56 +187,78 @@ class LiveListener(BaseListener):
 
     def on_connect(self, _: Any) -> None:
         if not self.halt.is_set():
+            self.connected.set()
             self.set_state(LiveState.CONNECTED)
 
     def on_disconnect(self, _: Any) -> None:
         if not self.halt.is_set():
-            self.set_state(LiveState.DISCONNECTED)
+            logger.info("sdk_disconnected", extra={"fields": {"event_type": "DisconnectEvent"}})
 
     def on_end(self, _: Any) -> None:
         self.halt.set()
         if self.status.state != LiveState.OPERATOR_REQUIRED:
-            self.set_state(LiveState.ENDED, "LIVE ended; no restart in stage one")
+            self.set_state(LiveState.ENDED, "LiveEndEvent")
 
     def on_security(self, event: Any) -> None:
         self.halt.set()
         self.set_state(LiveState.OPERATOR_REQUIRED, type(event).__name__)
 
     async def _session(self) -> None:
-        from TikTokLive import TikTokLiveClient
         from TikTokLive.events import (
             AccessControlEvent, CommentEvent, ConnectEvent, DisconnectEvent,
             LiveEndEvent, PerceptionEvent, RoomVerifyEvent, UnknownEvent,
+            UnauthorizedMemberEvent,
         )
 
-        factory = self.client_factory or TikTokLiveClient
+        factory = self.client_factory or create_sdk_client
         client = factory(unique_id=self.settings.tiktok_username)
-        for event, handler in (
-            (ConnectEvent, self.on_connect), (DisconnectEvent, self.on_disconnect),
-            (CommentEvent, self.on_comment), (LiveEndEvent, self.on_end),
-            (AccessControlEvent, self.on_security),
-            (RoomVerifyEvent, self.on_security),
-            (PerceptionEvent, self.on_security),
-            (UnknownEvent, self.on_security),
-        ):
-            client.add_listener(event, handler)
+        sdk_logger = getattr(client, "logger", None)
+        sdk_filter = SDKLogFilter()
+        if sdk_logger is not None:
+            sdk_logger.addFilter(sdk_filter)
         socket_task = None
         halt_task = None
+        connected_task = None
+        self.connected.clear()
         try:
+            for event, handler in (
+                (ConnectEvent, self.on_connect), (DisconnectEvent, self.on_disconnect),
+                (CommentEvent, self.on_comment), (LiveEndEvent, self.on_end),
+                (AccessControlEvent, self.on_security),
+                (RoomVerifyEvent, self.on_security),
+                (PerceptionEvent, self.on_security),
+                (UnauthorizedMemberEvent, self.on_security),
+                (UnknownEvent, self.on_security),
+            ):
+                client.add_listener(event, handler)
             # connect()/run()/close() in 7.0.1 invoke loop-wide cleanup.
             # start() gives us ownership of just this connection task.
             async with asyncio.timeout(self.settings.connect_timeout_seconds):
                 socket_task = await client.start()
-            halt_task = asyncio.create_task(self.halt.wait())
+                if not isinstance(socket_task, asyncio.Task):
+                    socket_task = None
+                    raise AmbiguousSDKState()
+                halt_task = asyncio.create_task(self.halt.wait(), name="live-halt")
+                connected_task = asyncio.create_task(self.connected.wait(), name="live-connected")
+                done, _ = await asyncio.wait(
+                    (socket_task, halt_task, connected_task),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if socket_task in done:
+                    await socket_task
+                    return
+                if halt_task in done:
+                    return
             done, _ = await asyncio.wait(
                 (socket_task, halt_task), return_when=asyncio.FIRST_COMPLETED,
             )
             if socket_task in done:
                 await socket_task
         finally:
-            if halt_task:
-                halt_task.cancel()
-                await asyncio.gather(halt_task, return_exceptions=True)
+            waiters = [task for task in (halt_task, connected_task) if task is not None]
+            for task in waiters:
+                task.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
             try:
                 async with asyncio.timeout(self.settings.shutdown_timeout_seconds):
                     await client.disconnect()
@@ -178,43 +271,72 @@ class LiveListener(BaseListener):
                     socket_task.cancel()
                 if socket_task:
                     await asyncio.gather(socket_task, return_exceptions=True)
+                # 7.0.1 does not put heartbeat cleanup in a finally block.
+                # Touch only the task owned by this particular SDK client.
+                ping_task = getattr(getattr(client, "_ws", None), "_ping_loop", None)
+                if isinstance(ping_task, asyncio.Task):
+                    ping_task.cancel()
+                    await asyncio.gather(ping_task, return_exceptions=True)
                 # Do not call client.close()/disconnect(close_client=True):
                 # upstream close() calls run_until_complete and cancels unrelated tasks.
                 try:
-                    async with asyncio.timeout(self.settings.shutdown_timeout_seconds):
-                        await client.web.close()
-                except Exception as exc:
-                    logger.warning("http_cleanup_failed", extra={
-                        "fields": {"error_type": type(exc).__name__},
-                    })
+                    closers = [("http_cleanup_failed", client.web.close)]
+                    # web.close() in 7.0.1 closes only TikTok HTTP, leaving
+                    # the lazily allocated signing-service HTTP pool open.
+                    signer = getattr(client.web, "signer", None)
+                    signer_sdk = getattr(signer, "sdk_client", None)
+                    sign_http = getattr(signer_sdk, "_async_client", None)
+                    if sign_http is not None:
+                        closers.append(("signer_cleanup_failed", sign_http.aclose))
+                    for event, close in closers:
+                        try:
+                            async with asyncio.timeout(self.settings.shutdown_timeout_seconds):
+                                await close()
+                        except Exception as exc:
+                            logger.warning(event, extra={
+                                "fields": {"error_type": type(exc).__name__},
+                            })
+                finally:
+                    if sdk_logger is not None:
+                        sdk_logger.removeFilter(sdk_filter)
 
     @staticmethod
     def retryable(exc: Exception) -> bool:
         import httpx
         from TikTokLive.client.errors import UserOfflineError
-        from websockets.exceptions import ConnectionClosed
+        from websockets.exceptions import ConnectionClosed, InvalidStatus
+        from websockets.legacy.exceptions import InvalidStatusCode
 
         # Unknown/security/signing errors deliberately require an operator.
         if isinstance(exc, httpx.HTTPStatusError):
             return exc.response.status_code in {500, 502, 503, 504}
+        if isinstance(exc, InvalidStatusCode):
+            return exc.status_code in {500, 502, 503, 504}
+        if isinstance(exc, InvalidStatus):
+            return exc.response.status_code in {500, 502, 503, 504}
+        if isinstance(exc, ConnectionClosed):
+            # Policy violations / unknown close states must not retry.
+            codes = [frame.code for frame in (exc.rcvd, exc.sent) if frame is not None]
+            return all(code in {1000, 1001, 1006, 1011, 1012, 1013} for code in codes)
         return isinstance(exc, (
-            UserOfflineError, httpx.TransportError, ConnectionClosed,
+            UserOfflineError, httpx.TransportError,
             ConnectionError, TimeoutError,
         ))
 
     async def run(self) -> None:
-        from TikTokLive.client.errors import UserOfflineError
-
         delay = self.settings.reconnect_initial_seconds
+        attempt = 0
+        self.set_state(LiveState.STARTING)
         try:
             while not self.halt.is_set():
                 self.set_state(LiveState.CONNECTING)
+                error_type = "DisconnectEvent"
                 try:
                     await self._session()
                     if self.halt.is_set():
                         return
-                    self.set_state(LiveState.DISCONNECTED)
                 except Exception as exc:
+                    error_type = type(exc).__name__
                     logger.error("listener_error", extra={
                         "fields": {"error_type": type(exc).__name__},
                     })
@@ -222,16 +344,22 @@ class LiveListener(BaseListener):
                         self.halt.set()
                         self.set_state(LiveState.OPERATOR_REQUIRED, type(exc).__name__)
                         return
-                    if isinstance(exc, UserOfflineError):
-                        self.set_state(LiveState.OFFLINE)
                 if self.halt.is_set():
                     return
-                self.set_state(LiveState.RETRYING, f"Retry in {delay:g}s")
+                if attempt >= self.settings.reconnect_max_attempts:
+                    self.halt.set()
+                    self.set_state(LiveState.OPERATOR_REQUIRED, "Reconnect attempts exhausted")
+                    return
+                attempt += 1
+                self.set_state(LiveState.RECONNECTING)
+                logger.warning("reconnect_scheduled", extra={"fields": {
+                    "attempt": attempt, "delay_seconds": delay, "error_type": error_type,
+                }})
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self.settings.reconnect_max_seconds)
         finally:
-            if self.status.state not in {LiveState.ENDED, LiveState.OPERATOR_REQUIRED}:
-                self.set_state(LiveState.STOPPED)
+            self.halt.set()
+            self.set_state(LiveState.STOPPED, self.status.reason)
 
 
 def create_listener(settings: Settings, queue: asyncio.Queue[Comment]) -> Listener:

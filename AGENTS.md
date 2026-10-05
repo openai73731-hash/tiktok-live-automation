@@ -1,8 +1,11 @@
 # Project scope and rules
 
-- Scope: stages one and two. Stage two is CommentProcessor, ReplySuggestion,
-  provider-independent AI Reply Engine, deterministic FakeAIReplyEngine, Russian
-  operator translations, knowledge configuration and business/safety validation.
+- Scope: stages one, two and Stage 3A are authorized and implemented. Stage two
+  provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
+  Engine, deterministic FakeAIReplyEngine, Russian operator translations,
+  knowledge configuration and business/safety validation. Stage 3A prepares
+  read-only real TikTok LIVE integration and diagnostics; the first manual
+  real LIVE smoke test remains an operator action, not a verified result.
 - The project accompanies OWN TikTok LIVE streams. A separate desktop trading
   program analyzes markets, opens trades and speaks about its actions. That
   trading system is external and MUST NOT be implemented or controlled here.
@@ -18,6 +21,20 @@
   CommentProcessor -> AI Reply Engine -> ReplySuggestion -> operator/future delivery.
   Keep AI independent of TikTokLive; provide a future OpenAI provider seam without
   an API key requirement or network/API implementation in this stage.
+- Stage 3A diagnostic pipeline: LiveListener -> LiveService -> CommentProcessor
+  -> FakeAIReplyEngine -> ReplySuggestion -> operator console/JSONL. The
+  --diagnostic flag requires real mode and forces the fake provider without
+  modifying YAML. Every suggestion still requires operator approval; none is sent.
+- Diagnostic runtime states: STARTING, CONNECTING, CONNECTED, RECONNECTING,
+  ENDED, NEED_OPERATOR, STOPPED. Preserve terminal_state after STOPPED and
+  exit code 2 for operator intervention. Reconnect uses bounded exponential
+  backoff and a finite attempt budget; log attempt, delay and error type only.
+- CAPTCHA, verification, security challenge, login/access restrictions, HTTP
+  403/429, signature errors and unknown/ambiguous SDK states require an operator
+  without retries or bypass. Ctrl+C must release this client's socket, heartbeat
+  and both HTTP pools without cancelling unrelated asyncio tasks or a traceback.
+- Real LIVE smoke tests are manual and only for the user's own stream. Do not
+  start a LIVE or use an account handle unless the user supplies and authorizes it.
 - Separate future control pipeline: LiveSupervisor -> AndroidController ->
   TikTok Android. AndroidController must not depend on AI; LiveSupervisor must
   depend on an AndroidController abstraction, not concrete device/UI code.
@@ -25,8 +42,9 @@
   security challenge, login request, unknown UI or ambiguous control state must
   enter NEED_OPERATOR and never trigger an attempted bypass. The existing
   listener's operator_required state expresses this requirement for LIVE input.
-- Do not implement comment sending, Android UI automation, LIVE restart,
-  frontend or a dashboard. Do not advance to stage three without user instruction.
+- Stage 3B/OpenAI API, Android automation, comment sending and LIVE restart
+  require a separate explicit user instruction. Frontend/dashboard remain out
+  of scope. Committing or pushing a completed stage never authorizes the next.
 - Python 3.12+, asyncio, FastAPI, Pydantic Settings, pytest. Avoid extra technologies.
 - Only backend/app/live/listener.py may import TikTokLive in production code.
   SDK contract tests may import it to verify the pinned API without network access.
@@ -50,3 +68,22 @@
 - .env, virtual environments and runtime logs stay outside version control.
 - Windows commands and configuration changes must be documented in README.md.
 - Run: python -m pytest; python -m app.main --mode fake (after editable install).
+
+## GitHub workflow
+
+- Official local workspace: C:\Users\user\Documents\tiktok-live-automation.
+- Official private repository: https://github.com/openai73731-hash/tiktok-live-automation.
+- Use the single origin remote with URL
+  https://github.com/openai73731-hash/tiktok-live-automation.git; default branch main.
+  Correct origin in place if needed; do not create a second remote.
+- Commits and pushes to this private repository are authorized. Before each push,
+  inspect git status, git diff and git diff --cached, and run the local venv's
+  python -m pytest -q, python -m pip check and python -m app.main --mode fake.
+  Push only after all checks succeed and the files being published are reviewed.
+- Never track or push .env, credentials, API keys, cookies, sessionid, access
+  tokens, runtime logs, .venv, __pycache__ or .pytest_cache. Review tracked and
+  staged contents for secrets; .env.example must contain placeholders only.
+- Never force-push main or delete remote branches. Never reset --hard published
+  history without separate explicit permission.
+- If GitHub requires authentication, stop and ask the user to confirm login;
+  do not bypass authentication or print credentials.

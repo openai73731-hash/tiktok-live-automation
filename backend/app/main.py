@@ -55,16 +55,20 @@ async def run_listener(settings: Settings) -> int:
     processor = create_processor(settings)
     service = LiveService(settings, on_comment=processor.handle)
     await service.run()
-    return 2 if service.status.state == LiveState.OPERATOR_REQUIRED else 0
+    return 2 if service.status.terminal_state == LiveState.OPERATOR_REQUIRED else 0
 
 
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Read-only TikTok LIVE listener")
     parser.add_argument("--mode", choices=("real", "fake"))
     parser.add_argument("--username", help="Your own TikTok handle")
+    parser.add_argument("--diagnostic", action="store_true", default=None,
+                        help="Manual real LIVE smoke test with FakeAIReplyEngine")
     parser.add_argument("--env-file", default=".env")
     args = parser.parse_args()
     overrides = {}
+    if args.diagnostic is not None:
+        overrides["diagnostic"] = args.diagnostic
     if args.mode:
         overrides["live_mode"] = args.mode
     if args.username:
