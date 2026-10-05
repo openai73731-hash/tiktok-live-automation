@@ -157,10 +157,9 @@ facts:
 ## Windows: установка
 
 Нужны Python 3.12+ и PowerShell. При установке Python включите Python Launcher.
-Команды выполняются из корня проекта; путь в первой строке замените на фактический.
+Откройте PowerShell в корне репозитория и выполните команды ниже.
 
 ```powershell
-Set-Location 'C:/dev/tiktok-live-automation'
 py -3.12 --version
 py -3.12 -m venv .venv
 & './.venv/Scripts/python.exe' -m pip install -e '.[dev]'
