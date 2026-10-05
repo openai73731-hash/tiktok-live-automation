@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from app.config import Settings
+from app.live.diagnostics import RoomLookupDiagnostics
 from app.live.models import Comment, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
 
@@ -28,16 +29,25 @@ class SDKLogFilter(logging.Filter):
         return False
 
 
-def create_sdk_client(*, unique_id: str) -> Any:
+def create_sdk_client(*, unique_id: str, diagnostic: bool = False) -> Any:
     """Small, version-pinned adapter; imported lazily so fake mode stays offline."""
     from TikTokLive import TikTokLiveClient
     from TikTokLive.client.errors import UserOfflineError
+    from TikTokLive.client.web.routes.fetch_room_id_live_html import FetchRoomIdLiveHTMLRoute
     from TikTokLive.events import ControlEvent, LiveEndEvent, WebsocketResponseEvent
     from TikTokLive.proto import ControlAction
 
+    diagnostics = RoomLookupDiagnostics(FetchRoomIdLiveHTMLRoute.SIGI_PATTERN) if diagnostic else None
+
     async def check_response(response):
+        if diagnostics and await diagnostics.observe_response(response):
+            # A challenge must stop even if stale embedded data has a room ID
+            # or the HTTP status would normally permit a transient retry.
+            raise AmbiguousSDKState()
         # Run before SDK routes can parse an error page or conceal its status.
         response.raise_for_status()
+        if diagnostics:
+            diagnostics.parsing()
 
     class ReadOnlyTikTokClient(TikTokLiveClient):
         async def start(self):
@@ -46,6 +56,8 @@ def create_sdk_client(*, unique_id: str) -> Any:
             room_id = int(await self.web.fetch_room_id_from_html(self.unique_id))
             if room_id <= 0:
                 raise AmbiguousSDKState()
+            if diagnostic:
+                logger.info("connection_stage", extra={"fields": {"request_stage": "live_check"}})
             # The SDK __call__ catches BaseException (including cancellation).
             # Use its underlying route to keep Ctrl+C and timeouts cancellable.
             alive = await self.web.fetch_is_live.fetch_is_live_room_ids(room_id)
@@ -53,6 +65,8 @@ def create_sdk_client(*, unique_id: str) -> Any:
                 raise AmbiguousSDKState()
             if not alive[0]:
                 raise UserOfflineError()
+            if diagnostic:
+                logger.info("connection_stage", extra={"fields": {"request_stage": "sdk_start"}})
             return await super().start(room_id=room_id, fetch_live_check=False)
 
         async def _parse_webcast_response_message(self, **kwargs):
@@ -81,6 +95,11 @@ def create_sdk_client(*, unique_id: str) -> Any:
     )
     client.ignore_broken_payload = True
     client.parse_error_ignorelist = []
+    if diagnostics:
+        # Instrument both existing routes; start() still calls HTML only.
+        # Wrapping the API route does NOT enable or probe the SDK fallback.
+        client.web.fetch_room_id_from_html = diagnostics.wrap("html", client.web.fetch_room_id_from_html)
+        client.web.fetch_room_id_from_api = diagnostics.wrap("api", client.web.fetch_room_id_from_api)
     return client
 
 
@@ -210,8 +229,13 @@ class LiveListener(BaseListener):
             UnauthorizedMemberEvent,
         )
 
-        factory = self.client_factory or create_sdk_client
-        client = factory(unique_id=self.settings.tiktok_username)
+        if self.client_factory:
+            client = self.client_factory(unique_id=self.settings.tiktok_username)
+        else:
+            client = create_sdk_client(
+                unique_id=self.settings.tiktok_username,
+                diagnostic=self.settings.diagnostic and self.settings.live_mode == "real",
+            )
         sdk_logger = getattr(client, "logger", None)
         sdk_filter = SDKLogFilter()
         if sdk_logger is not None:

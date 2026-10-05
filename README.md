@@ -35,7 +35,8 @@ OpenAI API key не требуется. Отправка комментарие�
 
 Stage 3A подготавливает ручную проверку существующего listener на собственном
 реальном LIVE: диагностический вывод, проверка контракта TikTokLive 7.0.1,
-ограниченные повторы и shutdown. Реальное подключение ещё не проверено.
+ограниченные повторы и shutdown. Первый ручной smoke test остановился на
+FailedParseRoomIdError; успешное реальное подключение пока не подтверждено.
 
 ## Второй этап: предложения ответа
 
@@ -337,6 +338,75 @@ FakeAIReplyEngine фразы требуют ручного перевода и �
 Не включайте raw/debug-логи SDK: они могут содержать секреты. Код HTTP и тип ошибки
 не требуют публикации URL запроса, cookies или полного exception payload.
 
+### Safe room ID diagnostics
+
+Только в real mode с `--diagnostic` появляются `room_lookup_started` и
+`room_lookup_result`. Дополнительных сетевых запросов диагностика не делает.
+Команда из PowerShell, уже открытого в корне репозитория:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m app.main --mode real --username "@ACCOUNT" --diagnostic
+```
+
+`room_lookup_strategy` — `html` или `api`; `request_stage` показывает последний
+достигнутый этап: `request_started`, `http_response`, `sdk_parse`, `lookup_complete`.
+Логируются `http_status`, `content_type`, `response_category`, `response_length`
+(число байт декодированного HTTP body), `redirect`, `parsed_room_id` и
+`exception_type`. До получения ответа неизвестные поля равны `null`.
+Content-Type нормализуется по белому списку MIME-типов; параметры заголовка
+отбрасываются, незнакомое значение заменяется на `other`, отсутствие — `missing`.
+
+Категории: `html`, `json`, `redirect`, `blocked_or_challenge`, `empty`, `unexpected`.
+`blocked_or_challenge` означает HTTP 401/403/429 или характерные HTML-маркеры
+проверки/логина. Это эвристический признак, а не доказательство CAPTCHA;
+отсутствие признака не доказывает безопасность ответа и не разрешает fallback.
+Обнаруженные HTML-маркеры проверки останавливают diagnostic lookup с
+`AmbiguousSDKState` → NEED_OPERATOR даже при наличии room ID или HTTP 503;
+повторов и перехода к другому endpoint не происходит.
+
+HTML-поля:
+
+- `expected_embedded_json_marker_found`: найден **точный** шаблон `SIGI_STATE`
+  установленного SDK, включая порядок атрибутов и формат тега;
+- `embedded_json_valid`: JSON внутри этого тега разобран;
+- `expected_room_id_marker_found`: в нём есть путь
+  `LiveRoom.liveRoomUserInfo.user.roomId`;
+- `parsed_room_id`: SDK-метод вернул положительный числовой ID. Сам ID не выводится.
+
+API-поля: `valid_json`, `data_present`, `user_present`, `room_id_field_present`
+для пути `data.user.roomId`, а также `parsed_room_id`. `data_present` и
+`user_present` означают наличие объектов ожидаемого типа. API-метод инструментирован
+и проверен без сети, но **автоматически после ошибки HTML не вызывается**.
+
+При исключении из room parser также выводятся `sdk_error_site`
+(`html.parse_room_id` или `api.parse_room_id`) и `sdk_error_line` — номер строки
+именно установленного пакета. Текст исключения, traceback, локальные переменные,
+body, headers, cookies, query parameters и URL не выводятся и не сохраняются
+диагностикой. После успешного lookup отдельный `connection_stage` показывает
+переход к `live_check`, затем к `sdk_start`.
+
+Разбор первого smoke test по установленному TikTokLive 7.0.1:
+
+- Наш `ReadOnlyTikTokClient.start()` сначала выполняет
+  `int(await self.web.fetch_room_id_from_html(self.unique_id))`. Вызванный
+  `FetchRoomIdLiveHTMLRoute.__call__()` передаёт HTML в `parse_room_id()`.
+  Именно там FailedParseRoomIdError выбрасывается при отсутствии точного
+  `SIGI_STATE`, невалидном JSON внутри него или отсутствующем/null `roomId`.
+  Старый лог содержит лишь тип исключения и не различает эти три ветки.
+- Оригинальный `TikTokLiveClient.start()` сначала пробует HTML, затем после
+  любого Exception, кроме UserOfflineError, вызывает API
+  `/api-live/user/room/`, читая `data.user.roomId`. API lookup не требует
+  browser cookies в интерфейсе вызова, но штатный fallback не проверяет,
+  была ли первоначальная ошибка security response.
+- Stage 3A отключил этот fallback. Поэтому изменение действительно может
+  мешать обычному lookup, если публичный HTML поменял формат, а API ещё работает.
+  Это подозрение, а не подтверждённая причина: успешный просмотр в браузере
+  не доказывает, что HTTP-клиент получил такой же ответ.
+- Live-check (`/webcast/room/check_alive/`) и `start(room_id=..., fetch_live_check=False)`
+  происходят только после HTML lookup. В первом smoke test до них не дошло.
+  Для различения смены HTML-формата и ограничения нужен повторный ручной тест
+  с безопасными полями; fallback и остальные стратегии пока не меняются.
+
 На этом этапе видны только сигналы, которые отдаёт библиотека. Диалоги Android
 и CAPTCHA на экране телефона не обнаруживаются: Android UI ещё не подключён.
 Никакого обхода проверок нет. Отсутствие LIVE не доказывает, что требуется перезапуск.
@@ -518,7 +588,7 @@ Comment → CommentProcessor → ReplySuggestion, последовательно
 Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12.0: **144 tests passed**; fake CLI выводит все три сообщения
+Проверено на Python 3.12.0: **168 tests passed**; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive
 есть два DeprecationWarning, связанных с websockets legacy API.
@@ -538,6 +608,7 @@ tiktok-live-automation/
 │   │   ├── logging_config.py
 │   │   ├── live/
 │   │   │   ├── __init__.py
+│   │   │   ├── diagnostics.py
 │   │   │   ├── listener.py
 │   │   │   ├── models.py
 │   │   │   └── service.py
@@ -558,6 +629,7 @@ tiktok-live-automation/
 │       ├── test_ai.py
 │       ├── test_config_models.py
 │       ├── test_diagnostic.py
+│       ├── test_room_lookup_diagnostics.py
 │       ├── test_listener.py
 │       ├── test_logging.py
 │       └── test_service.py
