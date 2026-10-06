@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     replay_scenario: ReplayScenarioName | None = None
     tiktok_username: str = ""
     diagnostic: bool = False
+    # Web UI is observation/Playground only unless LIVE is explicitly enabled.
+    admin_live_enabled: bool = False
     openai_api_key: SecretStr = Field(default=SecretStr(""), repr=False, exclude=True)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_dir: Path = Path("logs")

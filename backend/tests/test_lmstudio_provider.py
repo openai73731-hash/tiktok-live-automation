@@ -346,7 +346,7 @@ async def test_application_owns_local_client_lifecycle(config, transport, entry)
     if entry == "cli":
         assert await run_listener(config) == 0
     elif entry == "fastapi":
-        app = create_app(config)
+        app = create_app(config.model_copy(update={"admin_live_enabled": True}))
         async with app.router.lifespan_context(app):
             await asyncio.wait_for(app.state.live_task, 5)
     else:

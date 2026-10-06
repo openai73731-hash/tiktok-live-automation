@@ -13,7 +13,7 @@ class Comment(BaseModel):
     text: str = Field(min_length=1)
     # Local receipt time, in UTC; not an inferred TikTok server timestamp.
     timestamp: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
-    source: Literal["tiktok"] = "tiktok"
+    source: Literal["tiktok", "playground"] = "tiktok"
 
 
 class LiveState(StrEnum):

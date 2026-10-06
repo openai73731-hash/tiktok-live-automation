@@ -191,6 +191,7 @@ def create_replay_client(session, driver, *, operator_required):
 
 class Listener(Protocol):
     status: LiveStatus
+    on_state: StateCallback | None
 
     async def run(self) -> None: ...
 

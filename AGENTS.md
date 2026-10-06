@@ -1,6 +1,6 @@
 # Project scope and rules
 
-- Scope: stages one, two, Stage 3A, Stage 3B and Stage 3C are authorized and implemented. Stage two
+- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C and Stage 4A are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A is VERIFIED
@@ -9,6 +9,28 @@
   CommentProcessor/FakeAI ReplySuggestion, ignored UnknownEvent, LiveEndEvent,
   ENDED -> STOPPED. Stage 3B implements OpenAI; paid API quality/access remains
   unverified until the operator runs the separate manual AI smoke test.
+- Stage 4A implements a local operator Admin UI served by this FastAPI backend:
+  HTML/CSS/vanilla JavaScript only, no CDN/npm/frontend server. Bind only to
+  127.0.0.1; loopback peer/Host, same-origin JSON and per-lifespan CSRF guards apply.
+  Never publish it or forward the port. API/SSE use explicit UI projections;
+  never serialize Settings, keys, cookies, provider/SDK payloads or runtime logs.
+  Business logic, approved knowledge, composition and safety remain backend-side.
+  ADMIN_LIVE_ENABLED defaults false: web startup creates no listener and makes
+  no AI calls. Enabling LIVE is an explicit startup action; CLI behavior is unchanged.
+  Playground uses the production factory/processor/engine/safety pipeline with
+  its own long-lived processor, lazy client and bounded history of 100 results.
+  LIVE has a separate processor/history of 50; Playground never produces LIVE
+  comments. Lifespan closes both processors and only their owned tasks.
+  AdminEventBus fan-out is nonblocking, bounded to 16 subscribers/32 events each;
+  overflow requests history resync, reconnect reads bounded histories, disconnect
+  releases subscriptions. Histories/counters exist only in this server process.
+  LM Studio health is an explicit cached GET models check, never generation.
+  OpenAI status never makes paid requests; each explicit Playground analysis
+  requires confirmation. Automated tests mock both providers.
+  MANUAL is fixed; COPY REPLY writes only to the operator clipboard. SEND and
+  AUTOMATIC are disabled. No TikTok delivery, sent state, Android or restart is
+  implemented. Future SEND/AUTO require separate explicit authorization and
+  backend delivery/eligibility design; ready still requires human approval.
 - Stage 3C adds LMStudioReplyEngine through the same AIReplyEngine/factory contract.
   Configuration selects provider/model; fake remains default. LM Studio is trusted
   only as a loopback local provider: http, explicit port, /v1, literal 127.0.0.1,
@@ -143,7 +165,7 @@
   enter NEED_OPERATOR and never trigger an attempted bypass. The existing
   listener's operator_required state expresses this requirement for LIVE input.
 - Android automation, comment sending, LIVE restart and additional provider adapters
-  require a separate explicit user instruction. Frontend/dashboard remain out
+  require a separate explicit user instruction. Public/remote admin remains out
   of scope. Committing or pushing a completed stage never authorizes the next.
 - Python 3.12+, asyncio, FastAPI, Pydantic Settings, pytest. Avoid extra technologies.
 - Only backend/app/live/listener.py may import TikTokLive in production code.

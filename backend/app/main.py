@@ -5,7 +5,10 @@ import logging
 from typing import get_args
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from starlette.responses import JSONResponse
+from starlette.staticfiles import StaticFiles
 from pydantic import ValidationError
 import yaml
 
@@ -15,6 +18,10 @@ from app.config import ReplayScenarioName, Settings
 from app.live.models import Comment, LiveState
 from app.live.service import LiveService
 from app.logging_config import LOGGER_NAME, configure_logging
+from app.admin.events import AdminEventBus
+from app.admin.router import ASSETS, router as admin_router
+from app.admin.security import LocalAdminMiddleware, SECURITY_HEADERS
+from app.admin.service import AdminService, PlaygroundService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -22,30 +29,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI):
         config = settings or Settings()
         configure_logging(config)
-        processor = create_processor(config)
-        service = LiveService(config, on_comment=processor.handle)
-        application.state.comment_processor = processor
-        application.state.live_service = service
-        task = asyncio.create_task(service.run(), name="live-service")
-        application.state.live_task = task
+        playground_config = config.model_copy(update={
+            "live_mode": "fake", "diagnostic": False, "replay_scenario": None,
+            "tiktok_username": "",
+        })
+        events = AdminEventBus()
+        playground = PlaygroundService(create_processor(playground_config), events)
+        admin = AdminService(config, playground, events)
+        application.state.admin = admin
+        application.state.playground_service = playground
+        processor = service = task = None
         try:
+            if config.admin_live_enabled:
+                processor = create_processor(config)
+
+                async def handle(comment):
+                    return await admin.handle_live(comment, processor)
+
+                service = LiveService(config, on_comment=handle, on_status=admin.on_live_state)
+                admin.live_service = service
+                admin.live_status = service.status
+                task = asyncio.create_task(service.run(), name="live-service")
+            application.state.comment_processor = processor
+            application.state.live_service = service
+            application.state.live_task = task
             yield
         finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            await processor.aclose()
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            if processor is not None:
+                await processor.aclose()
+            await admin.aclose()
 
-    application = FastAPI(title="TikTok LIVE Assistant", lifespan=lifespan)
+    application = FastAPI(title="TikTok LIVE Assistant", lifespan=lifespan,
+                          docs_url=None, redoc_url=None, openapi_url=None)
+    application.add_middleware(LocalAdminMiddleware)
+    application.include_router(admin_router)
+    application.mount("/ui/assets", StaticFiles(directory=ASSETS), name="admin-assets")
+
+    @application.exception_handler(RequestValidationError)
+    async def invalid_input(request: Request, exc: RequestValidationError):
+        # Pydantic's default errors echo input; browser responses must not.
+        return JSONResponse({"error": "invalid_input", "detail": "Проверьте текст и параметры запроса."}, status_code=422)
+
+    @application.exception_handler(Exception)
+    async def safe_error(request: Request, exc: Exception):
+        logging.getLogger(LOGGER_NAME).error("admin_request_failed", extra={
+            "fields": {"error_type": type(exc).__name__},
+        })
+        return JSONResponse({"error": "operation_failed", "detail": "Операция не выполнена. Требуется оператор."},
+                            status_code=500, headers=SECURITY_HEADERS)
 
     @application.get("/health")
     async def health():
         service = application.state.live_service
         task = application.state.live_task
-        failed = task.done() and not task.cancelled() and task.exception() is not None
+        failed = task is not None and task.done() and not task.cancelled() and task.exception() is not None
         return {
             "status": "error" if failed else "ok",
-            "listener_running": not task.done(),
-            "live": service.status.model_dump(mode="json"),
+            "listener_running": task is not None and not task.done(),
+            "live": (service.status if service is not None else application.state.admin.live_status).model_dump(mode="json"),
         }
 
     return application

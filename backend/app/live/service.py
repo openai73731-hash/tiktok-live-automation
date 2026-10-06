@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from app.config import Settings
-from app.live.listener import Listener, create_listener
+from app.live.listener import Listener, StateCallback, create_listener
 from app.live.models import Comment, LiveStatus
 from app.logging_config import LOGGER_NAME
 
@@ -15,9 +15,20 @@ CommentCallback = Callable[[Comment], Awaitable[object]]
 class LiveService:
     def __init__(
         self, settings: Settings, *, on_comment: CommentCallback | None = None,
+        on_status: StateCallback | None = None,
     ) -> None:
         self.queue: asyncio.Queue[Comment] = asyncio.Queue(maxsize=settings.queue_size)
         self.listener: Listener = create_listener(settings, self.queue)
+        if on_status:
+            previous = self.listener.on_state
+
+            def state_changed(status: LiveStatus) -> None:
+                # Replay keeps its own state audit callback.
+                if previous:
+                    previous(status)
+                on_status(status)
+
+            self.listener.on_state = state_changed
         self.on_comment = on_comment
         self._running = False
 

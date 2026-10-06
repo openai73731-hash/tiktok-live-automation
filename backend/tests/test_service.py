@@ -44,10 +44,10 @@ async def test_service_cancel_leaves_no_owned_tasks(settings):
 
 
 async def test_fastapi_lifespan_and_health(settings, tmp_path):
-    app = create_app(settings.model_copy(update={"log_dir": tmp_path}))
+    app = create_app(settings.model_copy(update={"log_dir": tmp_path, "admin_live_enabled": True}))
     async with app.router.lifespan_context(app):
         await asyncio.wait_for(app.state.live_task, 1)
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://local") as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as client:
             response = await client.get("/health")
         assert response.status_code == 200
         assert response.json()["live"]["mode"] == "fake"
@@ -65,4 +65,3 @@ def test_sdk_import_boundary():
                 assert not (node.module or "").startswith("TikTokLive"), str(file)
             if isinstance(node, ast.Import):
                 assert all(not item.name.startswith("TikTokLive") for item in node.names), str(file)
-

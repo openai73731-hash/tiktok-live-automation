@@ -53,6 +53,8 @@ smoke test собственного @antilame подтвердил room lookup, 
 интеграция проверена mock-транспортом, качество и доступ к платному API ещё не подтверждены.
 Stage 3C добавляет локальный LM Studio provider с отдельным строгим анализом,
 детерминированными короткими ответами и ограниченным переводом утверждённого текста.
+Stage 4A реализует локальную операторскую панель FastAPI и AI Playground.
+MANUAL фиксирован; COPY копирует ответ, SEND/AUTOMATIC отключены.
 
 ## Второй этап: предложения ответа
 
@@ -604,12 +606,126 @@ ready означает прохождение технических прове�
 Надёжность intent/comment translation и переводов новых языков остаётся ограничением;
 запуск AUTO на основании этих smoke-результатов не разрешён.
 
-## Будущие UI, MANUAL/AUTOMATIC и доставка (только проектирование)
+## Stage 4A: локальная операторская панель и AI Playground
 
-Следующий UI может быть локальным web-интерфейсом на текущем FastAPI, позже —
-desktop shell. Сейчас frontend не реализован. Карточка должна показывать username,
-timestamp, original comment, русский перевод, готовый reply на языке зрителя,
-русский перевод reply, intent, fact_ids и status.
+**Stage 4A IMPLEMENTED.** Панель работает в этом же FastAPI: локальные HTML/CSS/
+vanilla JavaScript, тёмная русская тема, четыре раздела — Обзор, Комментарии LIVE,
+AI Playground, Система и настройки. Не нужны npm, отдельный frontend server,
+CDN или внешние шрифты. Assets включены в Python package.
+
+Запуск из официальной рабочей директории в PowerShell:
+
+```powershell
+Set-Location 'C:\Users\user\Documents\tiktok-live-automation'
+$env:LIVE_MODE = 'fake'
+$env:ADMIN_LIVE_ENABLED = 'false'
+$env:PROJECT_CONFIG_PATH = 'config/project.yaml'
+& './.venv/Scripts/python.exe' -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers --timeout-graceful-shutdown 5
+```
+
+Откройте [http://127.0.0.1:8000/ui/](http://127.0.0.1:8000/ui/).
+Корень `/` перенаправляет туда. `/health` сохраняет status/listener_running/live;
+`ok` означает работающий backend, а не активный эфир или доступный AI.
+По умолчанию `ADMIN_LIVE_ENABLED=false`: сервер не создаёт TikTok listener,
+не подключается к эфиру и не генерирует комментарии через AI при загрузке страницы.
+CLI `python -m app.main --mode fake/real/replay` работает как прежде, этот web-флаг
+на CLI не влияет.
+
+Для Playground с LM Studio остановите сервер через Ctrl+C и запустите:
+
+```powershell
+$env:LIVE_MODE = 'fake'
+$env:ADMIN_LIVE_ENABLED = 'false'
+$env:PROJECT_CONFIG_PATH = 'config/project.lmstudio.yaml'
+& './.venv/Scripts/python.exe' -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers --timeout-graceful-shutdown 5
+```
+
+Сначала запустите LM Studio Local Server и выберите настроенный `qwen/qwen3-8b`.
+Кнопка «Проверить AI» вызывает существующий safe model discovery `GET /v1/models`:
+проверяет доступность сервера/наличие точного model ID, кеширует результат на 30 секунд.
+Она не генерирует текст; список моделей может включать доступные для JIT загрузки,
+поэтому generation access/качество проверяются отдельным анализом. Загрузка страницы
+и `/api/admin/ai/status` читают кеш, без запросов к provider. OpenAI status не делает
+платных запросов; каждый ручной анализ OpenAI требует отдельного checkbox-подтверждения.
+Набор из девяти примеров отключён для OpenAI.
+
+В Playground введите текст или нажмите пример, затем «Анализировать».
+Пример только заполняет input. «Прогнать набор» явно выполняет девять запросов
+последовательно; остановка завершает текущий запрос и прекращает следующие.
+Таблица показывает язык, intent, статус, ответ и duration без автоматической оценки
+смысла. Fake остаётся конечным fixture engine: произвольный текст и многие пресеты
+честно дадут `needs_operator`, а не имитацию универсального LLM.
+
+Playground использует production `create_processor → CommentProcessor → AIReplyEngine
+→ composer → ReplySafetyPolicy → ReplySuggestion`. Отдельный долгоживущий processor
+переиспользует один lazy async client; shutdown/cancellation освобождает его.
+Каждый input — внутренний `Comment(source="playground", username="playground")`.
+Playground не создаёт listener, не использует TikTok и не добавляет тесты в LIVE
+history/счётчики. LIVE processor и его клиент отдельные; diagnostic/replay сохраняют
+свой Fake provider, а Playground использует provider из выбранного YAML.
+
+Обзор показывает backend/uptime, состояния TikTok и LIVE active/inactive/unknown,
+provider/model, доступность AI/model found/last check, очередь, результаты LIVE и
+число Playground проверок. Fake/replay не считаются реальным ACTIVE LIVE.
+Карточка показывает username/время/source, оригинал/язык, русский перевод комментария,
+ответ на языке зрителя и русский перевод ответа, intent/fact IDs/provider/model,
+статус, reason, duration, `requires_approval`, `translation_requires_review` и
+`auto_send_eligible`. При constrained translation заметно отдельное предупреждение.
+
+**COPY REPLY** копирует текст в clipboard только по нажатию оператора; feedback
+подтверждает копирование. В TikTok ничего не отправляется. **SEND disabled**:
+`Delivery: NOT CONFIGURED`; отправляющего endpoint/ReplySender нет, статуса SENT нет.
+**MANUAL** фиксирован, **AUTOMATIC disabled** до отдельного этапа ReplySender,
+дедупликации, cooldown/rate limits, delivery health и eligibility gates.
+READY означает техническую проверку: смысл и перевод всё равно проверяет оператор.
+
+SSE `/api/admin/events` раздаёт только typed UI events из bounded AdminEventBus,
+без SDK/provider responses. Producers не ждут browser: максимум 16 вкладок по
+32 события; у медленной вкладки старое событие удаляется и передаётся resync.
+Вкладка восстанавливает последние 50 LIVE и 100 Playground результатов через
+read-only API; disconnect освобождает подписчика, heartbeat/reconnect не запускают AI.
+Истории и счётчики хранятся в памяти одного процесса и сбрасываются при перезапуске;
+это не delivery audit и не гарантия получения каждого промежуточного события.
+
+Settings — явный allowlist product/platform/stream/AI/limits/loopback URL только для
+чтения. Provider/model/base URL из browser не меняются. Изменения YAML требуют
+перезапуска сервера. UI/API не отдают `.env`, keys, cookies, payloads и log files;
+ошибки input/provider редактируются, текст зрителя выводится через `textContent`.
+Сервер ограничивает request/comment size, разрешает только loopback peer/Host,
+проверяет Origin и JSON POST с ephemeral CSRF token. Это локальная граница,
+не система login: не публикуйте сервер, не открывайте LAN/public bind и port forwarding.
+Используйте один worker; graceful shutdown ограничен, чтобы открытый SSE не мешал Ctrl+C.
+
+Для демонстрации LIVE cards через fake (без TikTok) перед запуском сервера:
+
+```powershell
+$env:LIVE_MODE = 'fake'
+$env:PROJECT_CONFIG_PATH = 'config/project.yaml'
+$env:ADMIN_LIVE_ENABLED = 'true'
+$env:FAKE_REPEAT = 'false'
+```
+
+Будет один конечный поток из трёх комментариев. Для собственного real LIVE ввод
+включается тем же флагом после ручной настройки `LIVE_MODE=real` и собственного
+`TIKTOK_USERNAME` по инструкции ниже. Запуск real listener в Stage 4A агентом
+не выполняется; разрешение на UI smoke не разрешает real LIVE/платный API.
+
+Ручной local UI smoke 2026-10-06 с qwen/qwen3-8b: model discovery AVAILABLE/found;
+`Is bot trading automatically?` → READY, `It opens trades automatically.`;
+`Hello guys!` → SKIPPED; `What is your win rate?` → READY/no_promises,
+`Profit is not guaranteed and trading involves risk.` без выдуманного процента.
+COPY feedback, read-only настройки, загрузка истории после reload и disabled
+SEND/AUTOMATIC проверены в browser. LIVE counters остались 0, Playground — 3;
+`/health` ok/listener_running=false. Console ошибок не показала. Responsive layout
+проверен на широком desktop и узком viewport. В переводе win-rate комментария
+Qwen дал грамматически неверное «Какая у вас процент успешных сделок?» — это
+ограничение качества модели, не доказательство надёжного машинного перевода.
+Тестовый web-сервер после проверки остановлен; реальные LIVE/paid API не запускались.
+
+## Будущие MANUAL/AUTOMATIC и доставка (только проектирование)
+
+Stage 4A уже даёт локальный web-интерфейс с карточками и COPY. Будущий desktop shell
+и физическая доставка требуют отдельного этапа.
 
 MANUAL: comment → AI → safe prepared reply → UI → оператор SEND/SKIP → ReplySender.
 Manual означает выбор готового ответа, а не ручной набор текста. Опциональный
@@ -636,8 +752,8 @@ CAPTCHA, Verify, login request и неожиданный/неизвестный 
 Продолжение возможно только после подтверждённого нормального состояния. История
 должна сохранять comment/translation/reply/reply translation, provider/model/intent/
 fact IDs, manual/auto, sent/skipped, timestamp и delivery status без секретов.
-UI, sender, AUTO gates и Android остаются документированными будущими этапами;
-Stage 3C их не реализует.
+Sender, AUTO gates и Android остаются документированными будущими этапами;
+Stage 4A их не реализует.
 
 ## Собственный реальный LIVE
 
@@ -1002,7 +1118,10 @@ TikTokLive → LiveListener ──────┐
                                                             ↓
                                                      ReplySuggestion
                                                             ↓
-                                                     оператор / логи
+                                               оператор / Admin UI / логи
+
+Playground (без TikTok) → отдельный CommentProcessor → ReplySuggestion
+LIVE / Playground → typed AdminEventBus → SSE → локальный browser
 
 Будущий независимый контур (ещё не реализован):
 LiveSupervisor → AndroidController (абстракция) → TikTok Android
@@ -1014,7 +1133,7 @@ main.py подключает CommentProcessor.handle через этот callbac
 не знает ни provider, ни knowledge base. AI-модули не импортируют TikTok SDK.
 
 Comment: username, опциональный строковый user_id, text, timezone-aware timestamp,
-source="tiktok". Timestamp — время получения локальным приложением в UTC.
+source="tiktok" (Playground: source="playground"). Timestamp — время получения локальным приложением в UTC.
 В 7.0.1 используем user.display_id, user.id и event.content. Если display_id
 отсутствует, показывается nickname; user_id=0 трактуется как отсутствующий ID.
 
@@ -1024,10 +1143,10 @@ source="tiktok". Timestamp — время получения локальным 
 следующие комментарии продолжают обрабатываться. Доставка не является надёжной
 очередью сообщений: при Ctrl+C оставшиеся элементы могут быть не обработаны.
 
-FastAPI предоставляет только основу backend и GET /health:
+FastAPI раздаёт Admin UI, `/api/admin/*` и совместимый GET /health:
 
 ```powershell
-& './.venv/Scripts/python.exe' -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+& './.venv/Scripts/python.exe' -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers --timeout-graceful-shutdown 5
 ```
 
 В другом PowerShell:
@@ -1036,7 +1155,8 @@ FastAPI предоставляет только основу backend и GET /hea
 Invoke-RestMethod 'http://127.0.0.1:8000/health'
 ```
 
-Lifespan запускает LiveService и останавливает его при завершении сервера.
+Lifespan создаёт Playground; при явном ADMIN_LIVE_ENABLED=true также запускает
+LiveService и останавливает его при завершении сервера.
 health содержит listener_running и live.state; status=ok означает работоспособность
 backend, а не наличие эфира. После конечного fake-прогона сервер остаётся доступен,
 но listener_running=false. Для длительной разработки задайте FAKE_REPEAT=true.
@@ -1120,11 +1240,16 @@ Stage 3C проверяет LM Studio через mock HTTP: loopback URLs и з�
 output, source-bound templates, en/ru/es и отдельный перевод de/fr/zh/ja, style/financial
 gates, error isolation, timeout и закрытие lazy клиента в CLI/FastAPI/cancellation.
 Тестам не нужен запущенный LM Studio; качество модели проверяется отдельно вручную.
+Stage 4A проверяет local Host/peer/Origin/CSRF/JSON/body guards, безопасные UI projections,
+assets и generic errors, отсутствие AI/LIVE при загрузке, production Playground,
+отдельное подтверждение OpenAI, cached model discovery, client reuse/cleanup,
+раздельные bounded истории, busy/cancellation, bounded fan-out/resync и настоящий
+ASGI SSE disconnect. Всё provider HTTP — in-memory mock, без paid/local server.
 
 Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12.0: **478 tests passed**; все 10 replay-сценариев отдельно
+Проверено на Python 3.12.0: **529 tests passed**; все 10 replay-сценариев отдельно
 запущены через CLI и завершились с PASS; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive
@@ -1143,6 +1268,8 @@ tiktok-live-automation/
 │   │   ├── main.py
 │   │   ├── config.py
 │   │   ├── logging_config.py
+│   │   ├── admin/ (models, events, service, security, router)
+│   │   ├── static/admin/ (index.html, styles.css, app.js)
 │   │   ├── live/
 │   │   │   ├── __init__.py
 │   │   │   ├── diagnostics.py
@@ -1169,6 +1296,7 @@ tiktok-live-automation/
 │   └── tests/
 │       ├── conftest.py
 │       ├── test_ai.py
+│       ├── test_admin.py
 │       ├── test_lmstudio_provider.py
 │       ├── test_openai_provider.py
 │       ├── test_config_models.py

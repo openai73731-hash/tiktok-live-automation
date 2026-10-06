@@ -28,6 +28,9 @@ tiktok-live = "app.main:cli"
 where = ["backend"]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+app = ["static/admin/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 pythonpath = ["backend"]
