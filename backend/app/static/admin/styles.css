@@ -1338,3 +1338,24 @@ tbody tr:focus-visible {
     transition:none!important;
   }
 }
+[hidden] { display: none !important; }
+.quality-tabs, .quality-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
+.quality-tabs button[aria-pressed="true"] { border-color: var(--accent, #8b9cff); color: #c5ceff; }
+.quality-header { margin-bottom: 20px; }
+.quality-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.quality-value { display: block; margin-top: 12px; font-size: 18px; overflow-wrap: anywhere; }
+.quality-breakdown { display: grid; grid-template-columns: 1fr 2fr; gap: 24px; }
+.quality-table { min-width: 980px; }
+.quality-table td { vertical-align: top; }
+.quality-table td:nth-child(2) { min-width: 190px; max-width: 260px; }
+.quality-details { margin-top: 12px; }
+.quality-detail-content { width: min(500px, 75vw); margin-top: 18px; }
+.quality-checks { font-size: 12px; }
+.quality-checks > div { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0; }
+.quality-review { display: grid; gap: 12px; margin-top: 16px; }
+.quality-review select { display: block; width: 100%; padding: 10px; margin-top: 7px; color: inherit; background: #161c2a; border: 1px solid #354055; border-radius: 7px; }
+.quality-review textarea { margin-top: 7px; }
+.good-text { color: #8cd5b0; }
+.warning-text { color: #edba7d; }
+summary { cursor: pointer; }
+@media (max-width: 700px) { .quality-summary, .quality-breakdown { grid-template-columns: 1fr; } }

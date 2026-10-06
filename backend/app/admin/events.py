@@ -5,11 +5,13 @@ from dataclasses import dataclass, field
 import json
 
 from app.admin.models import AIStatus, CommentView, LiveReplyEvent, LiveView, PlaygroundResultEvent
+from app.quality.models import QualityUpdate
 
 PAYLOAD_TYPES = {
     "live_state": LiveView, "comment_received": CommentView,
     "reply_suggestion": LiveReplyEvent, "ai_status": AIStatus,
     "playground_result": PlaygroundResultEvent,
+    "quality_update": QualityUpdate,
 }
 
 

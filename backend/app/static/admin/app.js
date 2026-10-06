@@ -4,6 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const state = {connected: false, busy: false, suite: false, stopSuite: false, csrf: null,
     settings: null, status: null, presets: [], history: new Map(), live: new Map(), stream: null};
+  let quality;
   const providerName = (name) => ({fake: "Fake · фикстуры", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
   const liveName = (value) => value === "operator_required" ? "NEED_OPERATOR" : String(value).toUpperCase();
   const statusName = (value) => ({ready: "READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
@@ -119,15 +120,16 @@
     updateControls();
   }
   function updateControls() {
+    quality?.controls();
     const configured = Boolean(state.settings && state.connected && state.csrf);
     const value = $("comment-input").value;
     const limit = state.settings?.max_comment_chars || 1000;
     text("char-count", `${Array.from(value).length} / ${limit}`);
     const paidAllowed = state.settings?.provider !== "openai" || $("allow-paid").checked;
-    $("analyze-button").disabled = !configured || state.busy || !value.trim() || Array.from(value).length > limit || !paidAllowed;
+    $("analyze-button").disabled = !configured || state.busy || quality?.active() || !value.trim() || Array.from(value).length > limit || !paidAllowed;
     $("comment-input").disabled = state.busy;
     $("allow-paid").disabled = state.busy;
-    $("run-test-set").disabled = !configured || state.busy || state.settings?.provider === "openai";
+    $("run-test-set").disabled = !configured || state.busy || quality?.active() || state.settings?.provider === "openai";
     $("check-ai").disabled = !configured || state.checking;
     document.querySelectorAll(".preset-button").forEach((button) => { button.disabled = state.busy; });
     $("analyze-button").classList.toggle("loading", state.busy);
@@ -221,6 +223,7 @@
     state.history = new Map(history.map((record) => [record.id, record])); trimMap(state.history, 100); renderHistory();
     state.live = new Map(live.map((record) => [record.id, record])); trimMap(state.live, 50); renderLive();
     setConnected(true);
+    await quality.refresh();
   }
   function connectEvents() {
     if (state.stream) return;
@@ -231,6 +234,7 @@
     stream.onopen = () => { refresh().catch(() => setConnected(false)); };
     stream.onerror = () => setConnected(false);
     receive("snapshot", renderStatus);
+    receive("quality_update", quality.apply);
     receive("live_state", renderLiveStatus);
     receive("ai_status", renderAI);
     receive("reply_suggestion", (value) => { state.live.set(value.record.id, value.record); trimMap(state.live, 50); renderLive(); renderMetrics(value.metrics); });
@@ -238,6 +242,7 @@
     receive("playground_result", (value) => { remember(value.record); if (state.status) state.status.playground_processed = value.processed; text("playground-count", value.processed); });
     receive("resync", () => { refresh().catch(() => setConnected(false)); });
   }
+  quality = window.createQualityLab({api, node, replyCard, toast, state, updateControls});
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => openPage(button.dataset.page)));
   document.querySelectorAll("[data-open]").forEach((button) => button.addEventListener("click", () => openPage(button.dataset.open)));
   $("comment-input").addEventListener("input", updateControls); $("allow-paid").addEventListener("change", updateControls);

@@ -1,6 +1,6 @@
 # Project scope and rules
 
-- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C and Stage 4A are authorized and implemented. Stage two
+- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A and Stage 4A.1 are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A is VERIFIED
@@ -31,6 +31,33 @@
   AUTOMATIC are disabled. No TikTok delivery, sent state, Android or restart is
   implemented. Future SEND/AUTO require separate explicit authorization and
   backend delivery/eligibility design; ready still requires human approval.
+- Stage 4A.1 adds Quality Lab under AI Playground. The canonical 75-case corpus
+  is config/ai_quality_cases.yaml (JSON syntax, valid YAML); case IDs/expectations
+  are version-controlled and validated against approved knowledge. Runtime
+  results/manual review remain in memory, never written into the corpus.
+  Runs use the same Playground processor/client and hold its lock for the
+  entire sequential run. OpenAI is forbidden, even with paid confirmation;
+  enabled LIVE input disables Quality Lab to avoid concurrent inference.
+  No listener is created by Quality Lab. Start only through explicit RUN ALL;
+  reading snapshots/reconnecting never calls AI. STOP finishes the current
+  case then prevents the next; shutdown cancels only the owned runner before
+  closing the processor/client, including cancellation before its first step.
+  Retain only the latest bounded run; SSE progress uses allowlisted models.
+  Exports are explicit browser JSON downloads, not persistence or audit.
+  Deterministic checks measure curated-case agreement, fact SET exact match,
+  retained approved source/template binding, lexical/style/length restrictions,
+  language detection and technical status; they do not prove semantic translation
+  fidelity. Constrained translation evidence is checked by production policy;
+  the final suggestion retains source binding/review flags, not that evidence.
+  Provider failure has a static processing_error category so an expected
+  abstention cannot accidentally PASS an unavailable provider. Errors never
+  expose request/exception bodies. Critical classification/fact/claim/safety
+  failures remain distinct from manual translation/naturalness grades.
+  Awkward Russian grammar with correct meaning is operator-facing quality;
+  wrong meaning, reply language or financial promises still require attention.
+  Human grades never alter deterministic PASS. Tests use mocked providers only.
+  A separate manual localhost Qwen run is authorized for this stage; never use
+  real TikTok or paid OpenAI. Do not tune prompts before reviewing measurements.
 - Stage 3C adds LMStudioReplyEngine through the same AIReplyEngine/factory contract.
   Configuration selects provider/model; fake remains default. LM Studio is trusted
   only as a loopback local provider: http, explicit port, /v1, literal 127.0.0.1,

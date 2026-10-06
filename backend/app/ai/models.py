@@ -62,6 +62,7 @@ class ReplySuggestion(BaseModel):
     template_id: str | None = None
     translation_source: Literal["approved", "constrained"] = "approved"
     translation_requires_review: bool = False
+    processing_error: Literal["provider_error"] | None = None
     # Delivery health/deduplication are not implemented, so eligibility is false.
     auto_send_eligible: Literal[False] = False
     # A ready suggestion has NEVER been approved or sent.
@@ -70,6 +71,8 @@ class ReplySuggestion(BaseModel):
 
     @model_validator(mode="after")
     def validate_state(self) -> Self:
+        if self.processing_error and self.status != "needs_operator":
+            raise ValueError("Processing errors require operator intervention")
         if self.should_reply:
             if self.status != "ready" or not all((
                 self.suggested_reply, self.reply_translation, self.operator_translation,

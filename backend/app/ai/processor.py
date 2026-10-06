@@ -45,10 +45,10 @@ class CommentProcessor:
             "operator_translation": None,
         }
 
-        def abstain(reason: str, status: str = "needs_operator") -> ReplySuggestion:
+        def abstain(reason: str, status: str = "needs_operator", *, processing_error=None) -> ReplySuggestion:
             return ReplySuggestion(
                 **base, should_reply=False, suggested_reply=None,
-                reply_translation=None, reason=reason, status=status,
+                reply_translation=None, reason=reason, status=status, processing_error=processing_error,
             )
 
         if len(comment.text) > self.project.ai.max_comment_chars:
@@ -75,8 +75,8 @@ class CommentProcessor:
                 "duration_ms": round((perf_counter() - started) * 1000), "status": "needs_operator",
             }})
             if isinstance(exc, ProviderNotConfiguredError):
-                return abstain("Provider не настроен: задайте его API key в окружении.")
-            return abstain("Не удалось подготовить ответ; требуется оператор.")
+                return abstain("Provider не настроен: задайте его API key в окружении.", processing_error="provider_error")
+            return abstain("Не удалось подготовить ответ; требуется оператор.", processing_error="provider_error")
         base.update(
             detected_language=draft.detected_language,
             operator_translation=draft.operator_translation,

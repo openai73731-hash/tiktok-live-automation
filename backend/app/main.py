@@ -22,6 +22,8 @@ from app.admin.events import AdminEventBus
 from app.admin.router import ASSETS, router as admin_router
 from app.admin.security import LocalAdminMiddleware, SECURITY_HEADERS
 from app.admin.service import AdminService, PlaygroundService
+from app.quality.router import router as quality_router
+from app.quality.service import QualityService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -38,6 +40,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin = AdminService(config, playground, events)
         application.state.admin = admin
         application.state.playground_service = playground
+        quality = QualityService(playground, live_enabled=config.admin_live_enabled)
+        application.state.quality = quality
         processor = service = task = None
         try:
             if config.admin_live_enabled:
@@ -60,12 +64,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await asyncio.gather(task, return_exceptions=True)
             if processor is not None:
                 await processor.aclose()
+            await quality.aclose()
             await admin.aclose()
 
     application = FastAPI(title="TikTok LIVE Assistant", lifespan=lifespan,
                           docs_url=None, redoc_url=None, openapi_url=None)
     application.add_middleware(LocalAdminMiddleware)
     application.include_router(admin_router)
+    application.include_router(quality_router)
     application.mount("/ui/assets", StaticFiles(directory=ASSETS), name="admin-assets")
 
     @application.exception_handler(RequestValidationError)

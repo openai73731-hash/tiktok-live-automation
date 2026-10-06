@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="dark">
   <title>TikTok LIVE — операторская панель</title>
   <link rel="stylesheet" href="/ui/assets/styles.css">
+  <script src="/ui/assets/quality.js" defer></script>
   <script src="/ui/assets/app.js" defer></script>
 </head>
 <body>
@@ -64,11 +65,27 @@
         </section>
         <section id="page-playground" class="page" hidden>
           <div class="page-heading"><div><div class="eyebrow">ПРОВЕРКА БЕЗ ЭФИРА</div><h1>AI Playground</h1><p>Тот же AI pipeline, знания и safety policy, что при обработке LIVE.</p></div><span id="playground-provider" class="session-tag">—</span></div>
+          <div class="quality-tabs" aria-label="Режим Playground"><button id="standard-tab" class="button secondary-button" aria-pressed="true">Ручной тест</button><button id="quality-tab" class="button secondary-button" aria-pressed="false">QUALITY LAB</button></div>
+          <div id="playground-standard">
           <div class="playground-grid">
             <article class="panel input-panel"><div class="panel-heading"><h2>Комментарий зрителя</h2><span class="subtle">Ручной тест</span></div><form id="analyze-form"><label for="comment-input" class="field-label">Введите исходное сообщение</label><textarea id="comment-input" rows="6" maxlength="1000" placeholder="Does the program trade automatically?" spellcheck="false"></textarea><div class="input-meta"><span>Тест не обращается к TikTok</span><span id="char-count" class="mono">0 / 1000</span></div><div id="paid-notice" class="notice warning-notice" hidden><strong>Настроен платный провайдер OpenAI.</strong><label><input id="allow-paid" type="checkbox">Подтверждаю один платный запрос при нажатии «Анализировать».</label></div><div class="form-actions"><button id="analyze-button" class="button primary" type="submit" disabled>Анализировать <svg><use href="#icon-arrow"/></svg></button><span id="analysis-progress" class="subtle" role="status"></span></div></form><div class="presets-heading">ПРИМЕРЫ ДЛЯ ПРОВЕРКИ</div><div id="preset-buttons" class="preset-grid"></div><div class="test-set"><div><strong>Набор Stage 3C</strong><p>9 комментариев последовательно, только по нажатию.</p></div><button id="run-test-set" class="button secondary-button" disabled>Прогнать набор</button><button id="stop-test-set" class="text-button" hidden>Остановить после текущего</button></div><p id="suite-progress" class="subtle" role="status"></p><div id="playground-error" class="error-message" role="alert" hidden></div></article>
             <article id="result-panel" class="panel result-panel"><div class="panel-heading"><h2>Результат анализа</h2><span id="result-duration" class="subtle">—</span></div><div id="result-empty" class="result-empty"><div class="result-placeholder-icon"><svg><use href="#icon-ai"/></svg></div><h3>Ответ появится здесь</h3><p>Выберите пример или введите комментарий.<br>Пример только подставляет текст — анализ запускаете вы.</p></div><div id="result-content" hidden></div></article>
           </div>
           <article class="panel history-panel"><div class="panel-heading"><div><h2>История Playground</h2><p class="subtle">Последние 100 проверок этой сессии. Нажмите строку, чтобы открыть карточку.</p></div><span id="history-count" class="badge neutral">0</span></div><div class="table-scroll"><table><thead><tr><th>Входное сообщение</th><th>Язык</th><th>Intent</th><th>Статус</th><th>Ответ</th><th>Время</th></tr></thead><tbody id="history-body"></tbody></table></div><p id="history-empty" class="table-empty">История пока пуста.</p><p class="panel-footnote">READY не доказывает точность перевода. Набор — инструмент ручного сравнения, без автоматической оценки смысла.</p></article>
+          </div>
+          <div id="quality-lab" hidden>
+            <article class="panel quality-header"><div class="panel-heading"><div><div class="eyebrow">STAGE 4A.1</div><h2>Quality Lab</h2><p id="quality-dataset" class="subtle">Загрузка корпуса…</p></div><span id="quality-provider" class="session-tag">—</span></div>
+              <p>PASS — совпадение с ожиданиями конкретного кейса. Смысл перевода и естественность ответа проверяет человек.</p>
+              <p class="subtle">Последовательный прогон. OpenAI запрещён. Новый прогон заменяет результаты и ручные оценки в памяти.</p>
+              <div class="quality-actions"><button id="quality-start" class="button primary" disabled>RUN ALL</button><button id="quality-stop" class="button secondary-button" disabled>STOP</button><button id="quality-export" class="text-button" disabled>Скачать отчёт JSON</button><span id="quality-progress" class="subtle" role="status">Не запускался</span></div>
+              <p id="quality-error" class="error-message" role="alert" hidden></p>
+            </article>
+            <div id="quality-summary" class="quality-summary" aria-live="polite"></div>
+            <article class="panel"><details><summary>Результаты по языкам и категориям</summary><div id="quality-breakdown" class="quality-breakdown"></div></details></article>
+            <article class="panel history-panel"><div class="panel-heading"><div><h2>Корпус комментариев</h2><p class="subtle">CRITICAL: классификация, факты, claims и safety. Остальные детерминированные проверки показаны отдельно.</p><p class="subtle">Грамматика русского перевода при верном смысле — отдельная ручная оценка. Ошибка смысла, языка ответа или финансовое обещание требуют внимания оператора.</p></div></div>
+              <div class="table-scroll"><table class="quality-table"><thead><tr><th>ID / категория</th><th>Комментарий</th><th>Intent: expected / actual</th><th>Facts: expected / actual</th><th>Статус / время</th><th>Оценка / детали</th></tr></thead><tbody id="quality-cases"></tbody></table></div>
+            </article>
+          </div>
         </section>
         <section id="page-settings" class="page" hidden>
           <div class="page-heading"><div><div class="eyebrow">КОНФИГУРАЦИЯ ЗАПУСКА</div><h1>Система и настройки</h1><p>Параметры доступны только для чтения. После изменения конфигурации перезапустите backend.</p></div><span class="session-tag">Read-only</span></div>
