@@ -40,7 +40,7 @@ class QualityService:
                   "Отключите LIVE перед запуском Quality Lab." if live_enabled else None)
         self.base_disabled_reason = ("Quality Lab запрещает OpenAI." if processor.engine.name == "openai" else
                   "75-кейсный baseline использует FOCUSED. Примените FOCUSED в настройках." if processor.project.ai.reply_policy != "focused" else None)
-        self.run = RunView(revision=0, dataset_name=self.dataset.name, dataset_version=self.dataset.version,
+        self.run = RunView(service_epoch=uuid4().hex, revision=0, dataset_name=self.dataset.name, dataset_version=self.dataset.version,
             dataset_hash=fingerprint(self.dataset), knowledge_hash=fingerprint(processor.knowledge),
             ai_config_hash=fingerprint(processor.project.ai), provider=processor.engine.name,
             model=getattr(processor.engine, "model", processor.project.ai.model), enabled=reason is None, disabled_reason=reason,
@@ -175,9 +175,9 @@ class QualityService:
             self._update(state="stopping")
         return self.run
 
-    def review(self, run_id, case_id, review, run_number=None):
+    def review(self, run_id, case_id, review, run_number):
         self._require_run(run_id)
-        if run_number is not None and run_number != self.run.run_number:
+        if type(run_number) is not int or run_number != self.run.run_number:
             raise StaleRun("Trial replaced")
         if case_id not in self.results:
             raise StaleRun("Case not completed")

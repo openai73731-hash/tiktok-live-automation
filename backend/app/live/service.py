@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from app.config import Settings
 from app.live.listener import Listener, StateCallback, create_listener
 from app.live.models import Comment, LiveStatus
+from app.lifecycle import finish_owned
 from app.logging_config import LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -63,7 +64,17 @@ class LiveService:
             # A finite fake run and LIVE end deliver all already accepted comments.
             await self.queue.join()
         finally:
-            producer.cancel()
-            consumer.cancel()
-            await asyncio.gather(producer, consumer, return_exceptions=True)
-            self._running = False
+            async def cleanup():
+                producer.cancel()
+                consumer.cancel()
+                # SDK phases each have their own deadline; this outer bound also
+                # covers an uncooperative callback. Never cancel unrelated tasks.
+                done, pending = await asyncio.wait((producer, consumer),
+                    timeout=10 * self.listener.settings.shutdown_timeout_seconds)
+                for task in done:
+                    if not task.cancelled(): task.exception()
+                self._running = False
+                if pending:
+                    self.listener.status = self.listener.status.model_copy(update={"cleanup_state": "failed"})
+                    raise RuntimeError("Owned service cleanup failed")
+            await finish_owned(asyncio.create_task(cleanup(), name="live-service-owned-cleanup"))

@@ -120,11 +120,13 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
     refs.content.append(checks, replyCard(result.record)); renderReview(refs.content, c, result);
   }
   function apply(value) {
-    if (run && value.run.revision < run.revision) return;
-    const replaced = value.run.run_id !== run?.run_id || value.run.run_number !== run?.run_number;
+    if (run && value.run.service_epoch === run.service_epoch && value.run.revision < run.revision) return;
+    const epochChanged = value.run.service_epoch !== run?.service_epoch;
+    const replaced = epochChanged || value.run.run_id !== run?.run_id || value.run.run_number !== run?.run_number;
+    if (epochChanged) { dataset = null; results.clear(); rows.clear(); $("quality-cases").replaceChildren(); }
     run = value.run;
     if (value.dataset) dataset = value.dataset;
-    if (!dataset) return;
+    if (!dataset) { refresh().catch((error) => toast(error.message)); return; }
     if (replaced || !rows.size) { results.clear(); rows.clear(); $("quality-cases").replaceChildren(...dataset.cases.map(rowFor)); }
     const changed = value.results || (value.result ? [value.result] : []);
     changed.forEach((result) => { results.set(result.case_id, result); const c = dataset.cases.find((entry) => entry.id === result.case_id); if (c) renderResult(c, result); });

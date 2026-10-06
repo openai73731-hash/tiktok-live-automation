@@ -2,7 +2,7 @@
 window.createOperatorControls = ({api, state, toast, renderSettings, renderStatus, refreshQuality}) => {
   const $ = (id) => document.getElementById(id);
   const fields = ["username", "provider", "model", "temperature", "timeout", "policy", "sentences", "chars"];
-  let view = null, dirty = false, busy = false;
+  let view = null, dirty = false, busy = false, editedRevision = null;
   const value = (name) => $("operator-" + name).value;
   function controls() {
     const live = state.status?.live;
@@ -38,6 +38,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
         policy: desired.reply_policy, sentences: desired.max_reply_sentences, chars: desired.max_reply_chars};
       fields.forEach((name) => { $("operator-" + name).value = values[name]; });
       dirty = false;
+      editedRevision = next.saved_config_revision;
     }
     renderSettings(next.active);
     controls();
@@ -52,7 +53,14 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
       await refreshQuality();
       render(await api("/api/admin/operator/settings"));
       toast(path.endsWith("connect") && !path.endsWith("disconnect") ? "Подключение запрошено. Ожидаем состояние listener." : "Готово.");
-    } catch (error) { $("operator-error").textContent = error.message; $("operator-error").hidden = false; toast(error.message); }
+    } catch (error) {
+      if (error.status === 409) {
+        render(await api("/api/admin/operator/settings"), true);
+        renderStatus(await api("/api/admin/status"));
+      }
+      $("operator-error").textContent = error.status === 409 ? "Конфликт: состояние изменилось. Настройки перечитаны; повторно проверьте действие. " + error.message : error.message;
+      $("operator-error").hidden = false; toast(error.message);
+    }
     finally { busy = false; controls(); }
   }
   fields.forEach((name) => $("operator-" + name).addEventListener("input", () => { dirty = true; controls(); }));
@@ -64,15 +72,15 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
   });
   $("operator-form").addEventListener("submit", (event) => {
     event.preventDefault(); if ($("operator-save").disabled) return;
-    action("/api/admin/operator/settings", {tiktok: {username: value("username")},
+    action("/api/admin/operator/settings", {expected_saved_revision: editedRevision, settings: {tiktok: {username: value("username")},
       ai: {provider: value("provider"), model: value("model"), temperature: Number(value("temperature")), timeout_seconds: Number(value("timeout"))},
-      reply: {mode: value("policy"), max_sentences: Number(value("sentences")), max_chars: Number(value("chars"))}});
+      reply: {mode: value("policy"), max_sentences: Number(value("sentences")), max_chars: Number(value("chars"))}}});
   });
-  $("operator-apply").addEventListener("click", () => action("/api/admin/operator/apply", {}));
-  $("operator-reset").addEventListener("click", () => action("/api/admin/operator/reset", {}));
+  $("operator-apply").addEventListener("click", () => action("/api/admin/operator/apply", {expected_saved_revision: view.saved_config_revision, expected_active_runtime_revision: view.active_runtime_revision}));
+  $("operator-reset").addEventListener("click", () => action("/api/admin/operator/reset", {expected_saved_revision: view.saved_config_revision}));
   document.querySelectorAll("[data-live-action]").forEach((button) => button.addEventListener("click", () => {
     action("/api/admin/live/" + button.dataset.liveAction,
-      button.dataset.liveAction === "connect" ? {username: value("username")} : {});
+      button.dataset.liveAction === "connect" ? {username: value("username")} : {expected_live_session_id: state.status.live.live_session_id});
   }));
   return {render, controls};
 };

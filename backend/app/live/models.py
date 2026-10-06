@@ -10,6 +10,7 @@ class Comment(BaseModel):
     model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
     username: str = Field(min_length=1)
     user_id: str | None = None
+    message_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]{0,18}$")
     text: str = Field(min_length=1)
     # Local receipt time, in UTC; not an inferred TikTok server timestamp.
     timestamp: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -38,4 +39,5 @@ class LiveStatus(BaseModel):
     mode: Literal["real", "fake", "replay"]
     reason: str | None = None
     terminal_state: LiveState | None = None
+    cleanup_state: Literal["not_started", "running", "complete", "failed"] = "not_started"
     updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))

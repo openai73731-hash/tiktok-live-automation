@@ -9,7 +9,9 @@ from pydantic import Field, model_validator
 from app.ai.knowledge import ConfigModel, load_yaml_model
 from app.ai.models import ReplyDraft
 
-BANK_PATH = Path(__file__).resolve().parents[3] / "config" / "social_replies.yaml"
+# Like project/knowledge config, this reviewed file belongs to the workspace,
+# not to a parent of site-packages in an installed wheel.
+BANK_PATH = Path("config/social_replies.yaml")
 
 
 def normalize(text):

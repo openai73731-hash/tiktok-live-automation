@@ -18,6 +18,25 @@ from app.main import create_app
 BASE = "/api/admin/operator/"
 
 
+async def post_action(c, path, *, json):
+    """Existing action tests now explicitly send the currently observed version."""
+    if path.startswith(BASE):
+        view = (await c.get(BASE + "settings")).json()
+        if path.endswith("settings"):
+            json = {"settings": json, "expected_saved_revision": view["saved_config_revision"]}
+        elif path.endswith("apply"):
+            json = {"expected_saved_revision": view["saved_config_revision"], "expected_active_runtime_revision": view["active_runtime_revision"]}
+        elif path.endswith("reset"):
+            json = {"expected_saved_revision": view["saved_config_revision"]}
+    elif path.endswith("live/disconnect"):
+        live = (await c.get("/api/admin/status")).json()["live"]
+        # Repeated disconnect uses the same previously observed session ID.
+        observed = live["live_session_id"] or getattr(c, "observed_session", None)
+        if observed is not None: c.observed_session = observed
+        json = {"expected_live_session_id": observed}
+    return await c.post(path, json=json)
+
+
 @pytest.fixture
 def runtime_config(settings, tmp_path):
     path = tmp_path / "project.yaml"
@@ -89,7 +108,7 @@ def test_overlay_and_atomic_save_reset(store, monkeypatch):
 ])
 async def test_unsafe_settings_rejected_without_echo(client, body):
     app, c = client
-    r = await c.post(BASE + "settings", json=body)
+    r = await post_action(c, BASE + "settings", json=body)
     assert r.status_code == 422
     assert "secret" not in r.text and "remote" not in r.text
     assert not app.state.operator_runtime.store.path.exists()
@@ -109,10 +128,10 @@ async def test_save_apply_reload_reset_and_no_implicit_requests(client, runtime_
         assert (await c.get(path)).status_code == 200
     assert app.state.live_service is None
     body = overlay().model_dump(mode="json")
-    saved = (await c.post(BASE + "settings", json=body)).json()
+    saved = (await post_action(c, BASE + "settings", json=body)).json()
     assert saved["pending"] and saved["active"]["provider"] == "fake"
     assert app.state.admin.playground.processor is initial
-    applied = await c.post(BASE + "apply", json={})
+    applied = await post_action(c, BASE + "apply", json={})
     assert applied.status_code == 200 and not applied.json()["pending"]
     new = app.state.admin.playground.processor
     assert new is not initial and new.engine._client is None
@@ -125,8 +144,8 @@ async def test_save_apply_reload_reset_and_no_implicit_requests(client, runtime_
         assert restarted.state.admin.playground.processor.project == new.project
         assert restarted.state.operator_runtime.username == "own.account"
         assert restarted.state.live_service is None
-    assert (await c.post(BASE + "reset", json={})).json()["pending"]
-    assert (await c.post(BASE + "apply", json={})).status_code == 200
+    assert (await post_action(c, BASE + "reset", json={})).json()["pending"]
+    assert (await post_action(c, BASE + "apply", json={})).status_code == 200
     assert app.state.admin.playground.processor.project.ai.reply_policy == "focused"
     assert not app.state.operator_runtime.store.path.exists()
     assert app.state.quality.run.enabled
@@ -140,7 +159,7 @@ async def test_invalid_file_visible_and_recoverable(runtime_config, store):
         assert runtime.view().config_error == "invalid_local_config"
         assert "PRIVATE" not in runtime.view().model_dump_json()
         assert app.state.live_service is None
-        await runtime.reset()
+        await runtime.reset(runtime.saved_config_revision)
         assert runtime.view().config_error is None
 
 
@@ -193,12 +212,12 @@ async def test_connect_disconnect_single_listener_and_playground_survives(live_m
         assert (await c.post("/api/admin/live/connect", json={"username": "second"})).status_code == 409
         assert len(created) == 1 and app.state.comment_processor is not pg
         assert not app.state.quality.run.enabled
-        assert (await c.post(BASE + "settings", json={"tiktok": {"username": "other"}})).status_code == 409
-        assert (await c.post(BASE + "apply", json={})).status_code == 409
-        assert (await c.post(BASE + "reset", json={})).status_code == 409
+        assert (await post_action(c, BASE + "settings", json={"tiktok": {"username": "other"}})).status_code == 409
+        assert (await post_action(c, BASE + "apply", json={})).status_code == 409
+        assert (await post_action(c, BASE + "reset", json={})).status_code == 409
         await created[0].on_comment(Comment(username="viewer", text="Hello!"))
         assert app.state.admin.live_history[0].source == "tiktok"
-        assert (await c.post("/api/admin/live/disconnect", json={})).status_code == 200
+        assert (await post_action(c, "/api/admin/live/disconnect", json={})).status_code == 200
         assert created[0].released.is_set() and not unrelated.done()
         assert app.state.live_service is app.state.live_task is None
         assert app.state.admin.playground.processor is pg
@@ -206,7 +225,7 @@ async def test_connect_disconnect_single_listener_and_playground_survives(live_m
         result = await c.post("/api/admin/playground/analyze", json={"text": "How does the bot work?"})
         assert result.status_code == 200 and result.json()["suggestion"]["status"] == "ready"
         assert app.state.quality.run.enabled
-        assert (await c.post("/api/admin/live/disconnect", json={})).status_code == 200
+        assert (await post_action(c, "/api/admin/live/disconnect", json={})).status_code == 200
         assert (await c.post("/api/admin/live/connect", json={"username": "other"})).status_code == 202
         assert len(created) == 2
     finally:
@@ -227,7 +246,7 @@ async def test_security_terminal_requires_explicit_disconnect(live_mock):
     assert view["terminal_state"] == "operator_required"
     assert (await c.post("/api/admin/live/connect", json={"username": "own"})).status_code == 409
     assert len(created) == 1
-    assert (await c.post("/api/admin/live/disconnect", json={})).status_code == 200
+    assert (await post_action(c, "/api/admin/live/disconnect", json={})).status_code == 200
 
 
 async def test_cancel_before_runner_entry_closes_processor(live_mock):
@@ -236,7 +255,7 @@ async def test_cancel_before_runner_entry_closes_processor(live_mock):
     await controller.connect("own")
     processor = controller.processor
     processor.aclose = AsyncMock()
-    await controller.disconnect()
+    await controller.disconnect(controller.session_id)
     processor.aclose.assert_awaited_once()
 
 
@@ -245,7 +264,7 @@ async def test_runtime_update_blocked_during_inference(client, action):
     app, c = client
     await app.state.admin.playground.lock.acquire()
     try:
-        assert (await c.post(BASE + action, json={})).status_code == 409
+        assert (await post_action(c, BASE + action, json={})).status_code == 409
         assert (await c.post("/api/admin/live/connect", json={"username": "own"})).status_code == 409
     finally:
         app.state.admin.playground.lock.release()
@@ -302,7 +321,7 @@ async def test_inference_publishes_lock_and_unlock_to_other_tabs(client):
     await started.wait()
     try:
         assert app.state.operator_runtime.view().locked
-        assert (await c.post(BASE + "apply", json={})).status_code == 409
+        assert (await post_action(c, BASE + "apply", json={})).status_code == 409
         finish.set(); await task
         assert not app.state.operator_runtime.view().locked
         import json

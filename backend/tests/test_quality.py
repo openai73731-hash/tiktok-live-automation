@@ -393,14 +393,14 @@ async def test_manual_review_is_bounded_ephemeral_and_does_not_change_summary(ri
     old = rig.service.run
     case_id = next(iter(rig.service.results))
     review = ManualReview(comment_translation_quality="bad", reply_naturalness="good", note="Operator observation")
-    result = rig.service.review(old.run_id, case_id, review)
+    result = rig.service.review(old.run_id, case_id, review, old.run_number)
     assert result.review == review and rig.service.run.summary == old.summary
     assert DATASET_PATH.read_bytes() == original_bytes
     await rig.service.start(); await finish(rig.service)
     assert rig.service.results[case_id].review == ManualReview()
-    with pytest.raises(StaleRun): rig.service.review(old.run_id, case_id, review)
+    with pytest.raises(StaleRun): rig.service.review(old.run_id, case_id, review, old.run_number)
     with pytest.raises(StaleRun): rig.service.stop(old.run_id)
-    with pytest.raises(StaleRun): rig.service.review(rig.service.run.run_id, "missing", review)
+    with pytest.raises(StaleRun): rig.service.review(rig.service.run.run_id, "missing", review, rig.service.run.run_number)
 
 
 @pytest.mark.parametrize("value", [{"comment_translation_quality": "great"}, {"note": "x" * 1001}, {"auto_send": True}])
@@ -451,11 +451,11 @@ async def test_api_projection_guards_no_listener_no_paid_and_manual_review(setti
             await finish(app.state.quality)
             run_id = start.json()["run_id"]
             case_id = snapshot["dataset"]["cases"][0]["id"]
-            response = await client.post("/api/admin/quality/review", json={"run_id": run_id, "case_id": case_id,
+            response = await client.post("/api/admin/quality/review", json={"run_id": run_id, "run_number": 1, "case_id": case_id,
                 "review": {"comment_translation_quality": "bad", "note": "needs review"}})
             assert response.status_code == 200 and response.json()["review"]["note"] == "needs review"
             assert (await client.post("/api/admin/quality/stop", json={"run_id": "0" * 32})).status_code == 409
-            assert (await client.post("/api/admin/quality/review", json={"run_id": run_id, "case_id": case_id,
+            assert (await client.post("/api/admin/quality/review", json={"run_id": run_id, "run_number": 1, "case_id": case_id,
                 "review": {"note": "x" * 1001}})).status_code == 422
             assets = await client.get("/ui/assets/quality.js")
             assert assets.status_code == 200 and "innerHTML" not in assets.text

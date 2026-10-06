@@ -62,7 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             runtime.closed = True
-            await runtime.live.disconnect()
+            await runtime.live.stop_current()
             await application.state.quality.aclose()
             await admin.aclose()
 

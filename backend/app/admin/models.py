@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai.models import ReplySuggestion
 from app.admin.operator_config import OperatorOverlay
+from app.delivery.models import SuggestionView
 
 
 class UIModel(BaseModel):
@@ -34,6 +35,7 @@ class ReplyRecord(UIModel):
     duration_ms: int
     original_truncated: bool = False
     suggestion: ReplySuggestion
+    delivery_review: SuggestionView | None = None
 
 
 class LiveView(UIModel):
@@ -46,6 +48,9 @@ class LiveView(UIModel):
     updated_at: datetime
     username: str = ""
     connection_owned: bool = False
+    live_session_id: str | None = None
+    delivery_ready: Literal[False] = False
+    cleanup_state: Literal["not_started", "running", "complete", "failed"] = "not_started"
 
 
 class AIStatus(UIModel):
@@ -120,6 +125,26 @@ class OperatorView(UIModel):
     locked: bool
     lock_reason: str | None = None
     config_error: Literal["invalid_local_config"] | None = None
+    saved_config_revision: str
+    active_runtime_revision: str
+
+
+class SaveSettingsInput(UIModel):
+    expected_saved_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    settings: OperatorOverlay
+
+
+class ApplySettingsInput(UIModel):
+    expected_saved_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    expected_active_runtime_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+class ResetSettingsInput(UIModel):
+    expected_saved_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+class DisconnectInput(UIModel):
+    expected_live_session_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
 class ConnectInput(UIModel):

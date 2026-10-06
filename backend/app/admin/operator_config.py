@@ -49,6 +49,20 @@ class OperatorOverlay(ConfigModel):
 class StrictLoader(yaml.SafeLoader):
     """Reject duplicate keys rather than silently discarding earlier settings."""
 
+    def __init__(self, stream):
+        super().__init__(stream)
+        self.depth = self.nodes = 0
+
+    def compose_node(self, parent, index):
+        self.depth += 1
+        self.nodes += 1
+        try:
+            if self.depth > 12 or self.nodes > 256 or self.check_event(yaml.AliasEvent):
+                raise LocalConfigError("Invalid local settings")
+            return super().compose_node(parent, index)
+        finally:
+            self.depth -= 1
+
 
 def mapping(loader, node):
     result = {}
@@ -80,18 +94,20 @@ class OperatorStore:
         return effective(self.base, overlay)
 
     def load(self) -> OperatorOverlay:
-        if not self.path.exists():
-            return OperatorOverlay()
         try:
-            if self.path.stat().st_size > 16_384:
+            with self.path.open("rb") as stream:
+                data_bytes = stream.read(16_385)
+            if len(data_bytes) > 16_384:
                 raise LocalConfigError("Invalid local settings")
-            data = yaml.load(self.path.read_text(encoding="utf-8-sig"), Loader=StrictLoader)
+            data = yaml.load(data_bytes.decode("utf-8-sig"), Loader=StrictLoader)
             if not isinstance(data, dict):
                 raise LocalConfigError("Invalid local settings")
             overlay = OperatorOverlay.model_validate(data)
             self.validate(overlay)
             return overlay
-        except (ValueError, TypeError, yaml.YAMLError, OSError):
+        except FileNotFoundError:
+            return OperatorOverlay()
+        except (ValueError, TypeError, yaml.YAMLError, OSError, RecursionError):
             raise LocalConfigError("Invalid local settings; check operator.local.yaml") from None
 
     def save(self, overlay: OperatorOverlay) -> None:

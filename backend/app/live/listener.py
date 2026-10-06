@@ -255,8 +255,10 @@ def comment_from_event(event: Any) -> Comment:
         raise ValueError("Comment has no user")
     username = user.display_id or user.nickname
     raw_id = user.id
+    message_id = getattr(getattr(event, "common", None), "msg_id", None)
     return Comment(
         username=username, user_id=str(raw_id) if raw_id else None,
+        message_id=str(message_id) if type(message_id) is int and 0 < message_id < 2**63 else None,
         text=event.content,
     )
 
@@ -303,6 +305,7 @@ class LiveListener(BaseListener):
         self.connected = asyncio.Event()
         self.dropped_comments = 0
         self.unknown_event_count = 0
+        self.cleanup_failures = ()
 
     def on_comment(self, event: Any) -> None:
         if self.halt.is_set():
@@ -329,6 +332,8 @@ class LiveListener(BaseListener):
 
     def on_disconnect(self, _: Any) -> None:
         if not self.halt.is_set():
+            self.connected.clear()
+            self.set_state(LiveState.DISCONNECTED)
             logger.info("sdk_disconnected", extra={"fields": {"event_type": "DisconnectEvent"}})
 
     def on_end(self, _: Any) -> None:
@@ -413,50 +418,63 @@ class LiveListener(BaseListener):
                 raise AmbiguousSDKState() from None
             raise
         finally:
-            waiters = [task for task in (halt_task, connected_task) if task is not None]
-            for task in waiters:
+            from app.lifecycle import finish_owned
+            cleanup = asyncio.create_task(self._cleanup(client, socket_task, halt_task,
+                connected_task, sdk_logger, sdk_filter), name="live-owned-cleanup")
+            await finish_owned(cleanup)
+
+    async def _cleanup(self, client, socket, halt, connected, sdk_logger, sdk_filter):
+        """Independent bounded phases; caller cancellation cannot skip a pool."""
+        failures = []
+        self.status = self.status.model_copy(update={"cleanup_state": "running"})
+
+        async def settle(task, code):
+            if task is None:
+                return
+            if not task.done():
+                task.add_done_callback(lambda completed: None if completed.cancelled() else completed.exception())
                 task.cancel()
-            await asyncio.gather(*waiters, return_exceptions=True)
+            done, _ = await asyncio.wait((task,), timeout=self.settings.shutdown_timeout_seconds)
+            if not done:
+                failures.append(code)
+            elif not task.cancelled():
+                task.exception()  # Retrieve any owned-task error.
+
+        async def close(call, code):
             try:
-                async with asyncio.timeout(self.settings.shutdown_timeout_seconds):
-                    await client.disconnect()
-            except Exception as exc:
-                logger.warning("disconnect_failed", extra={
-                    "fields": {"error_type": type(exc).__name__},
-                })
-            finally:
-                if socket_task and not socket_task.done():
-                    socket_task.cancel()
-                if socket_task:
-                    await asyncio.gather(socket_task, return_exceptions=True)
-                # 7.0.1 does not put heartbeat cleanup in a finally block.
-                # Touch only the task owned by this particular SDK client.
-                ping_task = getattr(getattr(client, "_ws", None), "_ping_loop", None)
-                if isinstance(ping_task, asyncio.Task):
-                    ping_task.cancel()
-                    await asyncio.gather(ping_task, return_exceptions=True)
-                # Do not call client.close()/disconnect(close_client=True):
-                # upstream close() calls run_until_complete and cancels unrelated tasks.
-                try:
-                    closers = [("http_cleanup_failed", client.web.close)]
-                    # web.close() in 7.0.1 closes only TikTok HTTP, leaving
-                    # the lazily allocated signing-service HTTP pool open.
-                    signer = getattr(client.web, "signer", None)
-                    signer_sdk = getattr(signer, "sdk_client", None)
-                    sign_http = getattr(signer_sdk, "_async_client", None)
-                    if sign_http is not None:
-                        closers.append(("signer_cleanup_failed", sign_http.aclose))
-                    for event, close in closers:
-                        try:
-                            async with asyncio.timeout(self.settings.shutdown_timeout_seconds):
-                                await close()
-                        except Exception as exc:
-                            logger.warning(event, extra={
-                                "fields": {"error_type": type(exc).__name__},
-                            })
-                finally:
-                    if sdk_logger is not None:
-                        sdk_logger.removeFilter(sdk_filter)
+                task = asyncio.create_task(call(), name=code)
+                task.add_done_callback(lambda completed: None if completed.cancelled() else completed.exception())
+                done, _ = await asyncio.wait((task,), timeout=self.settings.shutdown_timeout_seconds)
+                if not done:
+                    failures.append(code)
+                    await settle(task, code)
+                elif task.cancelled() or task.exception() is not None:
+                    failures.append(code)
+            except Exception:
+                failures.append(code)
+
+        try:
+            await settle(halt, "halt_cleanup_failed")
+            await settle(connected, "connected_cleanup_failed")
+            await close(client.disconnect, "disconnect_failed")
+            await settle(socket, "socket_cleanup_failed")
+            ping = getattr(getattr(client, "_ws", None), "_ping_loop", None)
+            await settle(ping if isinstance(ping, asyncio.Task) else None, "heartbeat_cleanup_failed")
+            await close(client.web.close, "http_cleanup_failed")
+            signer = getattr(getattr(client.web, "signer", None), "sdk_client", None)
+            pool = getattr(signer, "_async_client", None)
+            if pool is not None:
+                await close(pool.aclose, "signer_cleanup_failed")
+        finally:
+            if sdk_logger is not None:
+                sdk_logger.removeFilter(sdk_filter)
+            self.cleanup_failures = tuple(dict.fromkeys(failures))
+            self.status = self.status.model_copy(update={"cleanup_state": "failed" if failures else "complete"})
+            if failures:
+                self.halt.set()
+                self.set_state(LiveState.OPERATOR_REQUIRED, "Owned cleanup failed")
+                for code in self.cleanup_failures:
+                    logger.warning(code, extra={"fields": {"error_type": "OwnedCleanupFailure"}})
 
     @staticmethod
     def retryable(exc: Exception) -> bool:

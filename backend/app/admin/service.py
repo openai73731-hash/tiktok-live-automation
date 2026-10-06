@@ -17,6 +17,8 @@ from app.ai.models import ReplySuggestion
 from app.ai.processor import CommentProcessor
 from app.live.models import Comment, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
+from app.delivery.models import DeliveryContext
+from app.delivery.suggestions import SuggestionStore, digest, policy_revision
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -63,6 +65,7 @@ class PlaygroundService:
         self.task: asyncio.Task | None = None
         self.closed = False
         self.on_busy_change = lambda: None
+        self.register_record = lambda record, comment, processor: record
 
     async def analyze(self, text: str, *, allow_paid: bool = False) -> ReplyRecord:
         if self.closed or self.lock.locked():
@@ -82,6 +85,7 @@ class PlaygroundService:
                 finally:
                     self.task = None
                 record = record_for(comment, suggestion, "playground", round((perf_counter() - started) * 1000), uuid4().hex)
+                record = self.register_record(record, comment, self.processor)
                 self.history.appendleft(record)
                 self.processed += 1
                 self.events.publish("playground_result", PlaygroundResultEvent(record=record, processed=self.processed))
@@ -116,6 +120,27 @@ class AdminService:
         self.check_task: asyncio.Task | None = None
         self.last_checked = 0.0
         self.runtime = None
+        self.suggestions = SuggestionStore()
+        playground.register_record = self.register_record
+
+    def delivery_context(self):
+        processor = self.playground.processor
+        live = self.live_view()
+        invalid = not self.runtime or self.runtime.closed or self.runtime.live.session_invalidated
+        return DeliveryContext(live_session_id=None if invalid else live.live_session_id, target_account=live.username or None,
+            active_runtime_revision=self.runtime.active_runtime_revision if self.runtime else "unavailable",
+            knowledge_revision=digest(processor.knowledge), policy_revision=policy_revision(processor),
+            connected=not invalid and live.connection_owned and live.state == "connected" and live.terminal_state is None,
+            active=live.activity == "active")
+
+    def register_record(self, record, comment, processor, *, session_id=None, target_account=None):
+        self.suggestions.register(record, comment, processor,
+            self.runtime.active_runtime_revision if self.runtime else "unavailable",
+            session_id=session_id, target_account=target_account)
+        return self.review_record(record)
+
+    def review_record(self, record):
+        return record.model_copy(update={"delivery_review": self.suggestions.view(record.id, self.delivery_context())})
 
     def live_view(self) -> LiveView:
         status = self.live_status
@@ -132,7 +157,9 @@ class AdminService:
                         updated_at=status.updated_at,
                         username=(status.username if status.username != "demo" and
                                   len(status.username) <= 24 and all(c.isascii() and (c.isalnum() or c in "._") for c in status.username) else ""),
-                        connection_owned=bool(self.runtime and self.runtime.live.service is not None))
+                        connection_owned=bool(self.runtime and self.runtime.live.service is not None),
+                        live_session_id=self.runtime.live.session_id if self.runtime else None,
+                        cleanup_state=status.cleanup_state)
 
     def status(self) -> AdminStatus:
         return AdminStatus(started_at=self.started_at, uptime_seconds=int(perf_counter() - self.started),
@@ -155,10 +182,16 @@ class AdminService:
             reply_policy=ai.reply_policy)
 
     def on_live_state(self, status: LiveStatus) -> None:
+        if self.runtime and self.runtime.live.session_invalidated and status.state in {
+                LiveState.STARTING, LiveState.CONNECTING, LiveState.CONNECTED, LiveState.RECONNECTING}:
+            return
+        if self.runtime and (status.state in {LiveState.ENDED, LiveState.OPERATOR_REQUIRED} or
+                status.terminal_state in {LiveState.ENDED, LiveState.OPERATOR_REQUIRED}):
+            self.runtime.live.session_invalidated = True
         self.live_status = status
         self.events.publish("live_state", self.live_view())
 
-    async def handle_live(self, comment: Comment, processor: CommentProcessor, *, mode=None) -> ReplyRecord:
+    async def handle_live(self, comment: Comment, processor: CommentProcessor, *, mode=None, session_id=None, target_account=None) -> ReplyRecord:
         source = {"real": "tiktok", "fake": "fake", "replay": "replay"}[mode or self.settings.live_mode]
         id = uuid4().hex
         self.events.publish("comment_received", CommentView(id=id, source=source,
@@ -168,6 +201,7 @@ class AdminService:
         started = perf_counter()
         suggestion = await processor.handle(comment)
         record = record_for(comment, suggestion, source, round((perf_counter() - started) * 1000), id)
+        record = self.register_record(record, comment, processor, session_id=session_id, target_account=target_account)
         self.live_history.appendleft(record)
         counts = self.metrics.model_dump()
         counts["processed"] += 1

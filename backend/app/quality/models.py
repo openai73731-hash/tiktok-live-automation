@@ -163,6 +163,7 @@ class QualityRun(TrialSummary):
 
 
 class RunView(UIModel):
+    service_epoch: str
     revision: int
     run_id: str | None = None
     state: Literal["idle", "running", "stopping", "completed", "stopped", "failed"] = "idle"
@@ -221,4 +222,4 @@ class RunInput(UIModel):
 class ReviewInput(RunInput):
     case_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     review: ManualReview
-    run_number: int | None = Field(default=None, ge=1, le=3, strict=True)
+    run_number: int = Field(ge=1, le=3, strict=True)

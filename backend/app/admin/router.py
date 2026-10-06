@@ -7,10 +7,12 @@ from starlette.background import BackgroundTask
 from starlette.responses import FileResponse, RedirectResponse, StreamingResponse
 
 from app.admin.events import sse_message
-from app.admin.models import AnalyzeInput, UIModel, ConnectInput
-from app.admin.operator_config import OperatorOverlay
+from app.admin.models import (AnalyzeInput, UIModel, ConnectInput, SaveSettingsInput,
+    ApplySettingsInput, ResetSettingsInput, DisconnectInput)
 from app.admin.runtime import RuntimeConflict
 from app.admin.service import PaidRequestNotConfirmed, PlaygroundBusy, PRESETS
+from app.delivery.models import ApprovalInput, ApprovalEvent
+from app.delivery.suggestions import SuggestionConflict
 
 router = APIRouter()
 ASSETS = Path(__file__).resolve().parents[1] / "static" / "admin"
@@ -62,18 +64,18 @@ async def runtime_action(action, *args):
 
 
 @router.post("/api/admin/operator/settings")
-async def save_settings(request: Request, body: OperatorOverlay):
-    return await runtime_action(request.app.state.operator_runtime.save, body)
+async def save_settings(request: Request, body: SaveSettingsInput):
+    return await runtime_action(request.app.state.operator_runtime.save, body.settings, body.expected_saved_revision)
 
 
 @router.post("/api/admin/operator/apply")
-async def apply_settings(request: Request, body: EmptyInput):
-    return await runtime_action(request.app.state.operator_runtime.apply)
+async def apply_settings(request: Request, body: ApplySettingsInput):
+    return await runtime_action(request.app.state.operator_runtime.apply, body.expected_saved_revision, body.expected_active_runtime_revision)
 
 
 @router.post("/api/admin/operator/reset")
-async def reset_settings(request: Request, body: EmptyInput):
-    return await runtime_action(request.app.state.operator_runtime.reset)
+async def reset_settings(request: Request, body: ResetSettingsInput):
+    return await runtime_action(request.app.state.operator_runtime.reset, body.expected_saved_revision)
 
 
 @router.post("/api/admin/live/connect", status_code=202)
@@ -82,8 +84,8 @@ async def live_connect(request: Request, body: ConnectInput):
 
 
 @router.post("/api/admin/live/disconnect")
-async def live_disconnect(request: Request, body: EmptyInput):
-    return await runtime_action(request.app.state.operator_runtime.live.disconnect)
+async def live_disconnect(request: Request, body: DisconnectInput):
+    return await runtime_action(request.app.state.operator_runtime.live.disconnect, body.expected_live_session_id)
 
 
 @router.get("/api/admin/ai/status")
@@ -106,12 +108,34 @@ async def presets():
 
 @router.get("/api/admin/playground/history")
 async def playground_history(request: Request):
-    return list(request.app.state.admin.playground.history)
+    admin = request.app.state.admin
+    return [admin.review_record(record) for record in admin.playground.history]
 
 
 @router.get("/api/admin/live/history")
 async def live_history(request: Request):
-    return list(request.app.state.admin.live_history)
+    admin = request.app.state.admin
+    return [admin.review_record(record) for record in admin.live_history]
+
+
+@router.get("/api/admin/suggestions/{suggestion_id}")
+async def suggestion_view(request: Request, suggestion_id: str):
+    admin = request.app.state.admin
+    try:
+        return admin.suggestions.view(suggestion_id, admin.delivery_context())
+    except SuggestionConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from None
+
+
+@router.post("/api/admin/suggestions/{suggestion_id}/approve")
+async def approve_suggestion(request: Request, suggestion_id: str, body: ApprovalInput):
+    admin = request.app.state.admin
+    try:
+        admin.suggestions.approve(suggestion_id, body, admin.delivery_context())
+    except SuggestionConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from None
+    admin.events.publish("suggestion_approval", ApprovalEvent(suggestion_id=suggestion_id))
+    return admin.suggestions.view(suggestion_id, admin.delivery_context())
 
 
 @router.post("/api/admin/playground/analyze")

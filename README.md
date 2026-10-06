@@ -606,6 +606,137 @@ ready означает прохождение технических прове�
 Надёжность intent/comment translation и переводов новых языков остаётся ограничением;
 запуск AUTO на основании этих smoke-результатов не разрешён.
 
+## Stage 4A.4: PRE-DELIVERY HARDENING — реализован
+
+Этот этап исправляет lifecycle/concurrency и готовит серверные контракты доставки.
+**APPROVE ≠ SEND. Delivery: NOT CONFIGURED.** ADB, Android implementation,
+физическая отправка комментариев в TikTok и AUTO отсутствуют. Для них нужна отдельная
+команда на Stage 4B. Старт браузера, GET и SSE не запускают LIVE, модель или операции.
+
+- **M1:** очистка SDK — отдельная owned task с ограниченным временем каждого этапа.
+  Повторная отмена вызывающей LIVE task ждёт очистки waiters/socket/heartbeat и обоих
+  HTTP pools. `cleanup_state` показывает `not_started/running/complete/failed`.
+  Ошибка или timeout требуют оператора; новый CONNECT после failed cleanup блокируется
+  до перезапуска backend. Чужие asyncio tasks не отменяются. У Service есть внешний
+  deadline на сбор только собственных consumer/producer; зависший callback также
+  завершает очистку с ошибкой. Ресурс, игнорирующий cancel/close, нельзя гарантированно
+  освободить программно: такой случай объявляется failed, а не успешным shutdown.
+- **M2:** APPLY строит процессор и Quality Lab до смены ссылок, публикует весь новый
+  runtime без await, затем закрывает предыдущий. Отмена ждёт owned retirement.
+  До публикации остаётся рабочий старый runtime, после — рабочий новый. Закрытый
+  старый клиент никогда не остаётся active.
+- **M3:** DisconnectEvent сразу снимает CONNECTED. Это transport disconnect, а не
+  ENDED. Connection, LIVE activity и `delivery_ready=false` показываются отдельно.
+- **M4:** `saved_config_revision` и `active_runtime_revision` — opaque UUID tokens,
+  а не timestamps. SAVE/RESET меняют saved token; APPLY меняет active token.
+  Запрос со старым token возвращает 409 без записи. SAVE pending настроек не меняет
+  текущий процессор и не инвалидирует approval; APPLY инвалидирует старые approvals.
+  UI сохраняет версию начала редактирования, при 409 перечитывает настройки и
+  показывает конфликт. Backend restart создаёт новые tokens.
+- **M5:** каждый операторский CONNECT получает новый `live_session_id`, видимый в
+  status/SSE. Internal reconnect одного LiveService сохраняет ID. Полный
+  Disconnect → Connect создаёт новый ID. Старый DISCONNECT(A) не остановит B.
+  Lifespan использует отдельный internal `stop_current`. Callback старой сессии
+  игнорируется. ENDED/NEED_OPERATOR/явный Disconnect окончательно отзывают сессию;
+  её карточки остаются в истории, но больше не разрешают approval/delivery.
+- **M6:** у каждого QualityService есть новый `service_epoch`. UI принимает новый
+  epoch даже с revision 1 после старой 155, очищает строки и сравнивает revisions
+  только внутри одного epoch. APPLY и restart создают новый epoch.
+- **L1/L2:** overlay читается один раз, максимум 16 KiB, depth 12, nodes 256;
+  aliases запрещены. Parser/recursion/decoding errors становятся статическим
+  LocalConfigError. Manual review требует `run_id` и обязательный `run_number`:
+  это однозначный trial внутри stability group, без implicit current trial.
+
+Новые тела локальных JSON POST (те же loopback/Host/Origin/CSRF guards):
+
+```text
+POST /api/admin/operator/settings
+  {expected_saved_revision, settings: {tiktok?, ai?, reply?}}
+POST /api/admin/operator/apply
+  {expected_saved_revision, expected_active_runtime_revision}
+POST /api/admin/operator/reset
+  {expected_saved_revision}
+POST /api/admin/live/disconnect
+  {expected_live_session_id}
+POST /api/admin/suggestions/{suggestion_id}/approve
+  {expected_suggestion_revision, translation_review_confirmed: false}
+```
+
+Значения версий берутся из текущего GET operator settings/status/карточки.
+Текст ответа и произвольные поля в approval body запрещены. READY можно approve,
+SKIPPED/NEEDS_OPERATOR нельзя. Для constrained translation нужен отдельный явный
+`translation_review_confirmed=true`. Две вкладки с одинаковой версией получают
+один approval ID; stale card получает 409. COPY REPLY остаётся только clipboard.
+В Quality Lab карточки не регистрируются для approval.
+
+`SuggestionEnvelope` хранится только на сервере, immutable и bounded: 100 Playground
+и 50 LIVE records вместе с approvals. Он включает source, comment identity, account,
+session, active runtime, hashes загруженных approved knowledge/policy, provider/model,
+intent/fact IDs/social ID, статус, точный ответ/hash, translations/review flags,
+created/expiry и hash всего envelope. Срок — пять минут от локального получения
+комментария; долго стоявший в очереди комментарий не получает новый срок после AI.
+Approval связывает exact envelope/reply hashes, session/runtime/knowledge/policy и
+время подтверждения. Изменение binding, expiry или non-READY делает его stale.
+Истории/approval не являются аудитом и не переживают restart; новый active token
+дополнительно запрещает использование прежних browser cards.
+
+В установленном TikTokLive 7.0.1 проверен `CommentEvent.common.msg_id` (positive
+int64). Он переносится в внутренний Comment как безопасная decimal string; raw SDK
+objects не сохраняются. Identity hash включает message ID, operator session и account.
+При отсутствии ID используется **fingerprint**, включающий user/text и 30-секундный
+bucket локального receipt time. Это не стабильный TikTok ID: одинаковые комментарии
+в одном bucket могут совпасть, на границе bucket — различаться; dedup не гарантируется
+между новыми operator sessions. Не заявляем exactly-once физическую доставку.
+
+`DeliveryEligibility` — pure deterministic функция без LLM, сети и device calls.
+Она проверяет integrity, READY/expiry, session/account, active runtime/knowledge/policy,
+connection/activity, exact approval, translation review, duplicate, operator pause и
+наличие delivery/device. Reasons — фиксированный allowlist. Playground/fake/replay
+не разрешают реальную доставку; production delivery/device сейчас unavailable.
+
+`ReplySenderProtocol`, `DeliveryRequest`, `DeliveryResult` и минимальный
+`AndroidControllerProtocol` задают границу будущего Stage 4B. Device contract получает
+только target/account/session, operation ID, exact text и deadline; AI prompts,
+knowledge, Settings, operator translation, SDK events и credentials туда не передаются.
+Статусы результата: **confirmed / not_sent / unknown / needs_operator**. Timeout,
+ошибка или отмена после возможного действия означают UNKNOWN, без автоматического
+повтора. В production UI статус SENT не используется.
+
+Реализован `DeliveryOperationStore` и stdlib `SQLiteDeliveryOperationStore`:
+фиксированный будущий локальный файл `data/delivery.sqlite3` ignored вместе с WAL/SHM.
+Конструктор отложен: web startup и approval не создают базу. `DeliveryCoordinator`
+не подключён к FastAPI и не имеет production sender; тесты используют mocks и
+временную SQLite. BEGIN IMMEDIATE и UNIQUE по suggestion/comment identity/idempotency
+key резервируют операцию до mock send. Текст берётся только из server envelope.
+Одинаковый key возвращает прежний результат; другой key не разрешает повтор той же
+suggestion/comment. Reserved row после crash трактуется как UNKNOWN и блокирует
+повтор. В базе только bounded IDs/hashes/account/status/times, без текста комментария,
+ответа или secrets. Максимум 10 000 rows; заполнение требует оператора и fail closed,
+записи dedup не удаляются автоматически. Это crash-safe reservation, не доказательство
+доставки в TikTok. Реальное recovery/audit/device confirmation остаётся Stage 4B.
+
+Проверки Windows (mock providers/LIVE/device, без внешних API):
+
+```powershell
+& .\.venv\Scripts\python.exe -m pytest -q
+& .\.venv\Scripts\python.exe -m pip check
+& .\.venv\Scripts\python.exe -m app.main --mode fake
+& .\.venv\Scripts\python.exe -m pytest -q backend/tests/test_quality.py backend/tests/test_friendly.py backend/tests/test_predelivery_hardening.py
+& .\.venv\Scripts\python.exe -m pip wheel . --no-deps --wheel-dir work/stage4a4-wheel
+```
+
+Дополнительная JS regression в pytest использует установленный Node только если он
+доступен (иначе skip); npm, CDN и frontend server не нужны. Wheel включает delivery
+modules, lifecycle helper и все local UI assets; config/social_replies.yaml, как
+project/knowledge/corpus, остаётся workspace config. Запускайте установленный пакет
+из официального workspace с каталогом config, а не из site-packages.
+Все десять replay scenarios проверяются отдельно командами из раздела Offline replay.
+Итоговая проверка Stage 4A.4: **801 tests passed**, включая focused Quality Lab mock,
+FRIENDLY и 75 новых regression tests; все 10 CLI replay — PASS, pip check — без
+нарушенных зависимостей, fake CLI — два READY/один SKIPPED и STOPPED. Wheel/package
+data и JS syntax/epoch regression проверены. Два прежних websockets deprecation
+warnings остаются. Реальные TikTok/LM Studio/OpenAI/device действия не выполнялись.
+
 ## Stage 4A.3: настройки оператора, FRIENDLY и управление подключением
 
 Рекомендуемый запуск панели в PowerShell:
@@ -719,7 +850,9 @@ translation failures не устранены этим этапом; READY все
 GET `/api/admin/operator/settings`, POST этого же пути (SAVE),
 POST `/api/admin/operator/apply`, POST `/api/admin/operator/reset`,
 POST `/api/admin/live/connect` с `{ "username": "@your_handle" }` (202 accepted),
-POST `/api/admin/live/disconnect` с `{}`. Requests не ждут весь эфир; контроллер
+POST `/api/admin/live/disconnect` с `expected_live_session_id` (Stage 4A.4).
+SAVE/APPLY/RESET также требуют revision preconditions, описанные выше.
+Requests не ждут весь эфир; контроллер
 держит одну owned task/LiveService. Disconnect/cancellation закрывает собственные
 resources, включая отмену до первого шага runner, без отмены чужих tasks.
 UI/SSE используют явные safe projections; provider payloads и exception bodies
@@ -1634,7 +1767,7 @@ ASGI SSE disconnect. Всё provider HTTP — in-memory mock, без paid/local 
 Тесты блокируют внешние сокеты и DNS; loopback разрешён для внутренней работы asyncio
 на Windows. Они не проверяют доступность реального LIVE или сервиса подписи.
 
-Проверено на Python 3.12.0: **529 tests passed**; все 10 replay-сценариев отдельно
+Исторический baseline Stage 4A на Python 3.12.0: **529 tests passed**; все 10 replay-сценариев отдельно
 запущены через CLI и завершились с PASS; fake CLI выводит все три сообщения
 и карточки предложений; editable installation проекта 0.2.0 выполнена;
 pip check сообщает No broken requirements found. У зависимостей TikTokLive

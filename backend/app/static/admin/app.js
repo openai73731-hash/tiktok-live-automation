@@ -37,7 +37,8 @@
       const safeMessages = {csrf_required: "Сессия изменилась. Обновите страницу.",
         same_origin_required: "Запрос должен выполняться с той же локальной страницы.",
         local_access_only: "Панель доступна только локально.", invalid_input: "Проверьте текст и параметры запроса."};
-      throw new Error(safeMessages[data.error] || data.detail || "Операция не выполнена. Проверьте состояние backend.");
+      const error = new Error(safeMessages[data.error] || data.detail || "Операция не выполнена. Проверьте состояние backend.");
+      error.status = response.status; throw error;
     }
     return data;
   }
@@ -176,11 +177,47 @@
     });
     const send = node("button", "button send-disabled", "SEND · не подключён"); send.disabled = true; send.title = "Delivery not configured";
     actions.append(copy, send); card.append(actions);
+    if (record.delivery_review) {
+      const review = record.delivery_review, envelope = review.envelope;
+      card.append(node("p", "subtle mono", `ID ${envelope.suggestion_id} · runtime ${envelope.active_runtime_revision.slice(0, 8)} · session ${envelope.live_session_id?.slice(0, 8) || "Playground"}`),
+        node("p", "subtle", `Approval: ${review.approval_state} · Delivery: NOT CONFIGURED · ${review.eligibility.reason}`));
+      const approve = node("button", "button secondary-button", "APPROVE · без отправки");
+      approve.type = "button"; approve.disabled = item.status !== "ready" || review.approval_state !== "missing";
+      let translationCheck = null;
+      if (item.translation_requires_review) {
+        const label = node("label", "field-label", "Я проверил перевод ответа");
+        translationCheck = node("input"); translationCheck.type = "checkbox"; label.prepend(translationCheck); card.append(label);
+      }
+      approve.addEventListener("click", async () => {
+        approve.disabled = true;
+        try {
+          const next = await api(`/api/admin/suggestions/${envelope.suggestion_id}/approve`, {
+            expected_suggestion_revision: envelope.suggestion_revision,
+            translation_review_confirmed: Boolean(translationCheck?.checked)});
+          record.delivery_review = next; card.replaceWith(replyCard(record)); toast("Approval записан. Ничего не отправлено.");
+        } catch (error) {
+          toast(error.message);
+          try { record.delivery_review = await api(`/api/admin/suggestions/${envelope.suggestion_id}`); card.replaceWith(replyCard(record)); }
+          catch { approve.disabled = false; }
+        }
+      });
+      actions.prepend(approve);
+    }
     return card;
   }
   function showResult(record) {
+    state.selectedSuggestion = record.id;
     $("result-empty").hidden = true; $("result-content").hidden = false;
     $("result-content").replaceChildren(replyCard(record)); text("result-duration", `${record.duration_ms} мс`);
+  }
+  async function refreshReviews() {
+    const version = state.reviewRefreshVersion = (state.reviewRefreshVersion || 0) + 1;
+    const [history, live] = await Promise.all([api("/api/admin/playground/history"), api("/api/admin/live/history")]);
+    if (version !== state.reviewRefreshVersion) return;
+    state.history = new Map(history.map((record) => [record.id, record]));
+    state.live = new Map(live.map((record) => [record.id, record]));
+    renderHistory(); renderLive();
+    if (state.selectedSuggestion && state.history.has(state.selectedSuggestion)) showResult(state.history.get(state.selectedSuggestion));
   }
   function trimMap(map, max) {
     const ordered = [...map.values()].sort((a, b) => new Date(b.received_at || b.timestamp) - new Date(a.received_at || a.timestamp));
@@ -242,8 +279,13 @@
     stream.onerror = () => setConnected(false);
     receive("snapshot", renderStatus);
     receive("quality_update", quality.apply);
-    receive("operator_settings", operator.render);
-    receive("live_state", renderLiveStatus);
+    receive("operator_settings", (value) => { operator.render(value); refreshReviews().catch(() => setConnected(false)); });
+    receive("suggestion_approval", () => { refresh().catch(() => setConnected(false)); });
+    receive("live_state", (value) => {
+      const changed = value.state !== state.status?.live?.state || value.live_session_id !== state.status?.live?.live_session_id;
+      renderLiveStatus(value);
+      if (changed) refreshReviews().catch(() => setConnected(false));
+    });
     receive("ai_status", renderAI);
     receive("reply_suggestion", (value) => { state.live.set(value.record.id, value.record); trimMap(state.live, 50); renderLive(); renderMetrics(value.metrics); });
     receive("comment_received", (value) => { state.live.set(value.id, value); trimMap(state.live, 50); renderLive(); });

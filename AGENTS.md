@@ -1,6 +1,6 @@
 # Project scope and rules
 
-- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A, Stage 4A.1, Stage 4A.2 and Stage 4A.3 are authorized and implemented. Stage two
+- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A, Stage 4A.1, Stage 4A.2, Stage 4A.3 and Stage 4A.4 are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A is VERIFIED
@@ -9,6 +9,48 @@
   CommentProcessor/FakeAI ReplySuggestion, ignored UnknownEvent, LiveEndEvent,
   ENDED -> STOPPED. Stage 3B implements OpenAI; paid API quality/access remains
   unverified until the operator runs the separate manual AI smoke test.
+- Stage 4A.4 hardens pre-delivery only. SDK cleanup and processor retirement are
+  finite owned transitions that repeated caller cancellation must finish. SDK
+  cleanup records complete/failed, attempts both HTTP pools, socket, heartbeat and
+  waiters, and never cancels unrelated tasks. A failed cleanup blocks new CONNECT
+  until operator intervention/backend restart. DisconnectEvent immediately revokes
+  CONNECTED without declaring ENDED. APPLY builds first, atomically publishes all
+  new references/revision, then retires the old runtime; active must never be closed.
+  SAVE/RESET require expected_saved_revision; APPLY also requires the expected
+  active_runtime_revision. Opaque tokens change on save/reset, apply and restart;
+  stale browser mutations return 409. Pending SAVE does not invalidate approval.
+  Each operator CONNECT owns one opaque live_session_id; internal reconnect keeps
+  it, full disconnect/connect replaces it. Browser DISCONNECT requires the observed
+  ID; lifespan uses internal stop_current. Terminal ENDED/NEED_OPERATOR and explicit
+  disconnect permanently invalidate that session. Ignore callbacks from old sessions.
+  QualityService has a fresh service_epoch per instance; compare JS revisions only
+  inside one epoch and clear old rows on epoch change. Quality review requires both
+  run_id and explicit run_number, identifying a unique trial within that run group.
+  Overlay reads at most 16 KiB once, limits depth to 12/nodes to 256, rejects aliases,
+  and maps parser/recursion/decoding errors to static LocalConfigError.
+  Bounded server SuggestionStore (100 Playground/50 LIVE) owns immutable envelopes
+  and approvals. Hash exact reply and full envelope; bind source/comment identity,
+  account/session, active runtime, loaded knowledge/policy, provider/model and receipt
+  expiry (five minutes). SDK CommentEvent.common.msg_id is verified in installed
+  7.0.1; missing ID uses an explicitly limited 30-second receipt-bucket fingerprint.
+  APPROVE is CSRF protected, accepts identity/expected revision plus explicit
+  translation_review_confirmed only, and never sends. Non-ready, expired, modified
+  or stale envelopes cannot be approved. Browser text is never delivery authority.
+  DeliveryEligibility is pure, deterministic and uses allowlisted reasons; production
+  delivery/device remain unavailable. ReplySenderProtocol and AndroidControllerProtocol
+  are contracts only. DeliveryCoordinator has no web route or production sender;
+  mocks exist only in tests. Results: confirmed/not_sent/unknown/needs_operator.
+  Timeout/cancellation after dispatch is UNKNOWN, never an automatic retry.
+  SQLiteDeliveryOperationStore uses ignored data/delivery.sqlite3 with transactional
+  reservation and unique suggestion/comment/idempotency identities. Retain at most
+  10,000 bounded metadata rows, no reply/original text/secrets; full journal fails
+  closed, never evicts dedup records. Reserved rows surviving a crash mean UNKNOWN
+  and block retry. Same key returns prior result; another key cannot resend the same
+  suggestion/comment. Database construction is deferred; web startup/GET/SSE create
+  no operation, database, listener or inference. Approval/history are in memory;
+  restart invalidates them via a new active runtime token. APPROVE != SEND.
+  ADB, Android implementation, physical TikTok SEND and AUTO remain absent and need
+  a separate Stage 4B authorization. Preserve all existing local/security guards.
 - Stage 4A implements a local operator Admin UI served by this FastAPI backend:
   HTML/CSS/vanilla JavaScript only, no CDN/npm/frontend server. Bind only to
   127.0.0.1; loopback peer/Host, same-origin JSON and per-lifespan CSRF guards apply.
