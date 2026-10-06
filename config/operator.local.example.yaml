@@ -1,0 +1,13 @@
+# Copy only if needed. Browser Save writes ignored operator.local.yaml.
+# Replace with the handle of your own LIVE; no credentials or room ID.
+tiktok:
+  username: ""
+ai:
+  provider: lmstudio
+  model: qwen/qwen3-8b
+  temperature: 0.0
+  timeout_seconds: 15
+reply:
+  mode: focused
+  max_sentences: 2
+  max_chars: 180

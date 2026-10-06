@@ -62,6 +62,7 @@ class PlaygroundService:
         self.lock = asyncio.Lock()
         self.task: asyncio.Task | None = None
         self.closed = False
+        self.on_busy_change = lambda: None
 
     async def analyze(self, text: str, *, allow_paid: bool = False) -> ReplyRecord:
         if self.closed or self.lock.locked():
@@ -70,19 +71,23 @@ class PlaygroundService:
             raise ValueError("Comment limit exceeded")
         if self.processor.engine.name == "openai" and not allow_paid:
             raise PaidRequestNotConfirmed()
-        async with self.lock:
-            started = perf_counter()
-            comment = Comment(username="playground", text=text, source="playground")
-            try:
-                self.task = asyncio.create_task(self.processor.process(comment), name="playground-ai")
-                suggestion = await self.task
-            finally:
-                self.task = None
-            record = record_for(comment, suggestion, "playground", round((perf_counter() - started) * 1000), uuid4().hex)
-            self.history.appendleft(record)
-            self.processed += 1
-            self.events.publish("playground_result", PlaygroundResultEvent(record=record, processed=self.processed))
-            return record
+        try:
+            async with self.lock:
+                self.on_busy_change()
+                started = perf_counter()
+                comment = Comment(username="playground", text=text, source="playground")
+                try:
+                    self.task = asyncio.create_task(self.processor.process(comment), name="playground-ai")
+                    suggestion = await self.task
+                finally:
+                    self.task = None
+                record = record_for(comment, suggestion, "playground", round((perf_counter() - started) * 1000), uuid4().hex)
+                self.history.appendleft(record)
+                self.processed += 1
+                self.events.publish("playground_result", PlaygroundResultEvent(record=record, processed=self.processed))
+                return record
+        finally:
+            self.on_busy_change()
 
     async def aclose(self) -> None:
         self.closed = True
@@ -110,6 +115,7 @@ class AdminService:
                                   available=True if project.ai.provider == "fake" else None)
         self.check_task: asyncio.Task | None = None
         self.last_checked = 0.0
+        self.runtime = None
 
     def live_view(self) -> LiveView:
         status = self.live_status
@@ -120,18 +126,23 @@ class AdminService:
             elif status.state in {LiveState.ENDED, LiveState.OFFLINE} or status.terminal_state == LiveState.ENDED:
                 activity = "inactive"
         return LiveView(enabled=self.live_service is not None, mode=status.mode,
-                        state=status.state if self.live_service is not None else "disconnected",
+                        state=status.state if self.live_service is not None or status.state == LiveState.STOPPED else "disconnected",
                         terminal_state=status.terminal_state, activity=activity,
                         queue_size=self.live_service.queue.qsize() if self.live_service is not None else 0,
-                        updated_at=status.updated_at)
+                        updated_at=status.updated_at,
+                        username=(status.username if status.username != "demo" and
+                                  len(status.username) <= 24 and all(c.isascii() and (c.isalnum() or c in "._") for c in status.username) else ""),
+                        connection_owned=bool(self.runtime and self.runtime.live.service is not None))
 
     def status(self) -> AdminStatus:
         return AdminStatus(started_at=self.started_at, uptime_seconds=int(perf_counter() - self.started),
                            live=self.live_view(), ai=self.ai_status, metrics=self.metrics,
-                           playground_processed=self.playground.processed)
+                           playground_processed=self.playground.processed,
+                           reply_policy=self.playground.processor.project.ai.reply_policy,
+                           temperature=self.playground.processor.project.ai.temperature)
 
-    def public_settings(self) -> PublicSettings:
-        project = self.playground.processor.project
+    def public_settings(self, project=None) -> PublicSettings:
+        project = project or self.playground.processor.project
         ai = project.ai
         return PublicSettings(product_name=project.product.name, platform=project.product.platform,
             stream_language=project.stream.language, provider=ai.provider, model=ai.model,
@@ -140,14 +151,15 @@ class AdminService:
             max_comment_chars=ai.max_comment_chars, max_model_output_tokens=ai.max_model_output_tokens,
             timeout_seconds=ai.timeout_seconds, thinking_enabled=ai.thinking_enabled,
             lmstudio_base_url=ai.lmstudio_base_url if ai.provider == "lmstudio" else None,
-            live_enabled=self.settings.admin_live_enabled, live_mode=self.settings.live_mode)
+            live_enabled=self.live_service is not None, live_mode=self.live_status.mode,
+            reply_policy=ai.reply_policy)
 
     def on_live_state(self, status: LiveStatus) -> None:
         self.live_status = status
         self.events.publish("live_state", self.live_view())
 
-    async def handle_live(self, comment: Comment, processor: CommentProcessor) -> ReplyRecord:
-        source = {"real": "tiktok", "fake": "fake", "replay": "replay"}[self.settings.live_mode]
+    async def handle_live(self, comment: Comment, processor: CommentProcessor, *, mode=None) -> ReplyRecord:
+        source = {"real": "tiktok", "fake": "fake", "replay": "replay"}[mode or self.settings.live_mode]
         id = uuid4().hex
         self.events.publish("comment_received", CommentView(id=id, source=source,
             username=comment.username[:200], text=comment.text[:10_000], timestamp=comment.timestamp,
@@ -166,6 +178,8 @@ class AdminService:
         return record
 
     async def check_ai(self) -> AIStatus:
+        if self.runtime and self.runtime.applying:
+            raise PlaygroundBusy()
         # Explicit button only; cached for 30 seconds, never generate for health.
         if self.check_task is not None or perf_counter() - self.last_checked < 30:
             return self.ai_status
@@ -179,10 +193,14 @@ class AdminService:
             self.ai_status = self.ai_status.model_copy(update={"state": "checking"})
             self.events.publish("ai_status", self.ai_status)
             self.check_task = asyncio.create_task(self._check_local(engine), name="admin-ai-check")
+            if self.runtime:
+                self.runtime.publish()
             try:
                 self.ai_status = await self.check_task
             finally:
                 self.check_task = None
+                if self.runtime:
+                    self.runtime.publish()
         self.last_checked = perf_counter()
         self.events.publish("ai_status", self.ai_status)
         return self.ai_status

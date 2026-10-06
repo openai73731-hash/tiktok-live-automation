@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai.models import ReplySuggestion
+from app.admin.operator_config import OperatorOverlay
 
 
 class UIModel(BaseModel):
@@ -43,6 +44,8 @@ class LiveView(UIModel):
     activity: Literal["active", "inactive", "unknown"]
     queue_size: int
     updated_at: datetime
+    username: str = ""
+    connection_owned: bool = False
 
 
 class AIStatus(UIModel):
@@ -83,6 +86,8 @@ class AdminStatus(UIModel):
     reply_mode: Literal["MANUAL"] = "MANUAL"
     automatic_enabled: Literal[False] = False
     delivery: Literal["NOT CONFIGURED"] = "NOT CONFIGURED"
+    reply_policy: Literal["focused", "friendly"] = "focused"
+    temperature: float = 0
 
 
 class PublicSettings(UIModel):
@@ -102,3 +107,20 @@ class PublicSettings(UIModel):
     lmstudio_base_url: str | None
     live_enabled: bool
     live_mode: str
+    reply_policy: Literal["focused", "friendly"] = "focused"
+
+
+class OperatorView(UIModel):
+    saved: OperatorOverlay
+    active: PublicSettings
+    desired: PublicSettings
+    username: str
+    saved_username: str
+    pending: bool
+    locked: bool
+    lock_reason: str | None = None
+    config_error: Literal["invalid_local_config"] | None = None
+
+
+class ConnectInput(UIModel):
+    username: str = Field(min_length=1, max_length=25)

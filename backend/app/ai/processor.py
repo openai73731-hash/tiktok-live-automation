@@ -61,7 +61,10 @@ class CommentProcessor:
                 project=self.project, knowledge=self.knowledge,
             )
             async with asyncio.timeout(self.project.ai.timeout_seconds):
-                raw = await self.engine.generate(request)
+                from app.ai.social import draft_for
+                raw = draft_for(request)
+                if raw is None:
+                    raw = await self.engine.generate(request)
             # Validate the boundary even if a future provider returns a dict.
             draft = ReplyDraft.model_validate(raw)
         except Exception as exc:
@@ -94,6 +97,8 @@ class CommentProcessor:
             }})
             return abstain("Ответ не прошёл проверку фактов, языка или ограничений; требуется оператор.")
         reason = (
+            "Короткий социальный ответ из утверждённого банка; требуется подтверждение."
+            if draft.response_kind == "social" else
             "Вопрос о результате торговли; ответ без финансовых обещаний."
             if draft.response_kind == "no_promises" else
             "Нет подтверждённых сведений; предложен честный ответ об ограничении знаний."
@@ -107,6 +112,7 @@ class CommentProcessor:
             reply_translation=draft.reply_translation, fact_ids=draft.fact_ids,
             reason=reason, status="ready",
             template_id=draft.template_id,
+            social_id=draft.social_id,
             translation_source="constrained" if draft.translation_evidence else "approved",
             translation_requires_review=draft.translation_evidence is not None,
         )

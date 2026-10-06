@@ -1,6 +1,6 @@
 # Project scope and rules
 
-- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A, Stage 4A.1 and Stage 4A.2 are authorized and implemented. Stage two
+- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A, Stage 4A.1, Stage 4A.2 and Stage 4A.3 are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A is VERIFIED
@@ -80,6 +80,35 @@
   German wording remains constrained machine translation requiring review, never
   approved knowledge. Back-translation and curated PASS do not prove semantic fidelity.
   SEND/AUTO/Android remain disabled and auto_send_eligible=false.
+- Stage 4A.3 adds a fixed ignored operator.local.yaml beside the selected project
+  config. Safe YAML/schema validation and atomic temporary-file/replace writes
+  allow only username, fake/lmstudio provider, model, temperature 0..1, timeout
+  1..120, focused/friendly policy and bounded reply lengths. No credentials,
+  endpoint/URL, facts, safety rules or generic path/file editor are permitted.
+  Precedence is project config -> local overlay -> immutable web runtime; CLI is
+  unchanged. SAVE persists without mutating active processors; APPLY explicitly
+  replaces the idle Playground processor/client and Quality Lab. RESET removes
+  only the overlay and needs APPLY to change active behavior. LIVE ownership,
+  inference/Quality Lab and health checks block changes. Invalid local config
+  exposes only a static error, uses safe project defaults and blocks connection.
+  Default browser/server startup never constructs a listener. Explicit CSRF-protected
+  CONNECT starts one read-only real LiveService asynchronously for the supplied own
+  handle; DISCONNECT cancels/gathers only its owned task, frees SDK and LIVE AI
+  resources, leaves Playground/FastAPI running. Terminal security states require
+  explicit disconnect; no security retry/bypass is added. Existing explicit
+  ADMIN_LIVE_ENABLED startup remains compatible. UI Connect forbids OpenAI;
+  overlay cannot select it. Existing paid Playground confirmation remains mandatory.
+  Friendly social responses use only whole-message matches from a separate
+  reviewed en/ru/es bank, with original/Russian translations and stable social IDs.
+  Mixed factual/financial messages and unknown questions never fall back to social.
+  Provider classification schema/reason enum and factual composer are unchanged.
+  Both policies use the same grounding, claim, language, style and length gates;
+  social binding is rechecked against input/policy/bank, approval remains mandatory.
+  The 75-case Quality Lab baseline requires FOCUSED; a separate small friendly
+  corpus tests the social bank. No free social generation is enabled. Reply policy
+  FOCUSED/FRIENDLY is separate from delivery mode MANUAL/AUTOMATIC. SEND/AUTO/Android
+  remain absent. Tests mock LIVE and providers; manual UI/localhost smoke may not
+  start real TikTok or paid OpenAI. Only the operator may press real CONNECT.
 - Stage 3C adds LMStudioReplyEngine through the same AIReplyEngine/factory contract.
   Configuration selects provider/model; fake remains default. LM Studio is trusted
   only as a loopback local provider: http, explicit port, /v1, literal 127.0.0.1,
@@ -102,7 +131,8 @@
 - Stage 3C factual replies use deterministic approved variants/combined templates
   from bot_knowledge.yaml; source bindings must still match current approved facts
   and translations. Preserve viewer language; operator translation is Russian.
-  Replies are short natural chat text, one sentence preferred, maximum two, no emojis,
+  Replies are short natural chat text, one sentence preferred, maximum two in focused
+  and three in friendly, no emojis,
   emoticons, markdown, hashtags, marketing or financial promises. Run final safety
   checks for both reply and Russian reply translation.
 - For languages without approved wording, Stage 3C permits a separate constrained
@@ -114,7 +144,7 @@
   translation_requires_review=true; requires_approval remains true for all replies.
   Arbitrary LLM factual paraphrases remain prohibited. auto_send_eligible is always
   false until independent delivery health, deduplication and safety gates exist.
-- Future local web UI, MANUAL/AUTOMATIC, ReplySender and Android delivery are only
+- Future delivery controls, AUTOMATIC, ReplySender and Android delivery are only
   documented. MANUAL means AI prepares the text and the operator chooses SEND/SKIP.
   Future AUTO needs deterministic eligibility, rate limit/cooldown/queue/dedup,
   delivery result, audit and PAUSE AUTO. Unknown/security UI, CAPTCHA, verification

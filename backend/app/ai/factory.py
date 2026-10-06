@@ -18,8 +18,9 @@ def create_engine(settings: Settings, project: ProjectConfig) -> AIReplyEngine:
     raise ValueError("Unsupported AI provider")
 
 
-def create_processor(settings: Settings, *, ai_smoke: bool = False, smoke_provider: str | None = None) -> CommentProcessor:
-    project = load_yaml_model(settings.project_config_path, ProjectConfig)
+def create_processor(settings: Settings, *, ai_smoke: bool = False, smoke_provider: str | None = None,
+                     project: ProjectConfig | None = None) -> CommentProcessor:
+    project = project or load_yaml_model(settings.project_config_path, ProjectConfig)
     if ai_smoke or smoke_provider or settings.diagnostic or settings.live_mode == "replay":
         # Stage 3A isolates the LIVE integration from provider selection.
         project = project.model_copy(update={

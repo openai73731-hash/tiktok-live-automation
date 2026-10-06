@@ -22,6 +22,7 @@ from app.admin.events import AdminEventBus
 from app.admin.router import ASSETS, router as admin_router
 from app.admin.security import LocalAdminMiddleware, SECURITY_HEADERS
 from app.admin.service import AdminService, PlaygroundService
+from app.admin.runtime import OperatorRuntime
 from app.quality.router import router as quality_router
 from app.quality.service import QualityService
 
@@ -40,31 +41,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin = AdminService(config, playground, events)
         application.state.admin = admin
         application.state.playground_service = playground
+        runtime = OperatorRuntime(application, config, admin, playground_config, LiveService)
+        admin.runtime = runtime
+        playground.on_busy_change = runtime.publish
+        application.state.operator_runtime = runtime
+        if runtime.project != playground.processor.project:
+            await playground.processor.aclose()
+            playground.processor = create_processor(playground_config, project=runtime.project)
+            from app.admin.models import AIStatus
+            ai = runtime.project.ai
+            admin.ai_status = AIStatus(provider=ai.provider, model=ai.model,
+                state="available" if ai.provider == "fake" else "not_checked",
+                available=True if ai.provider == "fake" else None)
         quality = QualityService(playground, live_enabled=config.admin_live_enabled)
         application.state.quality = quality
-        processor = service = task = None
+        runtime.live._sync()
         try:
-            if config.admin_live_enabled:
-                processor = create_processor(config)
-
-                async def handle(comment):
-                    return await admin.handle_live(comment, processor)
-
-                service = LiveService(config, on_comment=handle, on_status=admin.on_live_state)
-                admin.live_service = service
-                admin.live_status = service.status
-                task = asyncio.create_task(service.run(), name="live-service")
-            application.state.comment_processor = processor
-            application.state.live_service = service
-            application.state.live_task = task
+            if config.admin_live_enabled and not runtime.config_error:
+                await runtime.live.connect(runtime.username or ("demo" if config.live_mode == "fake" else ""), startup=True)
             yield
         finally:
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            if processor is not None:
-                await processor.aclose()
-            await quality.aclose()
+            runtime.closed = True
+            await runtime.live.disconnect()
+            await application.state.quality.aclose()
             await admin.aclose()
 
     application = FastAPI(title="TikTok LIVE Assistant", lifespan=lifespan,

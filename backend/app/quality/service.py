@@ -36,7 +36,10 @@ class QualityService:
         self.closed = False
         self.stop_requested = False
         reason = ("Quality Lab запрещает OpenAI." if processor.engine.name == "openai" else
-                  "Запустите панель с ADMIN_LIVE_ENABLED=false." if live_enabled else None)
+                  "75-кейсный baseline использует FOCUSED. Примените FOCUSED в настройках." if processor.project.ai.reply_policy != "focused" else
+                  "Отключите LIVE перед запуском Quality Lab." if live_enabled else None)
+        self.base_disabled_reason = ("Quality Lab запрещает OpenAI." if processor.engine.name == "openai" else
+                  "75-кейсный baseline использует FOCUSED. Примените FOCUSED в настройках." if processor.project.ai.reply_policy != "focused" else None)
         self.run = RunView(revision=0, dataset_name=self.dataset.name, dataset_version=self.dataset.version,
             dataset_hash=fingerprint(self.dataset), knowledge_hash=fingerprint(processor.knowledge),
             ai_config_hash=fingerprint(processor.project.ai), provider=processor.engine.name,
@@ -45,6 +48,10 @@ class QualityService:
             analysis_prompt_hash=getattr(processor.engine, "analysis_prompt_hash", None),
             translation_prompt_hash=getattr(processor.engine, "translation_prompt_hash", None),
             stability=summarize_stability(self.dataset, (), requested=1), summary=summarize(self.dataset, ()))
+
+    def set_live_enabled(self, enabled):
+        reason = self.base_disabled_reason or ("Отключите LIVE перед запуском Quality Lab." if enabled else None)
+        self._update(enabled=reason is None, disabled_reason=reason)
 
     def snapshot(self):
         return QualitySnapshot(dataset=self.dataset, run=self.run, results=tuple(self.results.values()),
@@ -79,6 +86,7 @@ class QualityService:
         # Acquire before returning: Playground cannot slip an inference between
         # scheduling the runner and its first iteration. No await while locked above.
         await self.playground.lock.acquire()
+        self.playground.on_busy_change()
         self.results.clear()
         self.completed_runs.clear()
         self.stop_requested = False
@@ -97,6 +105,7 @@ class QualityService:
                 self._update(state="stopped" if task.cancelled() else "failed",
                              error_category=None if task.cancelled() else "run_failed")
             self.playground.lock.release()
+            self.playground.on_busy_change()
             self.task = None
             self._update(current_case_id=None, finished_at=datetime.now(UTC))
 

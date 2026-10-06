@@ -1,4 +1,4 @@
-"""Observation and explicit AI tests only. No send, control, file or config editing."""
+"""Local observation, safe operator settings and read-only LIVE connection control."""
 import asyncio
 from pathlib import Path
 
@@ -7,7 +7,9 @@ from starlette.background import BackgroundTask
 from starlette.responses import FileResponse, RedirectResponse, StreamingResponse
 
 from app.admin.events import sse_message
-from app.admin.models import AnalyzeInput, UIModel
+from app.admin.models import AnalyzeInput, UIModel, ConnectInput
+from app.admin.operator_config import OperatorOverlay
+from app.admin.runtime import RuntimeConflict
 from app.admin.service import PaidRequestNotConfirmed, PlaygroundBusy, PRESETS
 
 router = APIRouter()
@@ -43,6 +45,47 @@ async def settings(request: Request):
     return request.app.state.admin.public_settings()
 
 
+@router.get("/api/admin/operator/settings")
+async def operator_settings(request: Request):
+    return request.app.state.operator_runtime.view()
+
+
+async def runtime_action(action, *args):
+    try:
+        return await action(*args)
+    except RuntimeConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from None
+    except ValueError:
+        raise HTTPException(422, detail="Проверьте username и допустимые параметры настроек.") from None
+    except OSError:
+        raise HTTPException(500, detail="Не удалось сохранить локальные настройки.") from None
+
+
+@router.post("/api/admin/operator/settings")
+async def save_settings(request: Request, body: OperatorOverlay):
+    return await runtime_action(request.app.state.operator_runtime.save, body)
+
+
+@router.post("/api/admin/operator/apply")
+async def apply_settings(request: Request, body: EmptyInput):
+    return await runtime_action(request.app.state.operator_runtime.apply)
+
+
+@router.post("/api/admin/operator/reset")
+async def reset_settings(request: Request, body: EmptyInput):
+    return await runtime_action(request.app.state.operator_runtime.reset)
+
+
+@router.post("/api/admin/live/connect", status_code=202)
+async def live_connect(request: Request, body: ConnectInput):
+    return await runtime_action(request.app.state.operator_runtime.live.connect, body.username)
+
+
+@router.post("/api/admin/live/disconnect")
+async def live_disconnect(request: Request, body: EmptyInput):
+    return await runtime_action(request.app.state.operator_runtime.live.disconnect)
+
+
 @router.get("/api/admin/ai/status")
 async def ai_status(request: Request):
     return request.app.state.admin.ai_status
@@ -50,7 +93,10 @@ async def ai_status(request: Request):
 
 @router.post("/api/admin/ai/check")
 async def ai_check(request: Request, body: EmptyInput):
-    return await request.app.state.admin.check_ai()
+    try:
+        return await request.app.state.admin.check_ai()
+    except PlaygroundBusy:
+        raise HTTPException(409, detail="Дождитесь применения настроек.") from None
 
 
 @router.get("/api/admin/playground/presets")

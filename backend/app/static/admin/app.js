@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const state = {connected: false, busy: false, suite: false, stopSuite: false, csrf: null,
     settings: null, status: null, presets: [], history: new Map(), live: new Map(), stream: null};
-  let quality;
+  let quality, operator;
   const providerName = (name) => ({fake: "Fake · фикстуры", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
   const liveName = (value) => value === "operator_required" ? "NEED_OPERATOR" : String(value).toUpperCase();
   const statusName = (value) => ({ready: "READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
@@ -66,6 +66,7 @@
     text("nav-live-count", metrics.processed);
   }
   function renderLiveStatus(live) {
+    if (state.status) state.status.live = live;
     text("dash-tiktok", liveName(live.state)); text("dash-live", live.activity.toUpperCase());
     text("dash-queue", live.queue_size);
     text("live-mode-label", !live.enabled ? "LIVE ввод отключён" : ({fake: "Имитация LIVE · Fake", replay: "Синтетический Replay", real: "Чтение собственного LIVE"}[live.mode]));
@@ -73,6 +74,7 @@
     text("tiktok-label", live.mode === "real" && live.enabled ? liveName(live.state) : live.enabled ? "Демо" : "Отключён");
     $("tiktok-dot").className = `dot ${live.state === "connected" && live.enabled ? "good" : live.state === "operator_required" || live.terminal_state === "operator_required" ? "warning" : "muted"}`;
     if (live.enabled && !state.live.size) $("live-empty").querySelector("p").textContent = "Ожидаем комментарии от текущего входного потока. Карточки появятся автоматически.";
+    operator?.controls();
   }
   function renderAI(ai) {
     text("dash-provider", providerName(ai.provider)); text("dash-model", ai.model);
@@ -93,6 +95,7 @@
   function renderStatus(value) {
     state.status = value; renderLiveStatus(value.live); renderAI(value.ai); renderMetrics(value.metrics);
     text("playground-count", value.playground_processed);
+    text("dash-policy", value.reply_policy.toUpperCase()); text("dash-temperature", value.temperature);
     renderUptime();
   }
   function renderUptime() {
@@ -107,6 +110,7 @@
   }
   function renderSettings(settings) {
     state.settings = settings;
+    text("dash-policy", settings.reply_policy.toUpperCase()); text("dash-temperature", settings.temperature);
     text("playground-provider", `${providerName(settings.provider)} / ${settings.model}`);
     $("comment-input").maxLength = settings.max_comment_chars;
     $("paid-notice").hidden = settings.provider !== "openai";
@@ -120,6 +124,7 @@
     updateControls();
   }
   function updateControls() {
+    operator?.controls();
     quality?.controls();
     const configured = Boolean(state.settings && state.connected && state.csrf);
     const value = $("comment-input").value;
@@ -216,14 +221,15 @@
     remember(record); showResult(record); return record;
   }
   async function refresh() {
-    const [session, status, settings, presets, history, live] = await Promise.all([
+    const [session, status, settings, presets, history, live, operatorSettings] = await Promise.all([
       api("/api/admin/session"), api("/api/admin/status"), api("/api/admin/settings"),
-      api("/api/admin/playground/presets"), api("/api/admin/playground/history"), api("/api/admin/live/history")]);
+      api("/api/admin/playground/presets"), api("/api/admin/playground/history"), api("/api/admin/live/history"), api("/api/admin/operator/settings")]);
     state.csrf = session.csrf_token; renderSettings(settings); renderStatus(status);
     state.presets = presets; renderPresets();
     state.history = new Map(history.map((record) => [record.id, record])); trimMap(state.history, 100); renderHistory();
     state.live = new Map(live.map((record) => [record.id, record])); trimMap(state.live, 50); renderLive();
     setConnected(true);
+    operator.render(operatorSettings);
     await quality.refresh();
   }
   function connectEvents() {
@@ -236,6 +242,7 @@
     stream.onerror = () => setConnected(false);
     receive("snapshot", renderStatus);
     receive("quality_update", quality.apply);
+    receive("operator_settings", operator.render);
     receive("live_state", renderLiveStatus);
     receive("ai_status", renderAI);
     receive("reply_suggestion", (value) => { state.live.set(value.record.id, value.record); trimMap(state.live, 50); renderLive(); renderMetrics(value.metrics); });
@@ -244,6 +251,8 @@
     receive("resync", () => { refresh().catch(() => setConnected(false)); });
   }
   quality = window.createQualityLab({api, node, replyCard, toast, state, updateControls});
+  operator = window.createOperatorControls({api, state, toast, renderSettings, renderStatus,
+    refreshQuality: () => quality.refresh()});
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => openPage(button.dataset.page)));
   document.querySelectorAll("[data-open]").forEach((button) => button.addEventListener("click", () => openPage(button.dataset.open)));
   $("comment-input").addEventListener("input", updateControls); $("allow-paid").addEventListener("change", updateControls);

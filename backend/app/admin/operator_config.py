@@ -1,0 +1,114 @@
+"""Fixed local safe overlay. CLI/project/knowledge/security are never edited."""
+import os
+from pathlib import Path
+import tempfile
+from typing import Literal
+
+import yaml
+from pydantic import Field, field_validator
+
+from app.ai.knowledge import ConfigModel, ProjectConfig
+from app.config import Settings
+
+
+class LocalConfigError(ValueError):
+    pass
+
+
+class TikTokOverride(ConfigModel):
+    username: str | None = Field(default=None, strict=True)
+
+    @field_validator("username")
+    @classmethod
+    def handle(cls, value):
+        if value is None:
+            return None
+        return Settings.normalize_username(value)
+
+
+class AIOverride(ConfigModel):
+    provider: Literal["fake", "lmstudio"] | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=100,
+                              pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$", strict=True)
+    temperature: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False, strict=True)
+    timeout_seconds: float | None = Field(default=None, ge=1, le=120, allow_inf_nan=False, strict=True)
+
+
+class ReplyOverride(ConfigModel):
+    mode: Literal["focused", "friendly"] | None = None
+    max_sentences: int | None = Field(default=None, ge=1, le=3, strict=True)
+    max_chars: int | None = Field(default=None, ge=40, le=400, strict=True)
+
+
+class OperatorOverlay(ConfigModel):
+    tiktok: TikTokOverride = Field(default_factory=TikTokOverride)
+    ai: AIOverride = Field(default_factory=AIOverride)
+    reply: ReplyOverride = Field(default_factory=ReplyOverride)
+
+
+class StrictLoader(yaml.SafeLoader):
+    """Reject duplicate keys rather than silently discarding earlier settings."""
+
+
+def mapping(loader, node):
+    result = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node)
+        if not isinstance(key, str) or key in result:
+            raise LocalConfigError("Invalid local settings")
+        result[key] = loader.construct_object(value_node)
+    return result
+
+
+StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+
+
+def effective(base: ProjectConfig, overlay: OperatorOverlay) -> ProjectConfig:
+    values = base.model_dump()
+    values["ai"].update(overlay.ai.model_dump(exclude_none=True))
+    names = {"mode": "reply_policy", "max_sentences": "max_reply_sentences", "max_chars": "max_reply_chars"}
+    values["ai"].update({names[key]: value for key, value in overlay.reply.model_dump(exclude_none=True).items()})
+    return ProjectConfig.model_validate(values)
+
+
+class OperatorStore:
+    def __init__(self, base: ProjectConfig, path: Path):
+        self.base = base
+        self.path = path
+
+    def validate(self, overlay: OperatorOverlay) -> ProjectConfig:
+        return effective(self.base, overlay)
+
+    def load(self) -> OperatorOverlay:
+        if not self.path.exists():
+            return OperatorOverlay()
+        try:
+            if self.path.stat().st_size > 16_384:
+                raise LocalConfigError("Invalid local settings")
+            data = yaml.load(self.path.read_text(encoding="utf-8-sig"), Loader=StrictLoader)
+            if not isinstance(data, dict):
+                raise LocalConfigError("Invalid local settings")
+            overlay = OperatorOverlay.model_validate(data)
+            self.validate(overlay)
+            return overlay
+        except (ValueError, TypeError, yaml.YAMLError, OSError):
+            raise LocalConfigError("Invalid local settings; check operator.local.yaml") from None
+
+    def save(self, overlay: OperatorOverlay) -> None:
+        self.validate(overlay)
+        data = yaml.safe_dump(overlay.model_dump(exclude_none=True), allow_unicode=True, sort_keys=False)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.path.parent,
+                                            prefix=".operator-", suffix=".tmp", delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def reset(self) -> None:
+        self.path.unlink(missing_ok=True)

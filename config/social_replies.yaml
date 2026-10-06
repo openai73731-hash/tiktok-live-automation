@@ -1,0 +1,63 @@
+# Reviewed neutral social wording, separate from product facts.
+# Whole-message matches only; mixed financial/product questions use normal analysis.
+entries:
+  - id: greeting_en
+    language: en
+    comments: {"Hey": "Привет", "Hello": "Здравствуйте", "Hello guys": "Привет всем", "Hi": "Привет", "What's up": "Как дела"}
+    reply: "Hey, welcome."
+    reply_ru: "Привет, добро пожаловать."
+  - id: thanks_en
+    language: en
+    comments: {"Thanks": "Спасибо", "Thank you": "Спасибо"}
+    reply: "You're welcome."
+    reply_ru: "Пожалуйста."
+  - id: appreciation_en
+    language: en
+    comments: {"Nice stream": "Хороший стрим", "That's cool": "Это здорово"}
+    reply: "Glad you're enjoying it."
+    reply_ru: "Рад, что вам нравится."
+  - id: wellbeing_en
+    language: en
+    comments: {"How are you": "Как дела"}
+    reply: "Doing good, thanks."
+    reply_ru: "Всё хорошо, спасибо."
+  - id: greeting_ru
+    language: ru
+    comments: {"Привет": "Привет", "Здравствуйте": "Здравствуйте"}
+    reply: "Привет, добро пожаловать."
+    reply_ru: "Привет, добро пожаловать."
+  - id: thanks_ru
+    language: ru
+    comments: {"Спасибо": "Спасибо"}
+    reply: "Пожалуйста."
+    reply_ru: "Пожалуйста."
+  - id: appreciation_ru
+    language: ru
+    comments: {"Хороший стрим": "Хороший стрим", "Классно": "Классно"}
+    reply: "Рад, что вам нравится."
+    reply_ru: "Рад, что вам нравится."
+  - id: wellbeing_ru
+    language: ru
+    comments: {"Как дела": "Как дела"}
+    reply: "Всё хорошо, спасибо."
+    reply_ru: "Всё хорошо, спасибо."
+  - id: greeting_es
+    language: es
+    comments: {"Hola": "Привет"}
+    reply: "Hola, bienvenido."
+    reply_ru: "Привет, добро пожаловать."
+  - id: thanks_es
+    language: es
+    comments: {"Gracias": "Спасибо"}
+    reply: "De nada."
+    reply_ru: "Пожалуйста."
+  - id: appreciation_es
+    language: es
+    comments: {"Buen directo": "Хороший стрим"}
+    reply: "Me alegra que te guste."
+    reply_ru: "Рад, что вам нравится."
+  - id: wellbeing_es
+    language: es
+    comments: {"Cómo estás": "Как дела"}
+    reply: "Bien, gracias."
+    reply_ru: "Всё хорошо, спасибо."

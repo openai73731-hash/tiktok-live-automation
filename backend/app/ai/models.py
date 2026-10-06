@@ -7,7 +7,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 from app.ai.knowledge import KnowledgeBase, ProjectConfig
 from app.ai.errors import ProcessingError, ProcessingErrorDetail
 
-ResponseKind = Literal["facts", "no_promises", "unknown", "none"]
+ResponseKind = Literal["facts", "no_promises", "unknown", "none", "social"]
 
 
 class ReplyRequest(BaseModel):
@@ -42,6 +42,7 @@ class ReplyDraft(BaseModel):
     needs_operator: bool = False
     composition_style: Literal["canonical", "approved_template", "constrained_translation"] = "canonical"
     template_id: str | None = None
+    social_id: str | None = None
     translation_evidence: TranslationEvidence | None = None
 
 
@@ -61,6 +62,7 @@ class ReplySuggestion(BaseModel):
     model: str | None = None
     intent: ResponseKind = "none"
     template_id: str | None = None
+    social_id: str | None = None
     translation_source: Literal["approved", "constrained"] = "approved"
     translation_requires_review: bool = False
     processing_error: ProcessingError | None = None

@@ -47,7 +47,8 @@ class AIConfig(ConfigModel):
     provider: Literal["fake", "openai", "lmstudio"] = "fake"
     model: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
     reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
-    max_reply_sentences: int = Field(default=2, ge=1, le=2)
+    reply_policy: Literal["focused", "friendly"] = "focused"
+    max_reply_sentences: int = Field(default=2, ge=1, le=3)
     max_reply_chars: int = Field(default=240, ge=40, le=400)
     max_comment_chars: int = Field(default=1000, ge=50, le=10_000)
     operator_language: str = Field(default="ru", pattern=r"^[a-z]{2,3}$")
@@ -57,6 +58,12 @@ class AIConfig(ConfigModel):
     max_model_output_tokens: int = Field(default=200, ge=64, le=4096)
     prefer_single_sentence: bool = False
     thinking_enabled: bool = False
+
+    @model_validator(mode="after")
+    def policy_limits(self):
+        if self.reply_policy == "focused" and self.max_reply_sentences > 2:
+            raise ValueError("Focused replies allow at most two sentences")
+        return self
 
     @field_validator("lmstudio_base_url", mode="before")
     @classmethod

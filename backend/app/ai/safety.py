@@ -82,6 +82,9 @@ class ReplySafetyPolicy:
                 issues.append(f"{label}_financial_promise")
             expected = (approved_reply(request, draft.response_kind, draft.fact_ids, language)
                         if draft.composition_style == "canonical" else expected_text(request, draft, language))
+            if draft.response_kind == "social":
+                from app.ai.social import expected_social
+                expected = expected_social(request, draft, language)
             constrained = draft.composition_style == "constrained_translation" and label == "reply"
             if constrained:
                 evidence = draft.translation_evidence
@@ -99,7 +102,7 @@ class ReplySafetyPolicy:
                     issues.append("translation_evidence_invalid")
             elif expected is None or text != expected:
                 issues.append(f"{label}_ungrounded")
-            if draft.composition_style != "canonical" and style_violations(text):
+            if (draft.composition_style != "canonical" or draft.response_kind == "social") and style_violations(text):
                 issues.append(f"{label}_style")
             if not 1 <= sentence_count(text) <= request.project.ai.max_reply_sentences:
                 issues.append(f"{label}_sentence_limit")

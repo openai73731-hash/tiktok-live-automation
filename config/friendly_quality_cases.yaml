@@ -1,0 +1,16 @@
+# Separate from the 75-case FOCUSED baseline. Finite social bank contract.
+name: Friendly social checks
+version: 1.0.0
+cases:
+  - {text: "Hey!", language: en, social_id: greeting_en}
+  - {text: "Hello guys!", language: en, social_id: greeting_en}
+  - {text: "Thanks", language: en, social_id: thanks_en}
+  - {text: "Nice stream", language: en, social_id: appreciation_en}
+  - {text: "That's cool", language: en, social_id: appreciation_en}
+  - {text: "How are you?", language: en, social_id: wellbeing_en}
+  - {text: "What's up?", language: en, social_id: greeting_en}
+  - {text: "Привет!", language: ru, social_id: greeting_ru}
+  - {text: "Спасибо", language: ru, social_id: thanks_ru}
+  - {text: "Hola!", language: es, social_id: greeting_es}
+  - {text: "Gracias", language: es, social_id: thanks_es}
+  - {text: "¿Cómo estás?", language: es, social_id: wellbeing_es}

@@ -606,6 +606,137 @@ ready означает прохождение технических прове�
 Надёжность intent/comment translation и переводов новых языков остаётся ограничением;
 запуск AUTO на основании этих smoke-результатов не разрешён.
 
+## Stage 4A.3: настройки оператора, FRIENDLY и управление подключением
+
+Рекомендуемый запуск панели в PowerShell:
+
+```powershell
+Set-Location 'C:\Users\user\Documents\tiktok-live-automation'
+$env:LIVE_MODE = 'fake'
+$env:ADMIN_LIVE_ENABLED = 'false'
+$env:PROJECT_CONFIG_PATH = 'config/project.lmstudio.yaml'
+& './.venv/Scripts/python.exe' -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers --timeout-graceful-shutdown 5
+```
+
+Откройте [локальную панель](http://127.0.0.1:8000/ui/), затем «Система и настройки».
+Для демо без LM Studio выберите `config/project.yaml` или сохраните provider Fake.
+Открытие страницы, GET, SSE/reconnect, SAVE/APPLY/RESET не запускают TikTok или AI
+generation. Сервер остаётся только на loopback, один worker, без port forwarding.
+
+1. Укажите **username своего аккаунта**, с `@` или без него. Не нужен numeric ID,
+   room ID, пароль или cookies. Нормализация та же, что у listener: пробелы по краям
+   и начальный `@` удаляются; 1–24 ASCII букв/цифр/точек/подчёркиваний.
+2. Выберите Fake / LM Studio, точный model ID, температуру, timeout и reply policy.
+3. Нажмите **Сохранить настройки**, затем **Применить**. SAVE пишет локальный
+   overlay; активный AI остаётся прежним до APPLY. APPLY возможен при отключённом
+   LIVE и завершённом Playground/Quality Lab/health check. Он создаёт новый processor,
+   закрывает старый lazy client и заменяет Quality Lab. История Playground остаётся,
+   результаты Quality Lab сбрасываются. Не происходит мутации выполняющего inference
+   объекта. Все изменения требуют APPLY; отдельного неявного hot reload нет.
+4. Для собственного LIVE сначала запустите эфир вручную в TikTok, затем нажмите
+   **Подключиться к LIVE**. Кнопка читает уже идущий эфир; не запускает его.
+5. **Отключиться** освобождает только LIVE listener, его SDK resources и AI processor.
+   Backend, SSE и Playground продолжают работать. После disconnect можно менять
+   настройки. Второй listener запрещён до явного disconnect, включая terminal
+   NEED_OPERATOR/STOPPED после security failure.
+
+Кнопка Connect — отдельное действие оператора. Агент не выполняет real TikTok
+connection в тестах или UI smoke. Для ручной проверки на своём LIVE убедитесь в
+CONNECTED и правильном `@username`, получите комментарий, проверьте карточку,
+нажмите Disconnect и проверьте Playground. HTTP 403/429, CAPTCHA, verification,
+login/access restrictions и неизвестные security состояния сохраняют существующий
+NEED_OPERATOR; оператор решает проблему в TikTok, никаких кнопок bypass или
+автоматического security retry нет. RoomConnection определяет room ID как прежде.
+
+`config/operator.local.yaml` игнорируется Git. Имя фиксировано рядом с выбранным
+startup project YAML; browser не принимает путь. Пример без секретов:
+`config/operator.local.example.yaml`. Приоритет: выбранный `project.yaml` или
+`project.lmstudio.yaml` → safe local overlay → immutable web runtime. CLI не читает
+overlay и работает как раньше. Валидируются allowlist и effective project; запись
+в UTF-8 выполняется через временный файл, flush/fsync и replace. YAML SafeLoader
+не исполняет objects; дубли ключей, неправильная схема и oversized file отвергаются.
+Повреждённый overlay показывает статическую ошибку, включает безопасные project
+defaults и блокирует Connect до исправления/сброса. Содержимое ошибки не раскрывается.
+
+Редактируемые поля: username; provider **fake/lmstudio**; model; temperature **0–1**;
+timeout **1–120 секунд**; reply policy; максимум **1–2 предложения focused / 1–3
+friendly**, **40–400 символов**. При переключении режима форма предлагает 2/180
+для focused и 3/260 для friendly; начальные значения берутся из выбранного project
+config (старый fake project сохраняет лимит 240). Username сохраняется через SAVE;
+CONNECT API принимает валидный handle отдельно и сам ничего не пишет в config.
+При перезапуске валидный сохранённый overlay применяется, но listener не стартует.
+RESET удаляет только overlay; APPLY затем возвращает настройки startup project.
+Project YAML и `bot_knowledge.yaml` никогда не редактируются browser.
+
+Нельзя менять endpoint/base URL, keys/cookies/sessionid/tokens, knowledge,
+forbidden claims, grounding, financial/security/CAPTCHA policy или safety gates.
+OpenAI нельзя выбрать в overlay: существующая OpenAI конфигурация отображается
+только для чтения, UI Connect с ней запрещён. Ручной Playground сохраняет отдельное
+подтверждение каждого платного запроса. Старый явно включённый через environment
+`ADMIN_LIVE_ENABLED=true` startup совместим, включая выбранный provider; при OpenAI
+это может выполнять платный анализ. Рекомендуемый workflow — false и ручной Connect
+с Fake/LM Studio. Агент такой платный startup не запускает.
+
+**Reply policy FOCUSED/FRIENDLY** определяет, на какие сообщения готовить предложения.
+**Delivery mode MANUAL/AUTOMATIC** — отдельная будущая настройка доставки. Сейчас
+MANUAL фиксирован, SEND/AUTO/Android отсутствуют; FRIENDLY не отправляет ответы.
+
+FOCUSED сохраняет Stage 4A.2: социальные комментарии обычно SKIPPED, вопросы о
+продукте и работе системы проходят существующий анализ, minimal approved fact
+selection, deterministic composer и final ReplySafetyPolicy.
+
+FRIENDLY дополнительно отвечает на конечный allowlist приветствий, благодарностей
+и лёгкого общения из `config/social_replies.yaml`. Например Hey → «Hey, welcome.»,
+Thanks → «You're welcome.», Nice stream → «Glad you're enjoying it.». Это отдельный
+банк социальных текстов, не product facts. Сопоставление выполняется с целым
+сообщением после нормализации регистра/пробелов/обычной пунктуации. Ответ и русский
+перевод утверждены в банке, `intent=social`, `social_id` стабилен, fact IDs пусты.
+Поддержаны en/ru/es; оригинал и русский перевод комментария остаются в карточке.
+Модель для распознанного social не вызывается. Произвольного social generation нет.
+Неизвестный текст проходит обычный provider; social никогда не служит fallback
+для unknown, финансового или смешанного вопроса. Unsupported язык/перевод не
+порождает неподтверждённый социальный ответ; оператор проверяет результат.
+
+Оба режима сохраняют финансовую безопасность: никаких invented facts, win rates,
+guaranteed profit/income или promises. Перед READY проверяются текущая policy,
+целый social input, ID/язык/точное wording bank, отсутствие facts/template/translation
+evidence в social, а также общие claims/style/length/language checks для ответа и
+русского перевода. Factual pipeline и strict provider classification schema/reason
+enum не изменены. Всегда `requires_approval=true`, `auto_send_eligible=false`.
+
+75-кейсный Quality Lab остаётся **FOCUSED baseline**: при FRIENDLY он недоступен,
+нужно применить FOCUSED. Expectations старого корпуса не изменены. Отдельный
+`config/friendly_quality_cases.yaml` проверяет 12 social examples в pytest;
+это не второй UI Quality Lab profile и не оценка универсальной классификации.
+
+Для Qwen3-8B текущая рекомендация — temperature **0.0**: в Stage 4A.2 измерена
+повторяемость, при одинаковом **72/75 PASS** для 0.0 и 0.2. Семантическое превосходство
+не доказано. Температура влияет на анализ/перевод, factual wording остаётся
+детерминированным. Известные Stage 4A.2 German fact over-selection и Turkish
+translation failures не устранены этим этапом; READY всегда требует оператора.
+
+Локальные routes используют прежние loopback/Host/Origin/JSON/CSRF guards:
+GET `/api/admin/operator/settings`, POST этого же пути (SAVE),
+POST `/api/admin/operator/apply`, POST `/api/admin/operator/reset`,
+POST `/api/admin/live/connect` с `{ "username": "@your_handle" }` (202 accepted),
+POST `/api/admin/live/disconnect` с `{}`. Requests не ждут весь эфир; контроллер
+держит одну owned task/LiveService. Disconnect/cancellation закрывает собственные
+resources, включая отмену до первого шага runner, без отмены чужих tasks.
+UI/SSE используют явные safe projections; provider payloads и exception bodies
+не публикуются. Во время LIVE или inference изменения отклоняются с 409.
+
+Ручной localhost UI smoke 2026-10-06 после automated tests: SAVE/APPLY и reload
+сохранили тестовый username, qwen/qwen3-8b и температуру 0.2; затем FRIENDLY/0.0
+и лимиты 3/260. FOCUSED Hello → SKIPPED; FRIENDLY Hello/Thanks → READY/social
+из банка без model calls. На Qwen автоторговля выбрала только automatic_trades;
+win-rate/injection → no_promises; «Hey, what is the price?» → unknown. Всего
+7 Playground результатов, без TikTok/платного OpenAI/SEND. У вопроса о цене модель
+опустила приветствие в русском переводе: технический READY не доказывает полноту
+или смысл перевода. Browser console без ошибок. RESET/APPLY удалили тестовый
+overlay и вернули project defaults; тестовый сервер и созданная вкладка закрыты.
+Mock CONNECT/DISCONNECT и существующие SDK shutdown/security/replay tests проверяют
+контроллер; real UI Connect остаётся отдельной ручной проверкой оператора на своём LIVE.
+
 ## Stage 4A.2: tuning и Stability x3
 
 Этот этап изменяет общий prompt локального анализатора, не корпус и не approved
@@ -941,9 +1072,9 @@ read-only API; disconnect освобождает подписчика, heartbeat
 Истории и счётчики хранятся в памяти одного процесса и сбрасываются при перезапуске;
 это не delivery audit и не гарантия получения каждого промежуточного события.
 
-Settings — явный allowlist product/platform/stream/AI/limits/loopback URL только для
-чтения. Provider/model/base URL из browser не меняются. Изменения YAML требуют
-перезапуска сервера. UI/API не отдают `.env`, keys, cookies, payloads и log files;
+Stage 4A.3 расширяет Settings безопасным локальным overlay и SAVE/APPLY; workflow
+описан выше. Product/platform/knowledge/base URL остаются только для чтения.
+Изменения startup project YAML требуют перезапуска. UI/API не отдают `.env`, keys, cookies, payloads и log files;
 ошибки input/provider редактируются, текст зрителя выводится через `textContent`.
 Сервер ограничивает request/comment size, разрешает только loopback peer/Host,
 проверяет Origin и JSON POST с ephemeral CSRF token. Это локальная граница,

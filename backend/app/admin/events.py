@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 import json
 
-from app.admin.models import AIStatus, CommentView, LiveReplyEvent, LiveView, PlaygroundResultEvent
+from app.admin.models import AIStatus, CommentView, LiveReplyEvent, LiveView, PlaygroundResultEvent, OperatorView
 from app.quality.models import QualityUpdate
 
 PAYLOAD_TYPES = {
@@ -12,6 +12,7 @@ PAYLOAD_TYPES = {
     "reply_suggestion": LiveReplyEvent, "ai_status": AIStatus,
     "playground_result": PlaygroundResultEvent,
     "quality_update": QualityUpdate,
+    "operator_settings": OperatorView,
 }
 
 

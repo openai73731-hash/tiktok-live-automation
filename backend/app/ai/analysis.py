@@ -1,7 +1,6 @@
 """Strict analyzer contract shared by local and cloud providers."""
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from app.ai.models import ResponseKind
 
 
 class AIAnalysis(BaseModel):
@@ -9,7 +8,8 @@ class AIAnalysis(BaseModel):
     detected_language: str = Field(pattern=r"^[a-z]{2,3}$")
     operator_translation: str | None = Field(max_length=4000)
     should_reply: bool
-    intent: ResponseKind
+    # Social responses are selected separately from a finite approved bank.
+    intent: Literal["facts", "no_promises", "unknown", "none"]
     fact_ids: list[str] = Field(max_length=2)
     reason: Literal["approved_facts", "financial_claim", "knowledge_missing", "no_reply", "unsupported"]
 

@@ -11,4 +11,5 @@ dist/
 logs/*
 !logs/.gitkeep
 work/
-
+config/operator.local.yaml
+config/.operator-*.tmp
