@@ -1,9 +1,8 @@
 """Local CSRF-protected actions with no provider/model/endpoint overrides."""
 from fastapi import APIRouter, HTTPException, Request
 
-from app.admin.models import UIModel
 from app.admin.service import PlaygroundBusy
-from app.quality.models import ReviewInput, RunInput
+from app.quality.models import ReviewInput, RunInput, StartInput
 from app.quality.service import QualityDisabled, StaleRun
 
 router = APIRouter(prefix="/api/admin/quality")
@@ -15,9 +14,9 @@ async def snapshot(request: Request):
 
 
 @router.post("/start")
-async def start(request: Request, body: UIModel):
+async def start(request: Request, body: StartInput):
     try:
-        return await request.app.state.quality.start()
+        return await request.app.state.quality.start(body.runs)
     except QualityDisabled as exc:
         raise HTTPException(403, detail=str(exc)) from None
     except PlaygroundBusy:
@@ -35,6 +34,6 @@ async def stop(request: Request, body: RunInput):
 @router.post("/review")
 async def review(request: Request, body: ReviewInput):
     try:
-        return request.app.state.quality.review(body.run_id, body.case_id, body.review)
+        return request.app.state.quality.review(body.run_id, body.case_id, body.review, body.run_number)
     except StaleRun:
         raise HTTPException(409, detail="Прогон заменён или кейс ещё не завершён.") from None

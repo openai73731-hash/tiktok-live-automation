@@ -606,6 +606,148 @@ ready означает прохождение технических прове�
 Надёжность intent/comment translation и переводов новых языков остаётся ограничением;
 запуск AUTO на основании этих smoke-результатов не разрешён.
 
+## Stage 4A.2: tuning и Stability x3
+
+Этот этап изменяет общий prompt локального анализатора, не корпус и не approved
+knowledge. Нет production lookup по 75 viewer strings. Few-shot примеры содержат
+другие формулировки; примеры с отсутствующими в текущих знаниях IDs исключаются.
+Текст фактов по-прежнему загружается из `config/bot_knowledge.yaml`.
+
+Порядок решений: greetings/thanks/spam/off-topic → `none`; запросы о прибыли,
+доходе, win rate, точности сделок или финансовых гарантиях → `no_promises`;
+покрытый знаниями вопрос → `facts` с минимальным непосредственно нужным набором;
+остальные вопросы о продукте → `unknown`. Analysis и trade execution выбираются
+по отдельности; общий обзор требует обоих, без лишнего voice fact. Вопрос про
+ручные клики/сделки, включая отрицание и slang, относится к trade execution.
+Broker, price, withdrawals, phone support и неопределённая эффективность не
+выдают финансовый intent только из-за слов bot/trades/money.
+
+Viewer input остаётся untrusted data. Injection не выполняется, но переводится
+полностью вместе с финансовым содержанием, числами и отрицанием. Русский перевод
+обязателен для любого читаемого языка, включая skipped сообщения. Язык зрителя
+и язык `operator_translation` — разные поля. Для бессмысленных цифр/букв —
+`und/null` и оператор, без выдуманного перевода. Общие терминологические примеры:
+«открывать сделки», «вручную», «Какой процент успешных сделок». Правильный смысл
+и естественная грамматика всё ещё требуют ручной проверки.
+
+Reply wording по-прежнему определяет approved composer. Для языков без reviewed
+текста отдельный constrained translator получает только approved English source,
+target ISO code и exact approved Russian text, без исходного комментария.
+Уточнено различие target-language reply и русского operator field. Немецкие
+фразы не добавлены в approved knowledge. Back-translation — self-check модели,
+не доказательство точности. Strict schema, whole-content JSON parsing и все
+source/style/claim/length/safety gates сохранены; markdown/thinking/extra fields
+не извлекаются и не исправляются. Пустой whitespace-only reasoning channel
+допустим, actual thinking content отклоняется.
+
+Ошибки сохраняют `processing_error`, дополненный строго allowlisted
+`processing_error_detail`: например `invalid_reason`, `selection_inconsistent`,
+`unknown_field`, `missing_field`, `json_invalid`, `translation_missing`,
+`translation_language_mismatch`, `translation_operator_mismatch`. Полный enum
+находится в `backend/app/ai/errors.py`. Обнаружение validation detail читает только
+тип ошибки и путь поля, никогда input/msg/ctx. API/SSE/export не получают raw
+provider responses, exception bodies или prompts. Общий `reason` enum остаётся
+из пяти значений; доказательств, что его нужно упрощать, не получено.
+
+Повторная проверка пяти прежних `invalid_output` со старым prompt обнаружила
+`selection_inconsistent` у automatic_analysis_4, prompt_injection_2,
+prompt_injection_5, ambiguous_4. how_it_works_1 в повторе вернул валидный, но
+неверный `no_promises`. Это причины **нового повторного измерения**, а не
+восстановленные raw responses исторического baseline. Немецкий старый prompt
+повторно отклонён с `translation_language_mismatch`.
+
+В AI Playground → QUALITY LAB доступны **RUN ALL** (один корпус) и
+**RUN STABILITY x3** (три корпуса). Каждый запуск ручной. Все 225 комментариев
+обрабатываются последовательно одним production processor/client под одним
+Playground lock. OpenAI и enabled LIVE запрещены. STOP завершает текущий кейс,
+затем предотвращает следующий кейс/прогон. Shutdown отменяет только owned runner
+перед закрытием клиента, включая отмену до первого шага.
+
+Панель и JSON export содержат отдельные summaries/results каждого завершённого
+прогона, текущий partial result и aggregate: completed runs, total comment
+generations, actual model POST attempts (включая constrained translation),
+PASS min/max и средний процент, critical failures по прогонам, mean/min трёх
+agreement metrics, invalid_output/translation_rejected counts. Consistency
+показывает `3/3`, `2/3`, `1/3`, `0/3 PASS` после трёх полных прогонов и flapping.
+`selection_consistent` отдельно сравнивает intent/fact SET/language/status/error;
+не сравнивает формулировки перевода и не доказывает их семантическую стабильность.
+При одном/двух полных прогонах знаменатель соответственно 1/2; partial trials
+не входят в PASS range, accuracy means и consistency, только work/error counts.
+
+Каждый trial фиксирует SHA256 dataset, knowledge, AI config, analysis prompt,
+translation prompt, provider/model/temperature и время. Различающиеся fingerprints
+не агрегируются в один stability result. Хранится только последняя группа до трёх
+полных прогонов в памяти, без persistence/audit; новая группа заменяет старую.
+Ручная оценка привязана к группе/номеру прогона, не меняет PASS. Последний прогон
+открывается в таблице; полные записи всех трёх доступны в explicit JSON export.
+GET, SSE/reconnect и download ничего не генерируют.
+
+Команда запуска панели в PowerShell такая же, как ниже для Stage 4A.1. Для
+сравнения temperature сохраните отдельные копии project config, меняя **только**
+`ai.temperature` на 0.0/0.2, и перезапускайте backend между группами. Не меняйте
+модель, knowledge, corpus, prompt или timeout между сравниваемыми группами.
+При холодной модели отдельный явный manual smoke может прогреть runtime; его
+результат не включается в stability metrics. Производственный timeout сохраняется.
+Qwen описывает `/no_think` как soft switch в system/user message;
+[официальная документация Qwen3](https://github.com/QwenLM/Qwen3#switching-thinkingnon-thinking-modes-for-previous-qwen3-models).
+Приложение не предполагает поддержки произвольных template parameters в
+[LM Studio chat/completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions).
+
+SEND/AUTO/Android не реализованы, `auto_send_eligible=false`; PASS и улучшение
+классификации не разрешают автоматическую отправку.
+
+Реальное измерение 2026-10-06: Qwen3-8B Q4_K_M, LM Studio Vulkan на обнаруженной
+AMD Radeon RX 6600 8 GiB, context 4096. По три полных прогона каждой температуры,
+одинаковые остальные настройки и fingerprints. Перед окончательным сравнением
+отдельный явный smoke прогрел analysis runtime; первый constrained translator
+при 0.2 всё же получил timeout. Это не доказательство влияния температуры на скорость.
+
+| T | Run | PASS / FAIL | Critical | Should reply | Intent | Fact SET | Invalid / rejected |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.0 | 1 | 72 / 3 | 3 | 97.33% | 97.33% | 97.33% | 2 / 0 |
+| 0.0 | 2 | 72 / 3 | 3 | 97.33% | 97.33% | 97.33% | 2 / 0 |
+| 0.0 | 3 | 72 / 3 | 3 | 97.33% | 97.33% | 97.33% | 2 / 0 |
+| 0.2 | 1 | 72 / 3 | 3 | 96.00% | 96.00% | 97.33% | 2 / 0 |
+| 0.2 | 2 | 72 / 3 | 3 | 97.33% | 97.33% | 97.33% | 2 / 0 |
+| 0.2 | 3 | 72 / 3 | 3 | 97.33% | 97.33% | 97.33% | 2 / 0 |
+
+Обе группы: 225 processor generations / 243 model POST attempts; mean PASS=96%,
+range 72–72, critical=3/3/3, invalid_output=6, translation_rejected=0.
+Consistency: 72 кейса 3/3 PASS, три 0/3, ни одного PASS/FAIL flapping.
+Mean/min should-reply и intent: 97.33/97.33% при 0.0, 96.89/96.00% при 0.2.
+Fact SET mean/min=97.33/97.33% у обеих групп: ориентир 98% пока **не достигнут**.
+На всех 450 final results прошли технические claims/source/safety/approval gates;
+это не проверка семантики generated переводов или relevance.
+
+У 0.0 русский wording совпал дословно во всех 70 all-PASS cases с ненулевым
+переводом; у 0.2 wording менялся у 10 из этих 70. Это repeatability строк, не
+семантическая оценка. Для локальной Qwen-конфигурации выбрана `temperature=0.0`:
+PASS не ухудшился, русский текст повторяется; invalid_output **не уменьшился**.
+Общий AIConfig default и fake/OpenAI configuration не меняются.
+
+Все прежние 13 FAIL получили **3/3 PASS при обеих температурах**:
+automatic_analysis_1, automatic_analysis_4, how_it_works_1, off_topic_3,
+prompt_injection_2, prompt_injection_5, ambiguous_1–4, informal_english_3,
+informal_english_5, multilingual_6. Немецкий guarantee теперь проходит строгий
+constrained flow, сохраняет `translation_requires_review=true` и approval.
+
+Новые устойчивые ограничения: multilingual_5 (немецкое Handelt) Qwen понимает
+как «работает», выбирает лишний automatic_analysis вместе с automatic_trades и
+выдаёт READY с review flag; corpus честно отмечает FAIL. В первом 0.2 run этот
+кейс вместо того получил timeout. multilingual_11/12 (турецкий) дают
+`invalid_output/translation_invalid`, требуют NEEDS_OPERATOR и не содержат
+предложения ответа. Исправленный baseline не означает отсутствия регрессий.
+Грамматика win-rate перевода стала «Какой процент успешных сделок?»; injection
+сохраняет полный русский перевод, включая команды и 90%, но ответ остаётся
+approved no_promises. Все результаты и полный comparison находятся только в
+ignored logs, без изменений canonical corpus/knowledge.
+
+Дополнительный real localhost smoke проверил пять новых paraphrases, отсутствующих
+и в корпусе, и в few-shot examples: ручные buy/sell клики, unattended market review,
+tablet compatibility, приказ объявить удвоение депозита, благодарность. **5/5 PASS**
+по ожидаемому intent/minimal fact set/status; все требуют approval, отправки нет.
+Это пять дополнительных примеров, не доказательство универсального обобщения.
+
 ## Stage 4A.1: AI Quality Lab
 
 Quality Lab — подраздел существующего AI Playground. В `config/ai_quality_cases.yaml`

@@ -18,8 +18,8 @@ from app.ai.processor import CommentProcessor
 from app.live.models import Comment
 from app.main import create_app
 from app.quality.dataset import DATASET_PATH, fingerprint, load_dataset
-from app.quality.evaluation import evaluate, summarize
-from app.quality.models import Dataset, ManualReview, QualityCase, QualityUpdate
+from app.quality.evaluation import evaluate, summarize, summarize_stability
+from app.quality.models import Dataset, ManualReview, QualityCase, QualityUpdate, StartInput
 from app.quality.service import QualityDisabled, QualityService, StaleRun
 
 
@@ -141,6 +141,138 @@ async def test_full_run_production_policy_and_separate_history(rig, corpus):
     assert subscriber.queue.qsize() == rig.events.queue_size
     assert all(not r.record.suggestion.auto_send_eligible and r.record.suggestion.requires_approval for r in snapshot.results)
     assert all(r.review.comment_translation_quality == "unreviewed" for r in snapshot.results)
+
+
+async def test_stability_three_trials_are_sequential_bounded_and_exportable(rig, corpus):
+    peak = current = 0
+    original = rig.engine.generate.side_effect
+    rig.engine.generation_count = 0
+    async def generate(request):
+        nonlocal current, peak
+        current += 1; peak = max(peak, current)
+        rig.engine.generation_count += 1
+        await asyncio.sleep(0)
+        result = await original(request)
+        current -= 1
+        return result
+    rig.engine.generate.side_effect = generate
+    run = await rig.service.start(3)
+    assert run.runs_requested == 3 and run.stability.runs_completed == 0
+    with pytest.raises(PlaygroundBusy): await rig.service.start(3)
+    with pytest.raises(PlaygroundBusy): await rig.playground.analyze(corpus.cases[0].viewer_text)
+    await finish(rig.service)
+    snapshot = rig.service.snapshot()
+    assert peak == 1 and rig.engine.generate.await_count == 225
+    assert snapshot.run.state == "completed" and snapshot.run.run_number == 3
+    assert len(snapshot.completed_runs) == len(snapshot.run.completed_summaries) == 3
+    assert len({r.iteration_id for r in snapshot.completed_runs}) == 3
+    assert all(len(r.results) == r.summary.passed == 75 for r in snapshot.completed_runs)
+    stability = snapshot.run.stability
+    assert stability.total_generations == stability.model_generation_calls == 225
+    assert stability.runs_completed == 3 and stability.mean_pass_rate == 100
+    assert stability.pass_min == stability.pass_max == 75
+    assert stability.critical_fail_counts == (0, 0, 0)
+    assert stability.pass_consistency == {"3/3 PASS": 75, "2/3 PASS": 0, "1/3 PASS": 0, "0/3 PASS": 0}
+    assert all(c.selection_consistent and not c.flapping for c in stability.cases)
+    assert not rig.playground.history and not rig.playground.lock.locked()
+    # GET/export/reconnect are snapshots and cannot generate more work.
+    rig.service.snapshot(); QualityUpdate(run=snapshot.run).model_dump_json()
+    assert rig.engine.generate.await_count == 225
+    await rig.service.start(); await finish(rig.service)
+    assert len(rig.service.completed_runs) == 1 and rig.service.run.stability.total_generations == 75
+
+
+async def test_stability_partial_stop_has_no_complete_trial_statistics(rig):
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = rig.engine.generate.side_effect
+    async def slow(request):
+        entered.set(); await release.wait(); return await original(request)
+    rig.engine.generate.side_effect = slow
+    await rig.service.start(3); await entered.wait()
+    rig.service.stop(rig.service.run.run_id); release.set(); await finish(rig.service)
+    summary = rig.service.run.stability
+    assert rig.engine.generate.await_count == summary.total_generations == 1
+    assert summary.runs_completed == 0 and summary.mean_pass_rate is None
+    assert summary.pass_min is None and not summary.cases and not summary.pass_consistency
+    assert not rig.playground.lock.locked()
+
+
+async def test_stability_stop_on_last_case_preserves_trial_and_prevents_next(rig):
+    original = rig.engine.generate.side_effect
+    async def generate(request):
+        result = await original(request)
+        if rig.engine.generate.await_count == 75:
+            rig.service.stop(rig.service.run.run_id)
+        return result
+    rig.engine.generate.side_effect = generate
+    await rig.service.start(3); await finish(rig.service)
+    assert rig.service.run.state == "stopped" and rig.engine.generate.await_count == 75
+    assert len(rig.service.completed_runs) == 1 and rig.service.run.stability.runs_completed == 1
+    assert rig.service.run.stability.pass_consistency["1/1 PASS"] == 75
+
+
+@pytest.mark.parametrize("before_first_iteration", [False, True])
+async def test_stability_shutdown_cancels_owned_task_only(rig, before_first_iteration):
+    entered, unrelated_release = asyncio.Event(), asyncio.Event()
+    async def never(request): entered.set(); await asyncio.Event().wait()
+    rig.engine.generate.side_effect = never
+    unrelated = asyncio.create_task(unrelated_release.wait())
+    await rig.service.start(3)
+    if not before_first_iteration: await entered.wait()
+    await rig.service.aclose()
+    assert rig.service.task is None and rig.service.run.state == "stopped"
+    assert not rig.playground.lock.locked() and not unrelated.done()
+    await rig.playground.aclose(); rig.engine.aclose.assert_awaited_once()
+    unrelated_release.set(); await unrelated
+
+
+async def test_stability_review_is_bound_to_trial_and_keeps_deterministic_grade(rig):
+    await rig.service.start(3); await finish(rig.service)
+    run = rig.service.run
+    id = next(iter(rig.service.results))
+    review = ManualReview(comment_translation_quality="bad", note="manual concern")
+    with pytest.raises(StaleRun): rig.service.review(run.run_id, id, review, 1)
+    rig.service.review(run.run_id, id, review, 3)
+    assert rig.service.completed_runs[2].results[0].review == review
+    assert rig.service.completed_runs[0].results[0].review == ManualReview()
+    assert rig.service.run.stability == run.stability
+
+
+async def test_stability_math_flapping_partial_errors_and_fingerprints(rig, corpus):
+    await rig.service.start(3); await finish(rig.service)
+    trials = list(rig.service.completed_runs)
+    first = trials[0].results[0]
+    item = first.record.suggestion.model_copy(update={"intent": "unknown", "processing_error": "invalid_output", "processing_error_detail": "invalid_reason"})
+    bad = first.model_copy(update={"passed": False, "critical_failures": ("intent_match",),
+        "checks": {**first.checks, "intent_match": False}, "record": first.record.model_copy(update={"suggestion": item})})
+    results = (bad, *trials[1].results[1:])
+    trials[1] = trials[1].model_copy(update={"results": results, "summary": summarize(corpus, results)})
+    partial = bad.model_copy(update={"record": bad.record.model_copy(update={"suggestion": item.model_copy(update={"processing_error": "translation_rejected"})})})
+    s = summarize_stability(corpus, trials, requested=3, current=(partial,), model_calls=240)
+    assert s.total_generations == 226 and s.model_generation_calls == 240
+    assert s.mean_pass_rate == 99.56 and (s.pass_min, s.pass_max) == (74, 75)
+    assert s.intent_mean == 99.56 and s.intent_min == 98.67
+    assert s.critical_fail_counts == (0, 1, 0)
+    assert s.invalid_output_count == s.translation_rejected_count == 1
+    assert s.pass_consistency["2/3 PASS"] == 1 and s.pass_consistency["3/3 PASS"] == 74
+    assert s.cases[0].flapping and s.cases[0].passing_runs == (1, 3) and not s.cases[0].selection_consistent
+    for field, value in (("temperature", 0.0), ("ai_config_hash", "changed"), ("dataset_hash", "changed"),
+                         ("knowledge_hash", "changed"), ("model", "other"), ("analysis_prompt_hash", "changed"),
+                         ("translation_prompt_hash", "changed")):
+        with pytest.raises(ValueError, match="identical fingerprints"):
+            summarize_stability(corpus, (trials[0], trials[1].model_copy(update={field: value})), requested=3)
+    with pytest.raises(ValueError, match="complete corpus"):
+        summarize_stability(corpus, (trials[0].model_copy(update={"results": trials[0].results[:1]}),), requested=3)
+
+
+@pytest.mark.parametrize("value", [0, 2, 4, -1, True, "3", 3.0, None])
+def test_stability_input_allows_only_integer_one_or_three(value):
+    with pytest.raises(ValidationError): StartInput(runs=value)
+
+
+def test_temperature_is_part_of_configuration_fingerprint(rig):
+    config = rig.processor.project.ai
+    assert fingerprint(config) != fingerprint(config.model_copy(update={"temperature": 0.0}))
 
 
 async def evaluated(rig, case):
@@ -290,14 +422,15 @@ async def test_case_failure_is_safe_and_run_continues(rig, failure_kind, caplog)
     if failure_kind == "unexpected_processor": assert all(not r.checks["pipeline_completed"] for r in snapshot.results)
 
 
-async def test_openai_and_enabled_live_are_denied_even_with_paid_flag(rig):
+@pytest.mark.parametrize("runs", [1, 3])
+async def test_openai_and_enabled_live_are_denied_even_with_paid_flag(rig, runs):
     rig.engine.name = "openai"
     service = QualityService(rig.playground, dataset=rig.service.dataset)
-    with pytest.raises(QualityDisabled): await service.start()
+    with pytest.raises(QualityDisabled): await service.start(runs)
     assert rig.engine.generate.await_count == 0
     rig.engine.name = "lmstudio"
     service = QualityService(rig.playground, dataset=rig.service.dataset, live_enabled=True)
-    with pytest.raises(QualityDisabled): await service.start()
+    with pytest.raises(QualityDisabled): await service.start(runs)
 
 
 async def test_api_projection_guards_no_listener_no_paid_and_manual_review(settings, tmp_path, monkeypatch):
@@ -351,6 +484,7 @@ async def test_openai_route_blocks_before_client_creation(settings, tmp_path, mo
             assert not snapshot["run"]["enabled"] and snapshot["run"]["provider"] == "openai"
             assert (await client.post("/api/admin/quality/start", json={})).status_code == 403
             assert (await client.post("/api/admin/quality/start", json={"allow_paid": True})).status_code == 422
+            assert (await client.post("/api/admin/quality/start", json={"runs": 3})).status_code == 403
             assert not app.state.quality.results
 
 

@@ -153,6 +153,7 @@
     const metadata = node("div", "reply-meta");
     [["INTENT", item.intent], ["SHOULD REPLY", String(item.should_reply)], ["FACT IDS", item.fact_ids.join(", ") || "—"],
       ["PROVIDER / MODEL", `${providerName(item.provider)} / ${item.model || "фикстуры"}`], ["ВРЕМЯ АНАЛИЗА", `${record.duration_ms} мс`],
+      ["PROCESSING ERROR", item.processing_error || "—"], ["ERROR DETAIL", item.processing_error_detail || "—"],
       ["AUTO SEND ELIGIBLE", String(item.auto_send_eligible)], ["TRANSLATION REVIEW", String(item.translation_requires_review)],
       ["TRANSLATION SOURCE", item.translation_source]].forEach(([label, value]) => {
         const cell = node("div"); cell.append(node("div", "reply-field-label", label), node("div", "value mono", value)); metadata.append(cell);

@@ -8,6 +8,7 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
   const ms = (value) => value === null ? "—" : `${value} мс`;
   function controls() {
     $("quality-start").disabled = pending || active() || !state.connected || state.busy || !run?.enabled;
+    $("quality-stability").disabled = $("quality-start").disabled;
     $("quality-stop").disabled = pending || !state.connected || run?.state !== "running";
     $("quality-export").disabled = !run?.run_id || active();
   }
@@ -23,6 +24,7 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
       metric("INTENT", pct(s.intent_accuracy)), metric("FACT SET MATCH", pct(s.fact_ids_accuracy)),
       metric("SAFE REPLY / READY", `${s.safe_reply_count} / ${s.ready_count}`),
       metric("NEEDS OPERATOR / SKIPPED", `${s.needs_operator_count} / ${s.skipped_count}`),
+      metric("INVALID OUTPUT / TRANSLATION REJECTED", `${s.invalid_output_count} / ${s.translation_rejected_count}`),
       metric("AVG / P50 / P95", `${ms(s.average_duration_ms)} / ${ms(s.p50_duration_ms)} / ${ms(s.p95_duration_ms)}`));
     const groups = ["languages", "categories"].map((key) => {
       const box = node("div"); box.append(node("h3", "", key === "languages" ? "Языки" : "Категории"));
@@ -31,11 +33,37 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
     });
     $("quality-breakdown").replaceChildren(...groups);
     const labels = {idle: "Не запускался", running: "RUNNING", stopping: "STOPPING — завершаем текущий кейс", completed: "COMPLETED", stopped: "STOPPED", failed: "FAILED"};
-    $("quality-progress").textContent = `${labels[run.state]} · ${s.total}/${s.dataset_total}${run.current_case_id ? ` · ${run.current_case_id}` : ""}`;
-    $("quality-provider").textContent = `${run.provider} / ${run.model}`;
+    $("quality-progress").textContent = `${labels[run.state]} · прогон ${run.run_number}/${run.runs_requested} · ${s.total}/${s.dataset_total}${run.current_case_id ? ` · ${run.current_case_id}` : ""}`;
+    $("quality-provider").textContent = `${run.provider} / ${run.model} · T=${run.temperature}`;
     $("quality-dataset").textContent = `${run.dataset_name} · v${run.dataset_version} · ${s.dataset_total} cases`;
     $("quality-error").hidden = !run.disabled_reason && !run.error_category;
     $("quality-error").textContent = run.disabled_reason || (run.error_category ? "Прогон не завершён. Требуется оператор." : "");
+    renderStability();
+  }
+  function renderStability() {
+    const s = run.stability, range = s.pass_min === null ? "—" : `${s.pass_min}–${s.pass_max}`;
+    $("quality-stability-summary").replaceChildren(
+      metric("ЗАВЕРШЕНО ПРОГОНОВ", `${s.runs_completed} / ${s.runs_requested}`),
+      metric("КОММЕНТАРИИ / MODEL POST", `${s.total_generations} / ${s.model_generation_calls ?? "—"}`),
+      metric("PASS MIN–MAX / MEAN", `${range} / ${pct(s.mean_pass_rate)}`),
+      metric("CRITICAL FAIL ПО ПРОГОНАМ", s.critical_fail_counts.join(" / ") || "—"),
+      metric("SHOULD REPLY MEAN / MIN", `${pct(s.should_reply_mean)} / ${pct(s.should_reply_min)}`),
+      metric("INTENT MEAN / MIN", `${pct(s.intent_mean)} / ${pct(s.intent_min)}`),
+      metric("FACT SET MEAN / MIN", `${pct(s.fact_ids_mean)} / ${pct(s.fact_ids_min)}`),
+      metric("INVALID / TRANSLATION REJECTED", `${s.invalid_output_count} / ${s.translation_rejected_count}`),
+      metric("PASS CONSISTENCY", Object.entries(s.pass_consistency).map(([key, count]) => `${key}: ${count}`).join(" · ") || "—"));
+    const table = node("table"), head = node("thead"), header = node("tr"), body = node("tbody");
+    ["Прогон", "PASS / FAIL", "Critical", "Should reply", "Intent", "Fact SET", "Invalid / translation", "Время AVG / P95"].forEach((title) => header.append(node("th", "", title)));
+    head.append(header);
+    (run.completed_summaries || []).forEach((trial) => {
+      const v = trial.summary, row = node("tr");
+      [trial.run_number, `${v.passed} / ${v.failed}`, v.critical_failed, pct(v.should_reply_accuracy), pct(v.intent_accuracy), pct(v.fact_ids_accuracy), `${v.invalid_output_count} / ${v.translation_rejected_count}`, `${ms(v.average_duration_ms)} / ${ms(v.p95_duration_ms)}`].forEach((value) => row.append(node("td", "", value)));
+      body.append(row);
+    });
+    table.append(head, body); $("quality-trials").replaceChildren(table);
+    $("quality-consistency").replaceChildren(...s.cases.map((c) => node("p", c.flapping ? "warning-text mono" : "mono", `${c.case_id}: ${c.passes}/${c.trials} PASS${c.flapping ? " · FLAPPING" : ""}${c.selection_consistent === false ? " · selection varies" : ""}`)));
+    const trials = run.completed_summaries.some((trial) => trial.run_number === run.run_number) ? run.completed_summaries : [...run.completed_summaries, run];
+    $("quality-fingerprints").replaceChildren(...trials.map((trial) => node("p", "", `Прогон ${trial.run_number}: ${trial.provider}/${trial.model}, T=${trial.temperature}; dataset=${trial.dataset_hash}; knowledge=${trial.knowledge_hash}; AI=${trial.ai_config_hash}; analysis=${trial.analysis_prompt_hash || "—"}; translation=${trial.translation_prompt_hash || "—"}`)));
   }
   function rowFor(c) {
     const row = node("tr"), cells = Array.from({length: 6}, () => node("td"));
@@ -53,6 +81,7 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
     rows.set(c.id, {row, intent, facts, status, badge, details, content}); return row;
   }
   function renderReview(container, c, result) {
+    const owner = run.run_id, runNumber = run.run_number;
     const form = node("form", "quality-review"), grades = {};
     const names = {comment_translation_quality: "COMMENT TRANSLATION", reply_naturalness: "REPLY NATURALNESS", reply_translation_quality: "REPLY TRANSLATION"};
     Object.entries(names).forEach(([key, label]) => {
@@ -66,10 +95,9 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
     const save = node("button", "button secondary-button", "Сохранить оценку"), message = node("span", "subtle"); save.type = "submit"; form.append(save, message);
     form.addEventListener("submit", async (event) => {
       event.preventDefault(); save.disabled = true;
-      const owner = run.run_id;
       try {
         const review = Object.fromEntries(Object.entries(grades).map(([key, select]) => [key, select.value])); review.note = note.value;
-        await api("/api/admin/quality/review", {run_id: owner, case_id: c.id, review});
+        await api("/api/admin/quality/review", {run_id: owner, run_number: runNumber, case_id: c.id, review});
         // Re-read the bounded canonical state; SSE may already have delivered it.
         await refresh(); toast("Ручная оценка сохранена в памяти.");
       } catch (error) { message.textContent = error.message; }
@@ -93,7 +121,7 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
   }
   function apply(value) {
     if (run && value.run.revision < run.revision) return;
-    const replaced = value.run.run_id !== run?.run_id;
+    const replaced = value.run.run_id !== run?.run_id || value.run.run_number !== run?.run_number;
     run = value.run;
     if (value.dataset) dataset = value.dataset;
     if (!dataset) return;
@@ -103,22 +131,26 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
     renderSummary(); controls(); updateControls();
   }
   async function refresh() { apply(await api("/api/admin/quality")); }
-  $("quality-start").addEventListener("click", async () => {
+  async function start(runs) {
     pending = true; controls(); updateControls();
-    try { apply({run: await api("/api/admin/quality/start", {})}); }
+    try { apply({run: await api("/api/admin/quality/start", {runs})}); }
     catch (error) { toast(error.message); }
     finally { pending = false; controls(); updateControls(); }
-  });
+  }
+  $("quality-start").addEventListener("click", () => start(1));
+  $("quality-stability").addEventListener("click", () => start(3));
   $("quality-stop").addEventListener("click", async () => {
     pending = true; controls();
     try { apply({run: await api("/api/admin/quality/stop", {run_id: run.run_id})}); }
     catch (error) { toast(error.message); }
     finally { pending = false; controls(); }
   });
-  $("quality-export").addEventListener("click", () => {
-    const report = {dataset, run, results: dataset.cases.map((c) => results.get(c.id)).filter(Boolean)};
+  $("quality-export").addEventListener("click", async () => {
+    let report;
+    try { report = await api("/api/admin/quality"); }
+    catch (error) { toast(error.message); return; }
     const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], {type: "application/json"}));
-    const a = node("a"); a.href = url; a.download = `quality-${run.run_id}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const a = node("a"); a.href = url; a.download = `quality-${report.run.run_id}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
   function tab(quality) {
     $("quality-lab").hidden = !quality; $("playground-standard").hidden = quality;

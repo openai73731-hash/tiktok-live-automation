@@ -157,7 +157,8 @@ async def test_http_contract_and_key_proxy_isolation(config, transport, monkeypa
         assert "authorization" not in request.headers and "cookie" not in request.headers
         assert KEY not in str(request.headers) + str(request.url) + request.content.decode()
     body = json.loads(requests[-1].content)
-    assert body["model"] == MODEL and body["temperature"] == 0.2 and body["max_tokens"] == 200
+    expected_ai = load_yaml_model(config.project_config_path, ProjectConfig).ai
+    assert body["model"] == MODEL and body["temperature"] == expected_ai.temperature and body["max_tokens"] == 200
     assert body["stream"] is False and body["response_format"]["type"] == "json_schema"
     schema = body["response_format"]["json_schema"]
     assert schema["strict"] and schema["schema"]["additionalProperties"] is False

@@ -1,6 +1,6 @@
 # Project scope and rules
 
-- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A and Stage 4A.1 are authorized and implemented. Stage two
+- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A, Stage 4A.1 and Stage 4A.2 are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A is VERIFIED
@@ -38,7 +38,7 @@
   Runs use the same Playground processor/client and hold its lock for the
   entire sequential run. OpenAI is forbidden, even with paid confirmation;
   enabled LIVE input disables Quality Lab to avoid concurrent inference.
-  No listener is created by Quality Lab. Start only through explicit RUN ALL;
+  No listener is created by Quality Lab. Start only through explicit RUN ALL or RUN STABILITY x3;
   reading snapshots/reconnecting never calls AI. STOP finishes the current
   case then prevents the next; shutdown cancels only the owned runner before
   closing the processor/client, including cancellation before its first step.
@@ -58,6 +58,28 @@
   Human grades never alter deterministic PASS. Tests use mocked providers only.
   A separate manual localhost Qwen run is authorized for this stage; never use
   real TikTok or paid OpenAI. Do not tune prompts before reviewing measurements.
+- Stage 4A.2 tunes general local analysis instructions and unseen illustrative
+  examples after reviewing measured failures; never map corpus strings to results.
+  Corpus expectations and approved knowledge remain unchanged. Distinguish none,
+  financial no_promises, minimal approved facts and on-topic knowledge_missing.
+  Preserve full Russian translations even for skipped readable messages; language-less
+  input uses und/null and operator review. Strict JSON parsing and final safety gates
+  remain mandatory. processing_error and optional processing_error_detail are fixed
+  allowlists, never provider content, validation inputs or exception messages.
+  The shared reason enum remains fixed; do not simplify it without measured evidence.
+  Stability holds the Playground lock across exactly three sequential full trials,
+  retains only the latest group (up to 225 case results), and exports all completed
+  trials plus the current partial trial. Agreement means and consistency use only
+  complete trials with identical dataset/knowledge/AI/prompt/provider/model/temperature
+  fingerprints; partial trials contribute only work/error counts. STOP finishes the
+  current case and prevents the next, including the next trial. Review is trial-bound
+  and cannot alter deterministic grades. Count processor invocations separately from
+  actual model POST attempts (analysis plus constrained translation). Compare
+  temperatures with identical other settings; no generation on GET/SSE/reconnect.
+  Manual localhost Qwen measurements are authorized; TikTok and paid OpenAI are not.
+  German wording remains constrained machine translation requiring review, never
+  approved knowledge. Back-translation and curated PASS do not prove semantic fidelity.
+  SEND/AUTO/Android remain disabled and auto_send_eligible=false.
 - Stage 3C adds LMStudioReplyEngine through the same AIReplyEngine/factory contract.
   Configuration selects provider/model; fake remains default. LM Studio is trusted
   only as a loopback local provider: http, explicit port, /v1, literal 127.0.0.1,

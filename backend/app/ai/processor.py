@@ -5,6 +5,7 @@ import re
 from time import perf_counter
 
 from app.ai.engine import AIReplyEngine, ProviderNotConfiguredError
+from app.ai.errors import safe_error
 from app.ai.knowledge import KnowledgeBase, ProjectConfig
 from app.ai.models import ReplyDraft, ReplyRequest, ReplySuggestion
 from app.ai.safety import ReplySafetyPolicy
@@ -45,10 +46,11 @@ class CommentProcessor:
             "operator_translation": None,
         }
 
-        def abstain(reason: str, status: str = "needs_operator", *, processing_error=None) -> ReplySuggestion:
+        def abstain(reason: str, status: str = "needs_operator", *, processing_error=None, processing_error_detail=None) -> ReplySuggestion:
             return ReplySuggestion(
                 **base, should_reply=False, suggested_reply=None,
                 reply_translation=None, reason=reason, status=status, processing_error=processing_error,
+                processing_error_detail=processing_error_detail,
             )
 
         if len(comment.text) > self.project.ai.max_comment_chars:
@@ -63,20 +65,17 @@ class CommentProcessor:
             # Validate the boundary even if a future provider returns a dict.
             draft = ReplyDraft.model_validate(raw)
         except Exception as exc:
+            category, detail = safe_error(exc)
             logger.error("ai_provider_failed", extra={"fields": {
                 "provider": self.engine.name, "model": base["model"],
                 "error_type": type(exc).__name__,
-                "error_category": ("timeout" if isinstance(exc, TimeoutError) else
-                                   getattr(exc, "category", None) if getattr(exc, "category", None) in {
-                    "model_not_found", "model_or_request_error", "timeout", "connection_error",
-                    "invalid_output", "incomplete_output", "redirect_rejected", "http_error",
-                    "invalid_models_response", "translation_rejected", "client_closed",
-                } else "provider_error"),
+                "error_category": category, "error_detail": detail,
                 "duration_ms": round((perf_counter() - started) * 1000), "status": "needs_operator",
             }})
             if isinstance(exc, ProviderNotConfiguredError):
                 return abstain("Provider не настроен: задайте его API key в окружении.", processing_error="provider_error")
-            return abstain("Не удалось подготовить ответ; требуется оператор.", processing_error="provider_error")
+            return abstain("Не удалось подготовить ответ; требуется оператор.",
+                           processing_error=category, processing_error_detail=detail)
         base.update(
             detected_language=draft.detected_language,
             operator_translation=draft.operator_translation,
