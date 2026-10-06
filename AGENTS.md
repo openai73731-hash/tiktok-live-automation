@@ -1,6 +1,6 @@
 # Project scope and rules
 
-- Scope: stages one, two, Stage 3A and Stage 3B are authorized and implemented. Stage two
+- Scope: stages one, two, Stage 3A, Stage 3B and Stage 3C are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A is VERIFIED
@@ -9,6 +9,46 @@
   CommentProcessor/FakeAI ReplySuggestion, ignored UnknownEvent, LiveEndEvent,
   ENDED -> STOPPED. Stage 3B implements OpenAI; paid API quality/access remains
   unverified until the operator runs the separate manual AI smoke test.
+- Stage 3C adds LMStudioReplyEngine through the same AIReplyEngine/factory contract.
+  Configuration selects provider/model; fake remains default. LM Studio is trusted
+  only as a loopback local provider: http, explicit port, /v1, literal 127.0.0.1,
+  localhost (canonicalized to 127.0.0.1) or ::1. Reject remote/LAN hosts, userinfo,
+  query/fragment and redirects; disable environment proxies and automatic retries.
+  Never use the OpenAI SDK or send OPENAI_API_KEY to LM Studio. No shared arbitrary
+  base_url. Existing async httpx supports local chat/completions and models routes.
+  GET /v1/models checks the configured model ID; never silently select another.
+  The list may include downloaded/JIT models; generation verifies actual access.
+  The 2026-10-06 real localhost qwen/qwen3-8b nine-comment smoke completed with
+  eight ready and one skipped; all require approval, none are sent. This verifies
+  finite integration behavior, not translation quality. Observed Russian mistranslations,
+  incomplete injection translation and awkward German remain operator-review limitations.
+- LM Studio analysis uses strict JSON schema for language/Russian comment translation,
+  should_reply, intent and approved fact IDs. Never extract JSON from free text,
+  markdown or thinking output. Unknown IDs, refusal, partial/malformed output and
+  unavailable model/server require operator review for that comment. One lazy async
+  client is reused and closed on CLI/FastAPI shutdown/cancellation. Tests mock HTTP;
+  real localhost smoke is separate from CI and does not authorize TikTok/paid calls.
+- Stage 3C factual replies use deterministic approved variants/combined templates
+  from bot_knowledge.yaml; source bindings must still match current approved facts
+  and translations. Preserve viewer language; operator translation is Russian.
+  Replies are short natural chat text, one sentence preferred, maximum two, no emojis,
+  emoticons, markdown, hashtags, marketing or financial promises. Run final safety
+  checks for both reply and Russian reply translation.
+- For languages without approved wording, Stage 3C permits a separate constrained
+  translation of the exact approved English reply through the same local model.
+  The translator receives approved text and target language, never the original
+  viewer comment. Strict fields, exact Russian approved text, source/back-translation,
+  style/claim/length checks fail closed. Back-translation is a model self-check, NOT
+  proof of semantic fidelity or correct language. Such suggestions explicitly set
+  translation_requires_review=true; requires_approval remains true for all replies.
+  Arbitrary LLM factual paraphrases remain prohibited. auto_send_eligible is always
+  false until independent delivery health, deduplication and safety gates exist.
+- Future local web UI, MANUAL/AUTOMATIC, ReplySender and Android delivery are only
+  documented. MANUAL means AI prepares the text and the operator chooses SEND/SKIP.
+  Future AUTO needs deterministic eligibility, rate limit/cooldown/queue/dedup,
+  delivery result, audit and PAUSE AUTO. Unknown/security UI, CAPTCHA, verification
+  or login requires NEED_OPERATOR and pauses AUTO; only the operator resolves it.
+  Future Android uses the official TikTok UI; no private API bypass or evasion.
 - The project accompanies OWN TikTok LIVE streams. A separate desktop trading
   program analyzes markets, opens trades and speaks about its actions. That
   trading system is external and MUST NOT be implemented or controlled here.
@@ -23,7 +63,7 @@
 - Pipeline: TikTokListener (implemented as LiveListener) -> LiveService ->
   CommentProcessor -> AI Reply Engine -> ReplySuggestion -> operator/future delivery.
   Keep AI independent of TikTokLive. AIReplyEngine and the provider factory support
-  fake/OpenAI now; future DeepSeek and LM Studio adapters must not change CommentProcessor.
+  fake/OpenAI/LM Studio now; future DeepSeek adapters must not change CommentProcessor.
 - Stage 3B uses official OpenAI SDK 3.24.0, async Responses API and strict structured
   classification/translation/fact selection. Provider/model/reasoning are selected
   in project.yaml; fake remains the default. Never hardcode model or product facts
@@ -31,8 +71,8 @@
   (including ignored .env); .env.example contains an empty placeholder.
   Pin the OpenAI endpoint, disable redirects/environment proxies and SDK retries;
   never add a generic base_url carrying OpenAI credentials. Future DeepSeek uses
-  DEEPSEEK_API_KEY; future LM Studio is a separate local adapter without that key.
-- LLM output may select IDs, never viewer-facing reply wording. Compose both reply
+  DEEPSEEK_API_KEY; LM Studio is a separate local adapter without that key.
+- Analysis LLM output may select IDs, never viewer-facing reply wording. Compose both reply
   and reply translation deterministically from approved knowledge and run the final
   ReplySafetyPolicy. Unknown IDs, unsupported translations, refusals, partial or
   invalid structured output require operator review. Machine comment translation

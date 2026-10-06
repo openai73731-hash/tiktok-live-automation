@@ -329,7 +329,7 @@ async def test_provider_lifecycle_owned_by_application(config, transport, entry)
 
 def test_unknown_provider_is_configuration_error(config):
     data = yaml.safe_load(config.project_config_path.read_text(encoding="utf-8"))
-    data["ai"]["provider"] = "lmstudio"
+    data["ai"]["provider"] = "unsupported_vendor"
     with pytest.raises(ValidationError):
         ProjectConfig.model_validate(data)
 

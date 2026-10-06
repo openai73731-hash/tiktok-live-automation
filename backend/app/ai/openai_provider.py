@@ -2,33 +2,13 @@
 import json
 import logging
 import re
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import SecretStr
 
 from app.ai.engine import ProviderNotConfiguredError
 from app.ai.knowledge import AIConfig
-from app.ai.models import ReplyDraft, ReplyRequest, ResponseKind
+from app.ai.models import ReplyDraft, ReplyRequest
+from app.ai.analysis import AIAnalysis as OpenAISelection
 from app.ai.safety import approved_reply
-
-
-class OpenAISelection(BaseModel):
-    """No field can supply viewer-facing reply text or a new product fact."""
-    model_config = ConfigDict(extra="forbid", strict=True, revalidate_instances="always")
-    detected_language: str = Field(pattern=r"^[a-z]{2,3}$")
-    operator_translation: str | None = Field(max_length=4000)
-    should_reply: bool
-    intent: ResponseKind
-    fact_ids: list[str] = Field(max_length=2)
-    reason: Literal["approved_facts", "financial_claim", "knowledge_missing", "no_reply", "unsupported"]
-
-    @model_validator(mode="after")
-    def consistent_selection(self):
-        if (not self.should_reply and (self.intent != "none" or self.fact_ids)
-                or self.should_reply and self.intent == "none"
-                or self.intent != "facts" and self.fact_ids):
-            raise ValueError("Inconsistent selection")
-        return self
 
 
 class InvalidStructuredOutputError(RuntimeError):

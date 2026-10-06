@@ -10,6 +10,7 @@ from pydantic import ValidationError
 import yaml
 
 from app.ai.factory import create_processor
+from app.ai.knowledge import ProjectConfig, load_yaml_model
 from app.config import ReplayScenarioName, Settings
 from app.live.models import Comment, LiveState
 from app.live.service import LiveService
@@ -67,9 +68,9 @@ async def run_listener(settings: Settings) -> int:
     return 2 if service.status.terminal_state == LiveState.OPERATOR_REQUIRED else 0
 
 
-async def run_ai_smoke(settings: Settings, text: str) -> int:
-    """Explicit operator action: one OpenAI request, no LIVE service constructed."""
-    processor = create_processor(settings, ai_smoke=True)
+async def run_ai_smoke(settings: Settings, text: str, provider: str | None = None) -> int:
+    """Explicit operator action: one comment, no LIVE service constructed."""
+    processor = create_processor(settings, ai_smoke=provider is None, smoke_provider=provider)
     try:
         suggestion = await processor.process(Comment(username="ai_smoke", text=text))
         logging.getLogger(LOGGER_NAME).info("ai_smoke_result", extra={"fields": {
@@ -78,6 +79,26 @@ async def run_ai_smoke(settings: Settings, text: str) -> int:
         return 2 if suggestion.status == "needs_operator" else 0
     finally:
         await processor.aclose()
+
+
+async def list_ai_models(settings: Settings) -> int:
+    from app.ai.lmstudio_provider import LMStudioReplyEngine, LMStudioError
+    project = load_yaml_model(settings.project_config_path, ProjectConfig)
+    engine = LMStudioReplyEngine(project.ai)
+    try:
+        models = await engine.check_model()
+        logging.getLogger(LOGGER_NAME).info("ai_models", extra={"fields": {
+            "provider": engine.name, "model": engine.model, "models": models, "status": "ready",
+        }})
+        return 0
+    except LMStudioError as exc:
+        logging.getLogger(LOGGER_NAME).error("ai_models_failed", extra={"fields": {
+            "provider": engine.name, "model": engine.model, "error_category": exc.category,
+            "status": "needs_operator", "hint": "Start LM Studio and load the configured model",
+        }})
+        return 2
+    finally:
+        await engine.aclose()
 
 
 def cli() -> None:
@@ -89,13 +110,26 @@ def cli() -> None:
                         help="Manual real LIVE smoke test with FakeAIReplyEngine")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--ai-smoke", metavar="COMMENT", help="One explicit OpenAI test without TikTok")
+    parser.add_argument("--ai-smoke-provider", choices=("fake", "openai", "lmstudio"))
+    parser.add_argument("--list-ai-models", choices=("lmstudio",))
+    parser.add_argument("--project-config", help="YAML configuration path")
+    parser.add_argument("comment", nargs="?", help="Comment for --ai-smoke-provider")
     args = parser.parse_args()
     overrides = {}
-    if args.ai_smoke is not None:
+    smoke_text = args.ai_smoke if args.ai_smoke is not None else args.comment
+    if args.ai_smoke_provider and (args.ai_smoke is not None or args.comment is None):
+        parser.error("--ai-smoke-provider requires a positional COMMENT, without --ai-smoke")
+    if args.comment is not None and not args.ai_smoke_provider:
+        parser.error("A positional COMMENT requires --ai-smoke-provider")
+    if args.list_ai_models and (args.ai_smoke is not None or args.ai_smoke_provider):
+        parser.error("Model discovery and AI smoke are separate commands")
+    if smoke_text is not None or args.list_ai_models:
         if args.mode or args.username or args.scenario or args.diagnostic:
-            parser.error("--ai-smoke cannot be combined with LIVE/replay options")
+            parser.error("AI diagnostics cannot be combined with LIVE/replay options")
         overrides.update(live_mode="fake", diagnostic=False, replay_scenario=None,
                          tiktok_username="", fake_repeat=False)
+    if args.project_config:
+        overrides["project_config_path"] = args.project_config
     if args.scenario:
         overrides["replay_scenario"] = args.scenario
     if args.diagnostic is not None:
@@ -115,8 +149,13 @@ def cli() -> None:
         parser.error(details)
     configure_logging(settings)
     try:
-        code = asyncio.run(run_ai_smoke(settings, args.ai_smoke) if args.ai_smoke is not None
-                           else run_listener(settings))
+        if args.list_ai_models:
+            code = asyncio.run(list_ai_models(settings))
+        elif args.ai_smoke_provider:
+            code = asyncio.run(run_ai_smoke(settings, smoke_text, args.ai_smoke_provider))
+        else:
+            code = asyncio.run(run_ai_smoke(settings, smoke_text) if smoke_text is not None
+                               else run_listener(settings))
     except (OSError, ValueError, yaml.YAMLError) as exc:
         logging.getLogger(LOGGER_NAME).error("configuration_failed", extra={
             "fields": {"error_type": type(exc).__name__,

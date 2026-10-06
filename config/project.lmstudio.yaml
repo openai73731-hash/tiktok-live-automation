@@ -1,0 +1,18 @@
+stream:
+  language: en
+product:
+  name: "Trading Bot"
+  platform: "Pocket Option"
+ai:
+  provider: lmstudio
+  model: qwen/qwen3-8b
+  lmstudio_base_url: http://127.0.0.1:1234/v1
+  operator_language: ru
+  timeout_seconds: 15
+  temperature: 0.2
+  max_model_output_tokens: 200
+  max_reply_sentences: 2
+  max_reply_chars: 180
+  max_comment_chars: 1000
+  prefer_single_sentence: true
+  thinking_enabled: false

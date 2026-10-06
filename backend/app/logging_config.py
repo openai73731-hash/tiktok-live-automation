@@ -60,12 +60,15 @@ class ConsoleFormatter(logging.Formatter):
                     f"  detected_language: {safe(item['detected_language'])}\n"
                     f"  should_reply: {str(item['should_reply']).lower()}\n"
                     f"  fact_ids: {item['fact_ids']}\n"
-                    f"  translation: {safe(item['operator_translation'])}\n"
+                    f"  intent: {safe(item.get('intent'))}\n"
+                    f"  operator_translation: {safe(item['operator_translation'])}\n"
                     f"  suggested_reply: {safe(item['suggested_reply'])}\n"
                     f"  reply_translation: {safe(item['reply_translation'])}\n"
                     f"  provider: {safe(item['provider'])}\n"
                     f"  model: {safe(item.get('model'))}\n"
                     f"  requires_approval: {str(item['requires_approval']).lower()}\n"
+                    f"  translation_requires_review: {str(item.get('translation_requires_review', False)).lower()}\n"
+                    f"  auto_send_eligible: false\n"
                     f"  reason: {safe(item['reason'])}\n"
                 )
             action = {

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+from time import perf_counter
 
 from app.ai.engine import AIReplyEngine, ProviderNotConfiguredError
 from app.ai.knowledge import KnowledgeBase, ProjectConfig
@@ -35,6 +36,7 @@ class CommentProcessor:
         self.safety = safety or ReplySafetyPolicy()
 
     async def process(self, comment: Comment) -> ReplySuggestion:
+        started = perf_counter()
         candidate = is_reply_candidate(comment.text)
         base = {
             "username": comment.username, "original_text": comment.text,
@@ -51,11 +53,11 @@ class CommentProcessor:
 
         if len(comment.text) > self.project.ai.max_comment_chars:
             return abstain("Сообщение слишком длинное для автоматической подготовки ответа.")
-        request = ReplyRequest(
-            original_text=comment.text, is_candidate=candidate,
-            project=self.project, knowledge=self.knowledge,
-        )
         try:
+            request = ReplyRequest(
+                original_text=comment.text, is_candidate=candidate,
+                project=self.project, knowledge=self.knowledge,
+            )
             async with asyncio.timeout(self.project.ai.timeout_seconds):
                 raw = await self.engine.generate(request)
             # Validate the boundary even if a future provider returns a dict.
@@ -64,6 +66,13 @@ class CommentProcessor:
             logger.error("ai_provider_failed", extra={"fields": {
                 "provider": self.engine.name, "model": base["model"],
                 "error_type": type(exc).__name__,
+                "error_category": ("timeout" if isinstance(exc, TimeoutError) else
+                                   getattr(exc, "category", None) if getattr(exc, "category", None) in {
+                    "model_not_found", "model_or_request_error", "timeout", "connection_error",
+                    "invalid_output", "incomplete_output", "redirect_rejected", "http_error",
+                    "invalid_models_response", "translation_rejected", "client_closed",
+                } else "provider_error"),
+                "duration_ms": round((perf_counter() - started) * 1000), "status": "needs_operator",
             }})
             if isinstance(exc, ProviderNotConfiguredError):
                 return abstain("Provider не настроен: задайте его API key в окружении.")
@@ -71,6 +80,7 @@ class CommentProcessor:
         base.update(
             detected_language=draft.detected_language,
             operator_translation=draft.operator_translation,
+            intent=draft.response_kind,
         )
         if draft.needs_operator or draft.detected_language == "und" or not draft.operator_translation:
             return abstain("Нет надёжного перевода или знания для этого сообщения; требуется оператор.")
@@ -91,10 +101,15 @@ class CommentProcessor:
             if draft.response_kind == "unknown" else
             "Вопрос о программе; ответ основан на утверждённых фактах."
         )
+        if draft.translation_evidence is not None:
+            reason += " Машинный перевод ответа требует проверки оператором."
         return ReplySuggestion(
             **base, should_reply=True, suggested_reply=draft.suggested_reply,
             reply_translation=draft.reply_translation, fact_ids=draft.fact_ids,
             reason=reason, status="ready",
+            template_id=draft.template_id,
+            translation_source="constrained" if draft.translation_evidence else "approved",
+            translation_requires_review=draft.translation_evidence is not None,
         )
 
     async def handle(self, comment: Comment) -> ReplySuggestion:

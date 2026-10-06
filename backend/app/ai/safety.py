@@ -4,6 +4,7 @@ This is deliberately NOT a semantic verifier for arbitrary LLM paraphrases.
 A future provider cannot bypass the policy just by citing an existing fact ID.
 """
 import re
+import unicodedata
 
 from app.ai.models import ReplyDraft, ReplyRequest
 
@@ -49,8 +50,18 @@ def approved_reply(
     return None
 
 
+def style_violations(text: str) -> bool:
+    return bool(
+        any(unicodedata.category(c) in {"So", "Cs", "Cc", "Cf"} for c in text)
+        or re.search(r"[#*_`<>\[\]{}]|https?://|www\.|[!?]{2,}|\.{3,}|[:;=8][-^]?[)(DPp]|^[-•]\s", text)
+        or re.search(r"\bas an ai\b|thank you for (?:your|the) question|sophisticated.*solution|"
+                     r"revolutionary|game[- ]changing|customer support|спасибо за.*вопрос|как ии", text, re.I)
+    )
+
+
 class ReplySafetyPolicy:
     def violations(self, request: ReplyRequest, draft: ReplyDraft) -> tuple[str, ...]:
+        from app.ai.composer import expected_text
         issues = []
         if draft.detected_language == "und":
             issues.append("language_unknown")
@@ -69,12 +80,29 @@ class ReplySafetyPolicy:
                 continue
             if claim_violations(text):
                 issues.append(f"{label}_financial_promise")
-            expected = approved_reply(request, draft.response_kind, draft.fact_ids, language)
-            if expected is None or text != expected:
+            expected = (approved_reply(request, draft.response_kind, draft.fact_ids, language)
+                        if draft.composition_style == "canonical" else expected_text(request, draft, language))
+            constrained = draft.composition_style == "constrained_translation" and label == "reply"
+            if constrained:
+                evidence = draft.translation_evidence
+                source = expected_text(request, draft, "en")
+                operator = expected_text(request, draft, request.project.ai.operator_language)
+                if (not evidence or not source or not operator
+                        or request.project.ai.provider != "lmstudio"
+                        or request.project.ai.operator_language != "ru"
+                        or evidence.target_language != draft.detected_language
+                        or evidence.viewer_language_reply != draft.suggested_reply
+                        or evidence.source_en != source or evidence.back_translation_en != source
+                        or evidence.operator_reply_translation_ru != operator
+                        or draft.reply_translation != operator
+                        or expected is not None):
+                    issues.append("translation_evidence_invalid")
+            elif expected is None or text != expected:
                 issues.append(f"{label}_ungrounded")
+            if draft.composition_style != "canonical" and style_violations(text):
+                issues.append(f"{label}_style")
             if not 1 <= sentence_count(text) <= request.project.ai.max_reply_sentences:
                 issues.append(f"{label}_sentence_limit")
             if len(text) > request.project.ai.max_reply_chars:
                 issues.append(f"{label}_length_limit")
         return tuple(issues)
-

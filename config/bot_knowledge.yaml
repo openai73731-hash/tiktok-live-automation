@@ -36,3 +36,47 @@ safe_responses:
     ru: "У меня нет подтверждённой информации об этом."
     es: "No tengo información verificada sobre eso."
 
+# Reviewed wording bound to exact source revisions, including translations.
+reply_templates:
+  - id: analysis_and_trades
+    fact_ids: [automatic_analysis, automatic_trades]
+    texts:
+      en: "It analyzes the market and opens trades automatically."
+      ru: "Она анализирует рынок и открывает сделки автоматически."
+      es: "Analiza el mercado y abre operaciones automáticamente."
+    source_texts:
+      en:
+        automatic_analysis: "The software analyzes the market automatically."
+        automatic_trades: "The software opens trades automatically."
+      ru:
+        automatic_analysis: "Программа автоматически анализирует рынок."
+        automatic_trades: "Программа автоматически открывает сделки."
+      es:
+        automatic_analysis: "El programa analiza el mercado automáticamente."
+        automatic_trades: "El programa abre operaciones automáticamente."
+  - id: analysis_short
+    fact_ids: [automatic_analysis]
+    texts:
+      en: "It analyzes the market automatically."
+      ru: "Она анализирует рынок автоматически."
+      es: "Analiza el mercado automáticamente."
+    source_texts:
+      en:
+        automatic_analysis: "The software analyzes the market automatically."
+      ru:
+        automatic_analysis: "Программа автоматически анализирует рынок."
+      es:
+        automatic_analysis: "El programa analiza el mercado automáticamente."
+  - id: trades_short
+    fact_ids: [automatic_trades]
+    texts:
+      en: "It opens trades automatically."
+      ru: "Она открывает сделки автоматически."
+      es: "Abre operaciones automáticamente."
+    source_texts:
+      en:
+        automatic_trades: "The software opens trades automatically."
+      ru:
+        automatic_trades: "Программа автоматически открывает сделки."
+      es:
+        automatic_trades: "El programa abre operaciones automáticamente."

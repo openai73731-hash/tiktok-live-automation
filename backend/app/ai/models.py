@@ -17,6 +17,15 @@ class ReplyRequest(BaseModel):
     knowledge: KnowledgeBase
 
 
+class TranslationEvidence(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    source_en: str
+    target_language: str
+    viewer_language_reply: str
+    back_translation_en: str
+    operator_reply_translation_ru: str
+
+
 class ReplyDraft(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
     detected_language: str = Field(pattern=r"^[a-z]{2,3}$")
@@ -30,6 +39,9 @@ class ReplyDraft(BaseModel):
     fact_ids: tuple[str, ...] = ()
     # Honest abstention: fake has no universal translation or language detection.
     needs_operator: bool = False
+    composition_style: Literal["canonical", "approved_template", "constrained_translation"] = "canonical"
+    template_id: str | None = None
+    translation_evidence: TranslationEvidence | None = None
 
 
 class ReplySuggestion(BaseModel):
@@ -46,6 +58,12 @@ class ReplySuggestion(BaseModel):
     fact_ids: tuple[str, ...] = ()
     provider: str
     model: str | None = None
+    intent: ResponseKind = "none"
+    template_id: str | None = None
+    translation_source: Literal["approved", "constrained"] = "approved"
+    translation_requires_review: bool = False
+    # Delivery health/deduplication are not implemented, so eligibility is false.
+    auto_send_eligible: Literal[False] = False
     # A ready suggestion has NEVER been approved or sent.
     requires_approval: Literal[True] = True
     timestamp: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
