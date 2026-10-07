@@ -166,14 +166,14 @@
     [["INTENT", item.intent], ["SHOULD REPLY", String(item.should_reply)], ["FACT IDS", item.fact_ids.join(", ") || "—"],
       ["PROVIDER / MODEL", `${providerName(item.provider)} / ${item.model || "фикстуры"}`], ["ВРЕМЯ АНАЛИЗА", `${record.duration_ms} мс`],
       ["PROCESSING ERROR", item.processing_error || "—"], ["ERROR DETAIL", item.processing_error_detail || "—"],
-      ["AUTO SEND ELIGIBLE", String(item.auto_send_eligible)], ["TRANSLATION REVIEW", String(item.translation_requires_review)],
+      ["AUTO SEND ELIGIBLE", String(record.delivery_review?.auto_eligibility?.eligible || false)], ["TRANSLATION REVIEW", String(item.translation_requires_review)],
       ["TRANSLATION SOURCE", item.translation_source]].forEach(([label, value]) => {
         const cell = node("div"); cell.append(node("div", "reply-field-label", label), node("div", "value mono", value)); metadata.append(cell);
       });
     card.append(metadata);
     const flags = node("div", "flag-list");
     flags.append(node("span", "badge warning", item.requires_approval ? "REQUIRES APPROVAL" : "APPROVAL STATUS UNKNOWN"),
-      node("span", "badge neutral", item.auto_send_eligible ? "AUTO ELIGIBILITY UNKNOWN" : "AUTO SEND NOT ELIGIBLE"));
+      node("span", "badge neutral", record.delivery_review?.auto_eligibility?.eligible ? "AUTO ELIGIBLE" : "AUTO BLOCKED"));
     card.append(flags, node("p", "reply-reason", item.reason));
     const actions = node("div", "reply-actions"), copy = node("button", "button secondary-button", "COPY REPLY");
     copy.type = "button"; copy.disabled = !item.suggested_reply;
@@ -186,7 +186,7 @@
     if (record.delivery_review) {
       const review = record.delivery_review, envelope = review.envelope;
       card.append(node("p", "subtle mono", `ID ${envelope.suggestion_id} · runtime ${envelope.active_runtime_revision.slice(0, 8)} · session ${envelope.live_session_id?.slice(0, 8) || "Playground"}`),
-        node("p", "subtle", `Approval: ${review.approval_state} · Delivery: NOT CONFIGURED · ${review.eligibility.reason}`));
+        node("p", "subtle", `Approval: ${review.approval_state} · Delivery: ${review.approval_state === "approved" ? "APPROVED" : "READY"} · ${review.eligibility.reason}`));
       const approve = node("button", "button secondary-button", "APPROVE · без отправки");
       approve.type = "button"; approve.disabled = item.status !== "ready" || review.approval_state !== "missing";
       let translationCheck = null;
@@ -292,6 +292,7 @@
     receive("snapshot", renderStatus);
     receive("quality_update", quality.apply);
     receive("operator_settings", (value) => { operator.render(value); refreshReviews().catch(() => setConnected(false)); });
+    receive("delivery_status", (value) => { delivery.render(value); refreshReviews().catch(() => setConnected(false)); });
     receive("suggestion_approval", () => { refresh().catch(() => setConnected(false)); });
     receive("live_state", (value) => {
       const changed = value.state !== state.status?.live?.state || value.live_session_id !== state.status?.live?.live_session_id;

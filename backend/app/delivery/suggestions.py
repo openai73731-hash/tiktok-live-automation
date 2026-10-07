@@ -88,6 +88,7 @@ class SuggestionStore:
     def __init__(self):
         self.groups = {"playground": OrderedDict(), "live": OrderedDict()}
         self.approvals = {}
+        self.auto_authorizations = {}
 
     def register(self, record, comment, processor, runtime_revision, *, session_id=None, target_account=None):
         # Fallback is a conservative 30-second receipt bucket, not a TikTok ID.
@@ -102,12 +103,16 @@ class SuggestionStore:
         envelope = SuggestionEnvelope.model_validate(values | {"suggestion_revision": "0" * 64})
         envelope = envelope.model_copy(update={"suggestion_revision": digest(envelope.model_dump(mode="json", exclude={"suggestion_revision"}))})
         envelope._monotonic_deadline = comment._received_monotonic + 300
+        from app.delivery.automatic import verified_content, content_binding
+        envelope._auto_content_verified = verified_content(record.suggestion, processor)
+        envelope._auto_content_binding = content_binding(envelope)
         group = self.groups["playground" if record.source == "playground" else "live"]
         group[record.id] = envelope
         limit = 100 if record.source == "playground" else 50
         while len(group) > limit:
             old_id, _ = group.popitem(last=False)
             self.approvals.pop(old_id, None)
+            self.auto_authorizations.pop(old_id, None)
         return envelope
 
     def get(self, suggestion_id):
@@ -147,3 +152,25 @@ class SuggestionStore:
         if e.suggestion_revision != expected_revision or approval is None or approval.approval_id != approval_id:
             raise SuggestionConflict("Approval binding conflict")
         return e, approval, DeliveryEligibility.evaluate(e, approval, context)
+
+
+    def authorize_auto(self, suggestion_id, context):
+        from app.delivery.automatic import AutomaticEligibility
+        e = self.get(suggestion_id)
+        verdict = AutomaticEligibility.evaluate(e, context)
+        if not verdict.eligible: raise SuggestionConflict("Automatic authorization rejected")
+        authorization = Approval(approval_id=uuid4().hex,
+            **{name: getattr(e, name) for name in ("suggestion_id", "suggestion_revision", "suggested_reply_hash",
+                "live_session_id", "active_runtime_revision", "knowledge_revision", "policy_revision")},
+            approved_at=datetime.now(UTC), translation_review_confirmed=False)
+        self.auto_authorizations[suggestion_id] = authorization
+        return authorization
+
+    def automatic_authoritative(self, suggestion_id, approval_id, expected_revision, context):
+        from app.delivery.automatic import AutomaticEligibility
+        e = self.get(suggestion_id)
+        authorization = self.auto_authorizations.get(suggestion_id)
+        if (e.suggestion_revision != expected_revision or authorization is None
+                or authorization.approval_id != approval_id or not approval_matches(e, authorization)):
+            raise SuggestionConflict("Automatic authorization binding conflict")
+        return e, authorization, AutomaticEligibility.evaluate(e, context)

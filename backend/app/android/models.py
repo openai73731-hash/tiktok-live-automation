@@ -15,6 +15,7 @@ class ScreenState(StrEnum):
     TIKTOK_NOT_RUNNING = "TIKTOK_NOT_RUNNING"
     LIVE_READY = "LIVE_READY"
     COMMENT_INPUT_READY = "COMMENT_INPUT_READY"
+    TRANSIENT_OVERLAY = "TRANSIENT_OVERLAY"
     CAPTCHA = "CAPTCHA"
     VERIFY = "VERIFY"
     LOGIN_REQUIRED = "LOGIN_REQUIRED"
@@ -55,11 +56,18 @@ class DeviceInspection(DeviceModel):
     send_confirmation_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     reason: Literal["not_checked", "adb_unavailable", "device_missing", "multiple_devices", "unauthorized",
         "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen", "profile_unverified",
-        "account_unverified", "live_unverified", "input_unavailable", "send_control_unverified", "ready"] = "not_checked"
+        "account_unverified", "live_unverified", "input_unavailable", "send_control_unverified", "transient_overlay", "ready"] = "not_checked"
 
     @property
     def ready(self):
         return (self.device == "READY" and self.screen == ScreenState.COMMENT_INPUT_READY and
+                self.account_verified and self.live_verified and self.profile_verified and
+                self.interaction_available and not self.security_state)
+
+
+    @property
+    def fill_ready(self):
+        return (self.screen == ScreenState.COMMENT_INPUT_READY and self.comment_input_found and
                 self.account_verified and self.live_verified and self.profile_verified and
                 self.interaction_available and not self.security_state)
 
@@ -75,21 +83,22 @@ class UIActionBackend(TextEntryBackend, Protocol):
 
     prepare_exact must target a semantic node, return a freshly read exact field
     value, and never press Send. click_send may perform ONE action, no retries.
-    ASCII RC uses a manually focused verified field and selector-checked keyboard focus.
+    ASCII entry uses a manually focused verified field and selector-resolved activation.
     """
     def supports(self, text: str) -> bool: ...
     async def prepare_exact(self, serial: str, resource_id: str, text: str) -> str: ...
     # Recheck guard after all backend awaits, immediately before ONE native action.
-    # False means the action was never issued. No retry or coordinate fallback.
+    # False means the action was never issued. No retry or guessed-coordinate fallback.
     async def click_send(self, serial: str, resource_id: str, guard: Callable[[], bool]) -> bool: ...
     async def aclose(self) -> None: ...
 
 
 class AndroidOutcome(DeviceModel):
-    status: Literal["not_sent", "unknown", "needs_operator"]
+    status: Literal["filled", "confirmed", "not_sent", "unknown", "needs_operator"]
     reason: Literal["physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen",
         "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
-        "rejected", "interrupted"]
+        "rejected", "interrupted", "filled_waiting_user_send", "feed_confirmed",
+        "open_phone_composer", "transient_overlay", "confirmation_ambiguous"]
 
 
 class CaptureResult(DeviceModel):

@@ -1,6 +1,6 @@
 """Transactional, persistent operation reservations. Contains no reply text.
 
-Created lazily for explicit manual delivery. The fixed production location is ignored;
+Created lazily for explicit manual fill or separately armed automatic delivery. The fixed production location is ignored;
 tests inject a temporary location. Retention fails closed at the bounded cap.
 """
 from datetime import UTC, datetime
@@ -31,10 +31,10 @@ class Operation(FrozenModel):
     target_account: Account
     runtime_revision: OpaqueId
     created_at: str = Field(max_length=40)
-    status: Literal["reserved", "confirmed", "not_sent", "unknown", "needs_operator"]
+    status: Literal["reserved", "filled", "confirmed", "not_sent", "unknown", "needs_operator"]
     reason: DeliveryReason | None
     device_serial: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
-    mode: Literal["MANUAL"] = "MANUAL"
+    mode: Literal["MANUAL", "AUTOMATIC"] = "MANUAL"
 
 
 class DeliveryOperationStore(Protocol):
@@ -67,7 +67,7 @@ class SQLiteDeliveryOperationStore:
             comment_identity TEXT NOT NULL UNIQUE, approval_id TEXT NOT NULL, reply_hash TEXT NOT NULL,
             live_session_id TEXT NOT NULL, target_account TEXT NOT NULL,
             runtime_revision TEXT NOT NULL, created_at TEXT NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ('reserved','confirmed','not_sent','unknown','needs_operator')),
+            status TEXT NOT NULL CHECK(status IN ('reserved','filled','confirmed','not_sent','unknown','needs_operator')),
             reason TEXT)""")
         self.connection.execute("BEGIN IMMEDIATE")
         try:
@@ -76,6 +76,16 @@ class SQLiteDeliveryOperationStore:
                 self.connection.execute("ALTER TABLE operations ADD COLUMN device_serial TEXT")
             if "mode" not in columns:
                 self.connection.execute("ALTER TABLE operations ADD COLUMN mode TEXT NOT NULL DEFAULT 'MANUAL'")
+            schema = self.connection.execute("SELECT sql FROM sqlite_master WHERE name='operations'").fetchone()[0]
+            if "'filled'" not in schema:
+                # SQLite cannot widen CHECK in place. Copy every bounded metadata row
+                # transactionally, preserving all three unique dedup identities.
+                self.connection.execute("ALTER TABLE operations RENAME TO operations_stage4b3")
+                self.connection.execute(schema.replace(
+                    "'reserved','confirmed'", "'reserved','filled','confirmed'"))
+                columns = ",".join(r[1] for r in self.connection.execute("PRAGMA table_info(operations_stage4b3)"))
+                self.connection.execute(f"INSERT INTO operations ({columns}) SELECT {columns} FROM operations_stage4b3")
+                self.connection.execute("DROP TABLE operations_stage4b3")
             self.connection.execute("COMMIT")
         except BaseException:
             if self.connection.in_transaction: self.connection.execute("ROLLBACK")
@@ -100,7 +110,7 @@ class SQLiteDeliveryOperationStore:
                     "comment_identity": request.comment_identity, "approval_id": request.approval_id,
                     "reply_hash": request.suggested_reply_hash, "live_session_id": request.live_session_id,
                     "target_account": request.target_account, "runtime_revision": request.active_runtime_revision,
-                    "device_serial": request.device_serial}
+                    "device_serial": request.device_serial, "mode": request.mode}
                 if any(row[key] != value for key, value in fields.items()):
                     raise JournalConflict("Idempotency key binding conflict")
                 db.execute("COMMIT")
@@ -113,7 +123,7 @@ class SQLiteDeliveryOperationStore:
             values = (request.operation_id, request.idempotency_key, request.suggestion_id,
                 request.suggestion_revision, request.comment_identity, request.approval_id,
                 request.suggested_reply_hash, request.live_session_id, request.target_account,
-                request.active_runtime_revision, datetime.now(UTC).isoformat(), "reserved", None, request.device_serial, "MANUAL")
+                request.active_runtime_revision, datetime.now(UTC).isoformat(), "reserved", None, request.device_serial, request.mode)
             db.execute("INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
             row = db.execute("SELECT * FROM operations WHERE operation_id=?", (request.operation_id,)).fetchone()
             db.execute("COMMIT")
@@ -130,6 +140,13 @@ class SQLiteDeliveryOperationStore:
         if row is None: raise JournalConflict("Operation unavailable")
         return self._operation(row)
 
+    def settle_fill(self, operation_id, result):
+        result = DeliveryResult.model_validate(result.model_dump())
+        if result.status not in {"confirmed", "unknown"}: raise JournalConflict("Invalid fill settlement")
+        updated = self.connection.execute("UPDATE operations SET status=?, reason=? WHERE operation_id=? AND status='filled'",
+            (result.status, result.reason, operation_id))
+        if updated.rowcount != 1: raise JournalConflict("Fill unavailable")
+
     def close(self):
         self.connection.close()
 
@@ -142,4 +159,4 @@ class SQLiteDeliveryOperationStore:
         return self._operation(row) if row is not None else None
 
     def unresolved(self):
-        return self.connection.execute("SELECT 1 FROM operations WHERE status IN ('reserved','unknown','needs_operator') LIMIT 1").fetchone() is not None
+        return self.connection.execute("SELECT 1 FROM operations WHERE status IN ('reserved','filled','unknown','needs_operator') LIMIT 1").fetchone() is not None

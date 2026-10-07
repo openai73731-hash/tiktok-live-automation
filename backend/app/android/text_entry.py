@@ -1,10 +1,10 @@
-"""Android 13 ASCII entry + selector-verified keyboard activation, no coordinates.
+"""Android 13 ASCII entry + selector-resolved activation, no guessed coordinates.
 
 Uses the normal focused EditText. No IME installation, root, clipboard or Unicode
 claims. AOSP input converts %s to spaces; exact UI readback is always required.
 """
 from app.android.adb import AdbCommand, ascii_supported
-from app.android.tiktok_ui import unique_node, rid, parse_hierarchy
+from app.android.tiktok_ui import unique_node, resolved_send_point
 
 
 class TextEntryError(RuntimeError):
@@ -20,15 +20,16 @@ class ASCIITextEntryBackend:
 
     def supports(self, text): return ascii_supported(text)
 
-    def bind(self, target, guard):
+    def bind(self, target, guard, *, require_send=True):
         self.target, self.guard = target, guard
+        self.require_send = require_send
         self.expected = None
 
     async def checked(self, serial, *, focused=False):
         c = self.controller
         state = await c._inspect(self.target)
         entry = unique_node(c._xml, c._profile.input_id) if c._profile else None
-        if (not self.guard() or not state.ready or state.serial != serial or entry is None or
+        if (not self.guard() or not (state.ready if self.require_send else state.fill_ready) or state.serial != serial or entry is None or
                 focused and entry.get("focused") != "true"):
             raise TextEntryError()
         return entry
@@ -58,27 +59,14 @@ class ASCIITextEntryBackend:
     async def click_send(self, serial, resource_id, guard):
         c = self.controller
         if not c._profile or resource_id != c._profile.send_id or self.expected is None: return False
-        # TAB only changes focus. No Enter/IME action on an input field and no tap fallback.
-        # Both vp8 and its clickable vpl child belong to the one confirmed candidate.
-        seen = set()
-        for _ in range(8):
-            entry = await self.checked(serial)
-            if entry.get("text") != self.expected: raise TextEntryError()
-            root = parse_hierarchy(c._xml)
-            focused = [n for n in root.iter() if n.get("focused") == "true"]
-            if len(focused) != 1: return False
-            identity = focused[0].get("resource-id")
-            if identity in {resource_id, rid("vpl")}:
-                if any(unique_node(c._xml, name).get("enabled") != "true" for name in (resource_id, rid("vpl"))): return False
-                if not guard(): return False
-                # One activation only. Exceptions/cancellation after dispatch stay UNKNOWN.
-                await c.transport.run(AdbCommand.ACTIVATE, serial=serial, guard=guard)
-                return True
-            if identity in seen or identity not in {rid(n) for n in ("h4k", "qde", "qcv", "lbz")}:
-                return False
-            seen.add(identity)
-            await c.transport.run(AdbCommand.TAB, serial=serial, guard=guard)
-        return False
+        entry = await self.checked(serial, focused=True)
+        if entry.get("text") != self.expected: raise TextEntryError()
+        point = resolved_send_point(c._xml, c._profile)
+        if point is None or not guard(): return False
+        # Bounds come ONLY from the unique confirmed reviewed vp8/vpl relationship.
+        # The transport repeats the synchronous guard immediately before spawning.
+        await c.transport.run(AdbCommand.TAP_SEND, serial=serial, point=point, guard=guard)
+        return True
 
     async def aclose(self):
         self.target = self.expected = None

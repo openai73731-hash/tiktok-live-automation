@@ -67,7 +67,7 @@ class ReplySuggestion(BaseModel):
     translation_requires_review: bool = False
     processing_error: ProcessingError | None = None
     processing_error_detail: ProcessingErrorDetail | None = None
-    # Delivery health/deduplication are not implemented, so eligibility is false.
+    # Provider output never authorizes delivery. Stage 4B.4 computes AUTO eligibility separately.
     auto_send_eligible: Literal[False] = False
     # A ready suggestion has NEVER been approved or sent.
     requires_approval: Literal[True] = True

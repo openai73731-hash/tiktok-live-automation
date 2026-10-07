@@ -1,9 +1,181 @@
 # tiktok-live-automation
 
-## Stage 4B.3: MANUAL SEND release candidate
+## Stage 4B.4: MANUAL fill и отдельно включаемый AUTOMATIC
 
-Этот раздел описывает текущую поставку; ограничения более ранних stages ниже —
-история. Добавлен reviewed UI profile **TikTok You 46.8.3 / 2024608030**, package
+Это текущая поставка. Она заменяет MANUAL SEND/TAB/DPAD_CENTER из Stage 4B.3 и
+исторические запреты AUTO в разделах ниже. Агент не выполнял real LIVE, physical
+SEND, real-device input или платные API вызовы. **AUTO ещё не production-ready:**
+первый реальный fill/send и достоверность feed confirmation должен проверить оператор.
+
+Причина изменения: Stage 4B.3 связывал MANUAL с программной activation Send через
+TAB → DPAD_CENTER; оператор сообщил, что этот путь на телефоне не дал нужного результата.
+MANUAL теперь заканчивается вводом, а отправку делает человек. TAB/DPAD_CENTER
+отклоняются production ADB allowlist; координатного fallback нет.
+
+### Два независимых режима
+
+- **MANUAL (default):** AI → immutable READY suggestion → оператор APPROVE →
+  **ВСТАВИТЬ В ТЕЛЕФОН / FILL PHONE** → человек нажимает Send на телефоне.
+  APPROVE ничего не вводит и не отправляет. Fill не вызывает send adapter.
+  `ENABLE_PHYSICAL_TIKTOK_SEND=false` разрешает только проверенный fill, не Send.
+  После ввода: **«Ответ введён в телефон. Нажмите отправить на телефоне.»**
+  COPY REPLY остаётся доступным. Если composer не открыт, UI просит открыть и
+  сфокусировать его вручную; ожидание не расходует journal reservation.
+- **AUTOMATIC:** отдельный opt-in через Dashboard для текущих session/account/runtime,
+  при startup `ENABLE_PHYSICAL_TIKTOK_SEND=true` и verified ready device. Browser
+  не меняет env gate. Новые real LIVE completions проходят deterministic eligibility,
+  затем guarded fill → exact send control → одна activation → feed confirmation.
+  APPROVE отдельной карточки не требуется: backend создаёт приватную AUTO authorization,
+  отдельную от human approvals. Старые карточки, GET/SSE/reconnect не запускают AUTO.
+  PAUSE AUTO переводит режим в MANUAL и сразу отзывает pre-action guard. Если действие
+  уже могло произойти, read-only проверка/settlement завершает его как UNKNOWN.
+
+Provider-level `ReplySuggestion.auto_send_eligible` остаётся `false`: LLM не выдаёт
+разрешение на доставку. Новый server `auto_eligibility` проверяет READY, точное approved
+wording/source/template через production safety policy, неизменность этого доказательства,
+SDK message ID (fallback fingerprint не годится для AUTO), facts/no_promises, ASCII,
+отсутствие translation review и provider error. Social/unknown/constrained translation
+остаются MANUAL. Дополнительно обязательны monotonic expiry от receipt (5 минут),
+session/account/runtime/knowledge/policy binding, CONNECTED/ACTIVE, device readiness,
+startup gate, отсутствие pause и любой prior operation. Оценка не делает inference.
+
+### Reviewed device и UI
+
+Только TikTok You **46.8.3 / versionCode 2024608030**, package
+`com.zhiliaoapp.musically`, exact reviewed activities (включая
+`com.windukk.mod.icon.default`), Xiaomi **M2101K9G / Android 13 / serial 903ed867**.
+Версии не wildcard. Profile проверяет exact own handle + owner control; installation
+firstInstallTime/lastUpdateTime, device/version/account binding хранится в памяти.
+APPLY/restart/смена binding требует новой verification и нового AUTO opt-in.
+Host display name никогда не доказывает аккаунт или подлинность APK.
+
+Сохранены unique enabled host markers `tv_online_audience_num`, `user_info_container`,
+`ttlive_toolbar_more`, `oyh` и strict observed composer chains. Input — единственный
+`h4k/EditText`, enabled/focusable/non-password, с однозначным keyboard focus.
+Composer скрывает host markers: требуется свежая **≤90-second host LIVE lease**
+для той же session/account/install. Оператор сначала показывает normal LIVE и
+делает inspection, затем вручную открывает/focuses composer. Нет reviewed selector
+для его открытия; ни MANUAL, ни AUTO не угадывают его. После закрытия composer
+AUTO блокируется до новой готовности; он не открывает его за оператора.
+
+Screen states: normal LIVE = `LIVE_READY`, composer = `COMMENT_INPUT_READY`,
+achievement/progress overlay = `TRANSIENT_OVERLAY`, security = CAPTCHA/VERIFY/
+LOGIN_REQUIRED/SECURITY_CHALLENGE, остальное = `UNKNOWN_SCREEN`.
+Reviewed overlay blocks fill/send, не является security и сам по себе не инвалидирует
+LIVE session. Оператор ждёт normal LIVE и заново получает inspection lease; приложение
+не закрывает overlay кликом. Security/unknown/ambiguous UI требуют оператора;
+security и неопределённый результат ставят AUTO на паузу.
+
+Для actual SEND остаётся отдельное CSRF-подтверждение backend nonce для candidate
+`vp8/FrameLayout → vpl/ImageView` и exact account/device/install. Browser не присылает
+selector, текст, bounds или координаты. Перед activation backend заново проверяет
+все guards и exact readback; unique reviewed parent/child должны быть enabled/clickable,
+visible, с непустыми bounds внутри всех ancestors. Один `adb shell input tap` выполняется
+в center **найденного vpl**, без hardcoded coordinates, Enter/TAB/DPAD или fallback.
+Missing/duplicate/disabled/hidden/malformed/out-of-parent control → никакой activation.
+
+ASCII subset прежний: A–Z/a–z, цифры, пробел и `. , ! ? ' : ; ( ) -`, до 400 символов.
+Только immutable server text, fixed argv, remote shell quoting, guarded Ctrl+A/Delete,
+blank readback, input, exact text readback; mismatch очищается только после повторной
+безопасной проверки focused field. Unicode/прочие символы → `unicode_entry_unavailable`
+и COPY, без lossy substitution. Нет helper auto-install, root или clipboard assumption.
+
+### State machine, journal и confirmation
+
+```text
+MANUAL: READY → APPROVED → WAITING FOR PHONE INPUT → FILLING
+        → FILLED_WAITING_USER_SEND (UI: FILLED — SEND ON PHONE)
+        → human Send → explicit read-only VERIFY → SENT CONFIRMED / UNKNOWN
+AUTO:   AUTO OFF → explicit opt-in → AUTO ARMED / AUTO BLOCKED + reason
+        → READY + deterministic eligibility → AUTO_RESERVED → AUTO SENDING
+        → inspect/clear/blank/input/exact readback/all guards
+        → ONE selector-resolved activation → POST_SEND_VERIFY
+        → SENT CONFIRMED / UNKNOWN + AUTO PAUSED + NO RETRY
+```
+
+После activation максимум четыре read-only full inspections в течение четырёх секунд,
+с интервалом 0.5 секунды. Требуется normal own LIVE и сохранённый account/profile binding.
+Host name берётся из unique `user_info_container → user_name`; в `oyh/RecyclerView`
+ищется direct `msx` row с `pov → poq/TextView` и sibling `f41/TextView`.
+Exact normalized `(row username == host display name, row text == immutable reply)`
+должна отсутствовать в pre-action snapshot и появиться после. Normalization снимает
+один observed leading U+200E и внешние whitespace; регистр, punctuation и внутренние
+пробелы сохраняются. Нет fuzzy/substring matching. Другой viewer с тем же текстом,
+другой текст, changed header или уже существующая пара не подтверждают доставку.
+ADB exit 0, исчезнувший composer и отсутствие строки ничего не доказывают.
+
+Это bounded UI evidence, не криптографическое подтверждение авторства: одинаковые
+host/viewer display names и динамический viewport ограничивают detector. Profile account
+proof остаётся отдельным. Без положительного evidence — **UNKNOWN**, pause, **NO RETRY**.
+При MANUAL кнопка **ПРОВЕРИТЬ РУЧНУЮ ОТПРАВКУ** использует тот же read-only detector,
+не вводит/не нажимает ничего; её отмена сохраняет UNKNOWN.
+
+Один owned runner, очередь ≤10 новых eligible candidates и service/device locks
+сериализуют операции. `AUTOMATIC_DELIVERY_MIN_INTERVAL_SECONDS=5` (допустимо 3..60,
+trusted startup env) ограничивает частоту, после ожидания guards/expiry проверяются заново.
+Disarm/pause/shutdown удаляет pending queue без retry. Full queue отклоняет новый candidate.
+
+Ignored `data/delivery.sqlite3` создаётся лениво только при явном fill/arming/send,
+не при startup/GET/SSE. Journal ≤10 000 metadata-only rows, без comment/reply text.
+Сохраняются уникальные suggestion/comment/idempotency identities и mode. Старый journal
+мигрируется транзакционно без потери reserved/dedup records. FILLED также резервирует
+identity: после restart незавершённые reserved/filled/UNKNOWN требуют оператора и
+блокируют повтор. Restart не снимает dedup. Подтверждённая строка не разрешает resend.
+MANUAL fill не является SENT; только positive feed evidence меняет result на confirmed.
+
+### Windows: первый MANUAL fill — только оператор
+
+```powershell
+Set-Location C:\Users\Maksim\Documents\tiktok-live-automation
+$env:ADMIN_LIVE_ENABLED = 'false'
+$env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'
+# Укажите уже установленный ADB при необходимости; helpers не устанавливаются:
+# $env:ADB_EXECUTABLE = 'C:\Android\platform-tools\adb.exe'
+& .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+1. В localhost UI выберите discovered собственное устройство, настройте own handle и
+   local AI, SAVE/APPLY. Не публикуйте порт. Проверьте Profile account после APPLY.
+2. Самостоятельно запустите own LIVE, нажмите CONNECT. Проверьте свежую карточку,
+   оригинал/переводы/READY reply; APPROVE. Режим должен остаться MANUAL.
+3. Normal host LIVE → ПРОВЕРИТЬ УСТРОЙСТВО → в течение 90 секунд вручную откройте
+   и сфокусируйте composer. Send-control confirmation для fill не требуется.
+4. Нажмите FILL PHONE один раз, сравните точный текст на телефоне. Приложение должно
+   закончить на FILLED — SEND ON PHONE и не нажать Send. Unicode → COPY.
+5. Только человек нажимает Send. При желании верните normal LIVE и нажмите read-only
+   ПРОВЕРИТЬ РУЧНУЮ ОТПРАВКУ. UNKNOWN не повторять; проверьте TikTok вручную.
+
+### Первый AUTOMATIC real-device test — только оператор, ещё не выполнен
+
+1. Остановите backend, установите `$env:ENABLE_PHYSICAL_TIKTOK_SEND = 'true'` и при
+   необходимости `$env:AUTOMATIC_DELIVERY_MIN_INTERVAL_SECONDS = '5'`; запустите той же
+   командой. После старта режим всё равно MANUAL. Проверьте journal: UNKNOWN не удалять.
+2. Выполните account verification, own LIVE CONNECT, normal LIVE inspection и вручную
+   откройте/focus composer. Отдельно подтвердите nonce reviewed Send candidate.
+3. Проверьте exact device/version, lease, readiness и отсутствие overlay/security.
+   Выберите AUTOMATIC и подтвердите opt-in для текущей session/runtime.
+4. Получите один новый безопасный ASCII comment с approved factual reply. Наблюдайте
+   одну activation и последующую normal-LIVE exact host row; сравните с самим TikTok.
+5. UNKNOWN → AUTO PAUSED, никаких повторов/очистки dedup. В любой момент PAUSE AUTO.
+   Перед следующим candidate composer снова должен быть открыт оператором и verified.
+6. Завершите тест, остановите backend и верните startup SEND flag в `false`.
+
+Raw `hierarchy(4..6).xml`/metadata остаются только в ignored diagnostics/android.
+Наблюдения normal viewer surface / achievement overlay / normal host posted rows
+проверены read-only; новые captures не содержат h4k/vp8/vpl и не заменяют старый composer
+profile. В Git добавлены только минимальные fixtures с искусственными именами/текстом.
+Ни private TikTok sender/API, cookies/sessionid, обходов security/CAPTCHA, hidden mod APIs,
+ни reply-to/long-press interaction нет. Android readiness не блокирует incoming comments.
+
+Проверки: полный pytest (включая Node-based JS regressions), targeted Stage 4B.3/4B.4,
+`python -m pip check`, finite fake CLI и все десять offline replay. Node не нужен runtime UI
+(HTML/CSS/vanilla JS), но нужен для browser regression checks. На этом ПК bundled Node
+добавляется только в PATH проверочного процесса; tracked LM Studio model остаётся
+`qwen/qwen3-8b`, локальный `qwen3-8b` — только в ignored operator.local.yaml.
+
+## Stage 4B.3: исторический MANUAL SEND release candidate
+
+Этот раздел описывает прежнюю поставку; текущая семантика — Stage 4B.4 выше. Добавлен reviewed UI profile **TikTok You 46.8.3 / 2024608030**, package
 `com.zhiliaoapp.musically`, activity `com.windukk.mod.icon.default`, только Xiaomi
 M2101K9G / Android 13 / serial `903ed867`. Profile основан на локальных real captures,
 а не на guessed coordinates. Это не проверка подлинности APK. Агент **не выполнял

@@ -1,4 +1,4 @@
-/* Explicit device inspection and manual identity-only delivery requests. */
+/* Explicit manual fill; separately armed backend AUTO. Identity-only requests. */
 window.createDeliveryControls = ({api, node, toast, state, refreshCards, refreshReviews = async () => {}}) => {
   const $ = (id) => document.getElementById(id);
   let view = null, version = 0, busy = false;
@@ -34,6 +34,12 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("capture-device").disabled = busy || !state.connected;
     $("verify-account").disabled = busy || !state.connected;
     $("confirm-send").disabled = busy || !state.connected || !d.send_confirmation_token;
+    $("delivery-mode").value = next.mode || "MANUAL";
+    $("delivery-mode").disabled = busy || !state.connected;
+    $("pause-auto").disabled = !state.connected || next.mode !== "AUTOMATIC";
+    $("verify-fill").disabled = busy || !state.connected || next.workflow !== "FILLED — SEND ON PHONE";
+    $("delivery-mode-label").textContent = next.mode || "MANUAL";
+    $("delivery-workflow").textContent = `${next.workflow || "READY"} · ${next.auto_state || "AUTO OFF"} · ${next.auto_reason || ""}`;
     refreshCards();
   }
   async function refresh() {
@@ -85,43 +91,63 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
   });
+  async function setMode(mode) {
+    if (!view || !state.connected) return;
+    if (mode === "AUTOMATIC" && !window.confirm("Включить AUTOMATIC только для текущей собственной LIVE-сессии? Безопасные ответы могут отправляться без отдельного APPROVE. Одна попытка; UNKNOWN ставит AUTO на паузу.")) { render(view); return; }
+    try {
+      render(await api("/api/admin/delivery/mode", {mode, expected_live_session_id: view.live_session_id,
+        expected_active_runtime_revision: view.active_runtime_revision}));
+      await refresh();
+    } catch (error) { toast(error.message); render(view); }
+  }
+  $("delivery-mode").addEventListener("change", () => setMode($("delivery-mode").value));
+  $("pause-auto").addEventListener("click", () => setMode("MANUAL"));
+  $("verify-fill").addEventListener("click", async () => {
+    if (busy || !state.connected) return;
+    busy = true;
+    try {
+      const result = await api("/api/admin/delivery/verify-fill", {});
+      toast(result.status === "confirmed" ? "SENT CONFIRMED: точная строка появилась в LIVE." : "UNKNOWN. Проверьте TikTok вручную. Повтор запрещён.");
+    } catch (error) { toast(error.message); }
+    finally { busy = false; await refresh(); }
+  });
   function attach(actions, record, send) {
+    send.hidden = true; send.disabled = true;
     const review = record.delivery_review, e = review?.envelope;
     const approved = review?.approval_state === "approved" && review.approval;
-    const live = e?.source === "tiktok";
-    const allowed = Boolean(approved && live && e.status === "ready");
-    send.textContent = "SEND";
-    send.disabled = !allowed || !review?.physical_send_allowed || !view?.physical_ready || view?.busy || busy || !state.connected || Date.now() >= Date.parse(e?.expires_at);
-    if (!send.disabled) setTimeout(() => { send.disabled = true; send.title = "Истёк срок предложения. Обновите проверку."; }, Math.max(0, Math.min(Date.parse(e.expires_at) - Date.now(), 90000)));
-    send.title = !allowed ? "Нужен актуальный approval реального LIVE" : !review?.text_entry_supported ? "unicode_entry_unavailable · доступен COPY" : !review?.eligibility?.eligible ? review?.eligibility?.reason || "Обновите проверку" : view?.reason || "Устройство не проверено";
+    const allowed = Boolean(approved && e?.source === "tiktok" && e.status === "ready");
+    const fill = node("button", "button secondary-button", "ВСТАВИТЬ В ТЕЛЕФОН · FILL PHONE");
+    fill.type = "button"; fill.hidden = view?.mode === "AUTOMATIC";
+    fill.disabled = !allowed || !review?.fill_allowed || busy || view?.busy || !state.connected || Date.now() >= Date.parse(e?.expires_at);
+    fill.title = !review?.text_entry_supported ? "unicode_entry_unavailable · доступен COPY" : "Откройте и сфокусируйте поле комментария на телефоне. Отправляете вы.";
+    if (!fill.disabled) setTimeout(() => { fill.disabled = true; }, Math.max(0, Math.min(Date.parse(e.expires_at) - Date.now(), 90000)));
     const dry = node("button", "button secondary-button", "DRY RUN SEND");
     dry.type = "button"; dry.disabled = !allowed || busy || !state.connected;
-    actions.append(dry);
+    actions.append(fill, dry);
+    actions.append(node("span", "subtle", `AUTO: ${review?.auto_eligibility?.eligible ? "ELIGIBLE" : "BLOCKED"} · ${review?.auto_eligibility?.reason || "automatic_mode_required"}`));
     if (!keys.has(e?.suggestion_id) && e) {
       if (keys.size >= 150) keys.delete(keys.keys().next().value);
       keys.set(e.suggestion_id, crypto.randomUUID().replaceAll("-", ""));
     }
-    const perform = async (physical) => {
-      if ((physical ? send : dry).disabled) return;
-      busy = true; dry.disabled = send.disabled = true;
+    const perform = async (input) => {
+      if ((input ? fill : dry).disabled) return;
+      busy = true; dry.disabled = fill.disabled = true;
       try {
-        const result = await api(`/api/admin/delivery/${physical ? "send" : "dry-run"}`, {
+        const result = await api(`/api/admin/delivery/${input ? "fill" : "dry-run"}`, {
           suggestion_id: e.suggestion_id, expected_suggestion_revision: e.suggestion_revision,
           approval_id: review.approval.approval_id, idempotency_key: keys.get(e.suggestion_id)});
-        toast(result.status === "unknown" ? "DELIVERY RESULT UNKNOWN. Проверьте TikTok вручную. Повтор запрещён."
-          : physical ? `${result.status}: ${result.reason}` : `DRY RUN: eligible=${result.eligible}, device_ready=${result.device_ready}, would_send=${result.would_send}; ${result.reason}. Ничего не отправлено.`);
+        const messages = {filled_waiting_user_send: "Ответ введён в телефон. Нажмите отправить на телефоне.",
+          open_phone_composer: "Откройте поле комментария на телефоне и повторите FILL PHONE.",
+          unicode_entry_unavailable: "Unicode-ввод недоступен. Используйте COPY REPLY.",
+          transient_overlay: "Дождитесь обычного LIVE на телефоне. Overlay закрывать автоматически нельзя."};
+        toast(result.status === "unknown" ? "UNKNOWN. Проверьте TikTok вручную. Повтор запрещён."
+          : input ? messages[result.reason] || `${result.status}: ${result.reason}`
+          : `DRY RUN: eligible=${result.eligible}, device_ready=${result.device_ready}, would_send=${result.would_send}; ${result.reason}. Ничего не отправлено.`);
       } catch (error) { toast(error.message); }
-      finally {
-        busy = false;
-        try {
-          record.delivery_review = await api(`/api/admin/suggestions/${e.suggestion_id}`);
-          await refresh();
-        }
-        catch (error) { view = null; refreshCards(); toast(error.message); }
-      }
+      finally { busy = false; await refresh(); }
     };
-    dry.addEventListener("click", () => perform(false)); send.addEventListener("click", () => perform(true));
-    actions.append(node("span", "subtle", send.disabled ? `SEND заблокирован: ${send.title}` : "MANUAL · один запрос"));
+    fill.addEventListener("click", () => perform(true));
+    dry.addEventListener("click", () => perform(false));
   }
-  return {refresh, attach};
+  return {refresh, attach, render};
 };

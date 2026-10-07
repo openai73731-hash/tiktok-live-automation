@@ -12,7 +12,7 @@ from app.android.diagnostics import CaptureError, save_capture
 
 
 class ADBAndroidController:
-    def __init__(self, transport=None, *, serial=None, physical_enabled=False, profiles=None, actions=None):
+    def __init__(self, transport=None, *, serial=None, physical_enabled=False, profiles=None, actions=None, confirmation_interval=0.5):
         self.transport = transport or AdbTransport()
         self.serial = serial
         self.physical_enabled = physical_enabled
@@ -21,9 +21,11 @@ class ADBAndroidController:
         if profiles is None and actions is None:
             from app.android.text_entry import ASCIITextEntryBackend
             self.actions = ASCIITextEntryBackend(self)
+        self.confirmation_interval = max(0, min(1, confirmation_interval))
         self.lock = asyncio.Lock()
         self.last = DeviceInspection()
         self.closed = False
+        self.on_stage = lambda stage: None
         self._profile = None
         self._xml = ""
         self.invalidate_trust()
@@ -32,6 +34,7 @@ class ADBAndroidController:
         self._account_binding = self._send_binding = self._candidate_key = self._candidate_token = None
         self._live_evidence = None
         self._installation = None
+        self._host_snapshot = None
 
     @property
     def current_ready(self):
@@ -45,6 +48,13 @@ class ADBAndroidController:
         if not self.current_ready: return False
         if self._profile and self._profile.live_markers:
             return self._live_evidence[:3] == (self._installation, account, session_id)
+        return True
+
+    def fill_ready_for(self, session_id, account):
+        if not self.last.fill_ready: return False
+        if self._profile and self._profile.live_markers:
+            return bool(self._live_evidence and monotonic() - self._live_evidence[3] < 90
+                and self._live_evidence[:3] == (self._installation, account, session_id))
         return True
 
     @staticmethod
@@ -125,6 +135,8 @@ class ADBAndroidController:
             if profile and profile.live_markers:
                 if parsed["screen"] == ScreenState.LIVE_READY and parsed["live_verified"] and account_bound and session:
                     self._live_evidence = (key, account, session, monotonic())
+                    from app.android.feed import host_feed
+                    self._host_snapshot = host_feed(xml)
                 elif not parsed["live_verified"]: self._live_evidence = None
                 if parsed.get("send_control_state") == "SEND_CONTROL_CANDIDATE" and account_bound:
                     candidate_key = (key, account)
@@ -148,7 +160,7 @@ class ADBAndroidController:
         async with self.lock:
             self.invalidate_trust()
             state = await self._inspect(target)
-            if (state.security_state or self._profile != TIKTOK_YOU_4683 or not self._installation[-1]
+            if (state.security_state or self._profile != TIKTOK_YOU_4683 or not self._installation or not self._installation[-1]
                     or not profile_account(self._xml, target.account)):
                 return False
             model = (await self.transport.run(AdbCommand.DEVICE_MODEL, serial=state.serial)).strip()
@@ -190,6 +202,56 @@ class ADBAndroidController:
             except (AdbError, OSError, ValueError):
                 raise CaptureError() from None
 
+    async def fill(self, request, *, guard=lambda: False):
+        """MANUAL preparation only. This path cannot call click_send or an activation."""
+        async with self.lock:
+            if not guard(): return AndroidOutcome(status="not_sent", reason="rejected")
+            state = await self._inspect(request.target)
+            if not guard(): return AndroidOutcome(status="not_sent", reason="rejected")
+            if request.target.device_serial != state.serial:
+                return AndroidOutcome(status="needs_operator", reason="device_unavailable")
+            if state.security_state: return AndroidOutcome(status="needs_operator", reason="security_ui")
+            if state.screen == ScreenState.TRANSIENT_OVERLAY:
+                return AndroidOutcome(status="not_sent", reason="transient_overlay")
+            if not state.fill_ready:
+                reason = "open_phone_composer" if state.screen == ScreenState.LIVE_READY and state.live_verified and state.account_verified else state.reason
+                if reason not in {"open_phone_composer", "account_unverified", "live_unverified", "profile_unverified"}: reason = "unknown_screen"
+                return AndroidOutcome(status="needs_operator", reason=reason)
+            if not self.actions or not self.actions.supports(request.text):
+                return AndroidOutcome(status="needs_operator", reason="unicode_entry_unavailable")
+            from app.android.text_entry import ASCIITextEntryBackend, TextEntryError
+            if not isinstance(self.actions, ASCIITextEntryBackend):
+                # Other adapters need an independently reviewed fill-only contract.
+                return AndroidOutcome(status="needs_operator", reason="profile_unverified")
+            profile = self._profile
+            self.actions.bind(request.target, guard, require_send=False)
+            try:
+                entered = await self.actions.prepare_exact(state.serial, profile.input_id, request.text)
+                final = await self._inspect(request.target)
+            except (TextEntryError, AdbError):
+                return AndroidOutcome(status="needs_operator", reason="rejected")
+            if (not guard() or entered != request.text or not final.fill_ready or self._profile != profile
+                    or final.serial != state.serial or not exact_input(self._xml, profile, request.text)):
+                return AndroidOutcome(status="needs_operator", reason="rejected")
+            return AndroidOutcome(status="filled", reason="filled_waiting_user_send")
+
+    async def verify_post_send(self, target, before, reply, guard):
+        """Read only, at most four full inspections within four seconds. Never retry action."""
+        from app.android.feed import host_feed, newly_confirmed
+        try:
+            async with asyncio.timeout(4):
+                for attempt in range(4):
+                    if attempt:
+                        await asyncio.sleep(self.confirmation_interval)
+                    state = await self._inspect(target)
+                    if not guard() or state.security_state or not state.account_verified or not state.profile_verified:
+                        return False
+                    if state.screen == ScreenState.LIVE_READY and state.live_verified:
+                        if newly_confirmed(before, host_feed(self._xml), reply): return True
+        except (TimeoutError, AdbError, ValueError):
+            pass
+        return False
+
     async def submit(self, request, *, guard=lambda: False):
         if not self.physical_enabled:
             return AndroidOutcome(status="not_sent", reason="physical_delivery_disabled")
@@ -200,6 +262,8 @@ class ADBAndroidController:
                 return AndroidOutcome(status="needs_operator", reason="device_unavailable")
             if inspected.security_state:
                 return AndroidOutcome(status="needs_operator", reason="security_ui")
+            if inspected.screen == ScreenState.TRANSIENT_OVERLAY:
+                return AndroidOutcome(status="not_sent", reason="transient_overlay")
             if not inspected.ready:
                 reason = inspected.reason if inspected.reason in {"account_unverified", "live_unverified", "profile_unverified"} else "unknown_screen"
                 return AndroidOutcome(status="needs_operator", reason=reason)
@@ -207,6 +271,12 @@ class ADBAndroidController:
             if not self.actions.supports(request.text):
                 return AndroidOutcome(status="needs_operator", reason="unicode_entry_unavailable")
             profile = self._profile
+            self.on_stage("AUTO SENDING")
+            before = self._host_snapshot
+            if profile.live_markers:
+                from app.android.feed import normalized
+                if before is None or (before.host, normalized(request.text)) in before.pairs:
+                    return AndroidOutcome(status="not_sent", reason="confirmation_ambiguous")
             from app.android.text_entry import ASCIITextEntryBackend, TextEntryError
             if isinstance(self.actions, ASCIITextEntryBackend): self.actions.bind(request.target, guard)
             try:
@@ -227,7 +297,10 @@ class ADBAndroidController:
             except TextEntryError:
                 return AndroidOutcome(status="needs_operator", reason="rejected")
             if issued is False: return AndroidOutcome(status="not_sent", reason="rejected")
-            # Exit status is not delivery proof. No verified confirmation reader exists yet.
+            self.on_stage("POST_SEND_VERIFY")
+            if before is not None and await self.verify_post_send(request.target, before, request.text, guard):
+                return AndroidOutcome(status="confirmed", reason="feed_confirmed")
+            # Exit status, blank composer or absence of a row can never prove delivery.
             return AndroidOutcome(status="unknown", reason="interrupted")
 
     async def aclose(self):

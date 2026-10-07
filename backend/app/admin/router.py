@@ -25,6 +25,12 @@ class EmptyInput(UIModel):
     pass
 
 
+class DeliveryModeInput(UIModel):
+    mode: Literal["MANUAL", "AUTOMATIC"]
+    expected_live_session_id: str | None = Field(pattern=r"^[a-f0-9]{32}$")
+    expected_active_runtime_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
 class ConfirmSendInput(UIModel):
     token: str = Field(pattern=r"^[a-f0-9]{32}$")
     confirmed: Literal[True]
@@ -149,6 +155,27 @@ async def capture_device(request: Request, body: EmptyInput):
 @router.post("/api/admin/delivery/dry-run")
 async def dry_run(request: Request, body: ManualDeliveryInput):
     return await delivery_action(request.app.state.delivery.dry_run, body)
+
+
+@router.post("/api/admin/delivery/mode")
+async def delivery_mode(request: Request, body: DeliveryModeInput):
+    try:
+        return request.app.state.delivery.set_mode(body.mode, body.expected_live_session_id,
+            body.expected_active_runtime_revision)
+    except SuggestionConflict:
+        raise HTTPException(409, detail="AUTO недоступен: проверьте startup SEND gate, текущую сессию, Profile, LIVE/composer и журнал. UNKNOWN повторять нельзя.") from None
+
+
+@router.post("/api/admin/delivery/fill")
+async def fill_phone(request: Request, body: ManualDeliveryInput):
+    return await delivery_action(request.app.state.delivery.fill, body)
+
+
+@router.post("/api/admin/delivery/verify-fill")
+async def verify_fill(request: Request, body: EmptyInput):
+    try: return await request.app.state.delivery.verify_fill()
+    except SuggestionConflict:
+        raise HTTPException(409, detail="Нет текущего введённого ответа для проверки.") from None
 
 
 @router.post("/api/admin/delivery/send")

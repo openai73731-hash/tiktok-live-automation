@@ -94,8 +94,8 @@ class AdminStatus(UIModel):
     ai: AIStatus
     metrics: Metrics
     playground_processed: int
-    reply_mode: Literal["MANUAL"] = "MANUAL"
-    automatic_enabled: Literal[False] = False
+    reply_mode: Literal["MANUAL", "AUTOMATIC"] = "MANUAL"
+    automatic_enabled: bool = False
     delivery: Literal["NOT CONFIGURED"] = "NOT CONFIGURED"
     reply_policy: Literal["focused", "friendly"] = "focused"
     temperature: float = 0

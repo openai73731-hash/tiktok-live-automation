@@ -9,8 +9,10 @@ from app.lifecycle import finish_owned
 
 
 class DeliveryCoordinator:
-    def __init__(self, suggestions, journal: DeliveryOperationStore, sender: ReplySenderProtocol, context):
+    def __init__(self, suggestions, journal: DeliveryOperationStore, sender: ReplySenderProtocol, context, *, mode="MANUAL", authority=None):
         self.suggestions, self.journal, self.sender, self.context = suggestions, journal, sender, context
+        self.mode = mode
+        self.authority = authority or suggestions.authoritative
         self.tasks = set()
         self.failed = False
         self.closed = False
@@ -18,10 +20,10 @@ class DeliveryCoordinator:
 
     def preflight(self, request):
         try:
-            e, _, verdict = self.suggestions.authoritative(request.suggestion_id, request.approval_id,
+            e, _, verdict = self.authority(request.suggestion_id, request.approval_id,
                 request.suggestion_revision, self.context())
             operation = self.journal.lookup(request.idempotency_key)
-            if operation is None or operation.status != "reserved" or operation.operation_id != request.operation_id:
+            if operation is None or operation.status != "reserved" or operation.operation_id != request.operation_id or operation.mode != request.mode:
                 return False
             return (not self.closed and not self.failed and verdict.eligible and
                     e.suggested_reply == request.text and e.suggested_reply_hash == request.suggested_reply_hash and
@@ -39,7 +41,7 @@ class DeliveryCoordinator:
             except Exception:
                 pass
             return DeliveryResult(status="needs_operator", reason="delivery_paused")
-        e, _, verdict = self.suggestions.authoritative(suggestion_id, approval_id, expected_revision, self.context())
+        e, _, verdict = self.authority(suggestion_id, approval_id, expected_revision, self.context())
         if not verdict.eligible:
             raise SuggestionConflict(verdict.reason)
         request = DeliveryRequest(operation_id=uuid4().hex, idempotency_key=idempotency_key,
@@ -47,7 +49,7 @@ class DeliveryCoordinator:
             comment_identity=e.comment_identity, approval_id=approval_id,
             suggested_reply_hash=e.suggested_reply_hash, text=e.suggested_reply,
             live_session_id=e.live_session_id, target_account=e.target_account,
-            active_runtime_revision=e.active_runtime_revision, expires_at=e.expires_at, device_serial=device_serial)
+            active_runtime_revision=e.active_runtime_revision, expires_at=e.expires_at, device_serial=device_serial, mode=self.mode)
         try:
             operation, reserved = self.journal.reserve(request)
         except JournalConflict:

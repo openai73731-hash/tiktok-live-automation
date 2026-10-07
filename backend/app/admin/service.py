@@ -162,7 +162,9 @@ class AdminService:
         review = self.suggestions.view(suggestion_id, self.delivery_context())
         actions = getattr(self.delivery.controller, "actions", None) if self.delivery else None
         return review.model_copy(update={"physical_send_allowed": bool(self.delivery and self.delivery.can_send(review)),
-            "text_entry_supported": bool(actions and actions.supports(review.envelope.suggested_reply))})
+            "text_entry_supported": bool(actions and actions.supports(review.envelope.suggested_reply)),
+            "fill_allowed": bool(self.delivery and self.delivery.can_fill(review)),
+            "auto_eligibility": self.delivery.auto_verdict(review.envelope) if self.delivery else review.auto_eligibility})
 
     def begin_live_session(self, session_id):
         self.live_archive.extend(self.live_history)
@@ -207,6 +209,8 @@ class AdminService:
         return AdminStatus(started_at=self.started_at, uptime_seconds=int(perf_counter() - self.started),
                            live=self.live_view(), ai=self.ai_status, metrics=self.metrics,
                            playground_processed=self.playground.processed,
+                           reply_mode=self.delivery.mode if self.delivery else "MANUAL",
+                           automatic_enabled=bool(self.delivery and self.delivery.mode == "AUTOMATIC" and not self.delivery.paused),
                            reply_policy=self.playground.processor.project.ai.reply_policy,
                            temperature=self.playground.processor.project.ai.temperature)
 
@@ -231,6 +235,7 @@ class AdminService:
                 status.terminal_state in {LiveState.ENDED, LiveState.OPERATOR_REQUIRED}):
             self.runtime.live.session_invalidated = True
         self.live_status = status
+        if self.delivery: self.delivery.context_changed()
         self.events.publish("live_state", self.live_view())
 
     async def handle_live(self, comment: Comment, processor: CommentProcessor, *, mode=None, session_id=None, target_account=None) -> ReplyRecord | None:
@@ -267,6 +272,7 @@ class AdminService:
         self.metrics = Metrics(**counts)
         self.events.publish("reply_suggestion", LiveReplyEvent(record=record, metrics=self.metrics))
         self.events.publish("live_state", self.live_view())
+        if source == "tiktok" and self.delivery: self.delivery.offer_auto(record.id)
         return record
 
     async def check_ai(self) -> AIStatus:

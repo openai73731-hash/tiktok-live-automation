@@ -18,6 +18,8 @@ class FrozenModel(BaseModel):
 class SuggestionEnvelope(ReplySuggestion):
     # Absent on a deserialized envelope: only the server store grants lifetime.
     _monotonic_deadline: float | None = PrivateAttr(default=None)
+    _auto_content_verified: bool = PrivateAttr(default=False)
+    _auto_content_binding: str | None = PrivateAttr(default=None)
     suggestion_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     suggestion_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     source: Literal["tiktok", "fake", "replay", "playground"]
@@ -57,7 +59,8 @@ EligibilityReason = Literal[
     "live_session_mismatch", "target_account_mismatch", "runtime_revision_mismatch",
     "knowledge_revision_mismatch", "policy_revision_mismatch", "expired",
     "duplicate_operation", "live_not_connected", "live_inactive", "operator_paused",
-    "delivery_unavailable", "device_unavailable",
+    "delivery_unavailable", "device_unavailable", "auto_content_unverified",
+    "translation_requires_review", "unicode_entry_unavailable", "automatic_mode_required",
 ]
 
 
@@ -87,6 +90,8 @@ class SuggestionView(FrozenModel):
     delivery: Literal["NOT CONFIGURED"] = "NOT CONFIGURED"
     physical_send_allowed: bool = False
     text_entry_supported: bool = False
+    fill_allowed: bool = False
+    auto_eligibility: Eligibility = Eligibility(eligible=False, reason="automatic_mode_required")
 
 
 class ApprovalEvent(FrozenModel):
@@ -94,12 +99,14 @@ class ApprovalEvent(FrozenModel):
     approval_state: Literal["approved"] = "approved"
 
 
-DeliveryStatus = Literal["confirmed", "not_sent", "unknown", "needs_operator"]
+DeliveryStatus = Literal["filled", "confirmed", "not_sent", "unknown", "needs_operator"]
 DeliveryReason = Literal["mock_confirmed", "not_configured", "rejected", "timeout",
     "cancelled", "sender_failed", "interrupted", "operator_required",
     "physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen",
     "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
-    "journal_unavailable", "delivery_paused", "cooldown", "dry_run", "shutdown"]
+    "journal_unavailable", "delivery_paused", "cooldown", "dry_run", "shutdown",
+    "filled_waiting_user_send", "feed_confirmed", "open_phone_composer", "transient_overlay",
+    "confirmation_ambiguous", "automatic_mode_required", "auto_ineligible", "waiting_user_send"]
 
 
 class DeliveryResult(FrozenModel):
@@ -120,6 +127,7 @@ class DeliveryRequest(FrozenModel):
     target_account: Account
     active_runtime_revision: OpaqueId
     expires_at: AwareDatetime
+    mode: Literal["MANUAL", "AUTOMATIC"] = "MANUAL"
     device_serial: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
@@ -153,7 +161,7 @@ class DryRunView(FrozenModel):
     would_send: bool
     reason: EligibilityReason | Literal["not_checked", "adb_unavailable", "device_missing", "multiple_devices",
         "unauthorized", "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen",
-        "profile_unverified", "account_unverified", "live_unverified", "input_unavailable", "send_control_unverified", "ready", "rejected"]
+        "profile_unverified", "account_unverified", "live_unverified", "input_unavailable", "send_control_unverified", "transient_overlay", "ready", "rejected"]
     diagnostic_id: OpaqueId
     physical_action: Literal[False] = False
 

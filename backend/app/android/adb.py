@@ -32,7 +32,8 @@ class AdbCommand(StrEnum):
     DELETE = "delete"
     TEXT = "text"
     TAB = "tab"
-    ACTIVATE = "activate"
+    ACTIVATE = "activate"  # Retired keyboard path; never accepted by production argv.
+    TAP_SEND = "tap_send"
 
 
 class AdbError(RuntimeError):
@@ -63,9 +64,10 @@ class AdbTransport:
         self.processes = set()
         self.closed = False
 
-    def argv(self, command, *, serial=None, package=None, text=None):
+    def argv(self, command, *, serial=None, package=None, text=None, point=None):
         if not isinstance(command, AdbCommand) or self.executable is None: raise AdbError()
         if text is not None and command != AdbCommand.TEXT: raise AdbError()
+        if point is not None and command != AdbCommand.TAP_SEND: raise AdbError()
         args = [str(self.executable), "-H", "127.0.0.1", "-P", "5037"]
         if command == AdbCommand.DEVICES:
             if serial is not None or package is not None: raise AdbError()
@@ -81,8 +83,6 @@ class AdbTransport:
             AdbCommand.ANDROID_VERSION: ["shell", "getprop", "ro.build.version.release"],
             AdbCommand.SELECT_ALL: ["shell", "input", "keycombination", "113", "29"],
             AdbCommand.DELETE: ["shell", "input", "keyevent", "KEYCODE_DEL"],
-            AdbCommand.TAB: ["shell", "input", "keyevent", "KEYCODE_TAB"],
-            AdbCommand.ACTIVATE: ["shell", "input", "keyevent", "KEYCODE_DPAD_CENTER"],
         }
         if command == AdbCommand.PACKAGE_INFO:
             if package not in PACKAGES: raise AdbError()
@@ -92,11 +92,16 @@ class AdbTransport:
             if not ascii_supported(text): raise AdbError()
             # adb shell joins argv on the DEVICE: quote there as well, not just on Windows.
             return args + ["shell", "input", "text", shlex.quote(text.replace(" ", "%s"))]
+        if command == AdbCommand.TAP_SEND:
+            if (not isinstance(point, tuple) or len(point) != 2 or
+                    any(type(v) is not int or not 0 <= v <= 8192 for v in point)): raise AdbError()
+            return args + ["shell", "input", "tap", *(str(v) for v in point)]
+        if command not in commands: raise AdbError()
         return args + commands[command]
 
-    async def run(self, command, *, serial=None, package=None, text=None, guard=None):
+    async def run(self, command, *, serial=None, package=None, text=None, point=None, guard=None):
         if self.closed: raise AdbError()
-        args = self.argv(command, serial=serial, package=package, text=text)
+        args = self.argv(command, serial=serial, package=package, text=text, point=point)
         # Do not forward API keys, proxy settings or remote ADB server overrides.
         permitted = {"SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}
         env = {k: v for k, v in os.environ.items() if k.upper() in permitted}

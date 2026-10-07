@@ -23,7 +23,7 @@ from app.delivery.journal import SQLiteDeliveryOperationStore, JournalConflict
 from app.delivery.models import (DeliveryRequest, DeliveryResult, AndroidSubmission, AndroidTarget,
     ManualDeliveryInput, ApprovalInput, SuggestionEnvelope)
 from app.delivery.sender import AndroidTikTokReplySender
-from app.delivery.service import ManualDeliveryService
+from app.delivery.service import ManualDeliveryService as ProductionDeliveryService
 from app.delivery.suggestions import DeliveryEligibility, SuggestionConflict
 from app.live.models import Comment
 from app.admin.service import record_for
@@ -33,6 +33,21 @@ from test_predelivery_hardening import suggestion, panel, coordinator, execute
 PACKAGE = "com.zhiliaoapp.musically"
 PROFILE = ScreenProfile(PACKAGE, "fixture-1", "fixture:input", "fixture:send", "fixture:account", "fixture:live", True)
 evaluate = DeliveryEligibility.evaluate
+
+
+def ManualDeliveryService(settings, suggestions, context, **kwargs):
+    """Inject an already armed server AUTO state for low-level delivery regression tests.
+
+    Explicit opt-in/CSRF/default-gate behavior is covered separately in Stage4B4.
+    """
+    service = ProductionDeliveryService(settings, suggestions, context, **kwargs)
+    if settings.enable_physical_tiktok_send:
+        ctx = context()
+        service.mode = "AUTOMATIC"
+        service.armed_binding = (ctx.live_session_id, ctx.target_account, ctx.active_runtime_revision)
+        for e in suggestions.groups["live"].values():
+            suggestions.authorize_auto(e.suggestion_id, service.auto_context())
+    return service
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +108,7 @@ def submission(text="Exact reply"):
 
 def body(rig, key="manual_test"):
     return ManualDeliveryInput(suggestion_id=rig.e.suggestion_id, expected_suggestion_revision=rig.e.suggestion_revision,
-        approval_id=rig.approval.approval_id, idempotency_key=key)
+        approval_id=rig.store.auto_authorizations.get(rig.e.suggestion_id, rig.approval).approval_id, idempotency_key=key)
 
 
 def request(rig):
@@ -250,10 +265,14 @@ def test_adb_fixed_allowlist_and_pinned_server(tmp_path):
         kwargs = {} if command == AdbCommand.DEVICES else {"serial": "USB1"}
         if command == AdbCommand.PACKAGE_INFO: kwargs["package"] = PACKAGE
         if command == AdbCommand.TEXT: kwargs["text"] = "Safe text."
+        if command in {AdbCommand.TAB, AdbCommand.ACTIVATE}:
+            with pytest.raises(AdbError): adb.argv(command, **kwargs)
+            continue
+        if command == AdbCommand.TAP_SEND: kwargs["point"] = (10, 20)
         args = adb.argv(command, **kwargs)
-        assert all(word not in args for word in ["tap", "install", "kill-server"])
+        assert all(word not in args for word in ["install", "kill-server", "KEYCODE_TAB", "KEYCODE_DPAD_CENTER"])
         if "input" in args:
-            assert command in {AdbCommand.TEXT, AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TAB, AdbCommand.ACTIVATE}
+            assert command in {AdbCommand.TEXT, AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TAP_SEND}
     with pytest.raises(AdbError): adb.argv("shell", serial="USB1")
     with pytest.raises(AdbError): adb.argv(AdbCommand.PACKAGE_INFO, serial="USB1", package="browser.app")
 
@@ -463,7 +482,8 @@ async def test_restart_unresolved_operation_pauses_before_device_action(suggesti
         lambda: suggestion.context, controller=c, journal_factory=lambda: SQLiteDeliveryOperationStore(path))
     assert service.prepare().paused
     assert service.recent()[0].result == "unknown"
-    assert (await service.send(body(suggestion))).status == "unknown"
+    result = await service.send(body(suggestion))
+    assert result == DeliveryResult(status="needs_operator", reason="delivery_paused")
     assert not a.entries and not a.clicks; await service.aclose()
 
 
@@ -592,7 +612,7 @@ const api=async(path,body)=>{calls.push([path,body]);return path.endsWith('/stat
 const delivery=window.createDeliveryControls({api,node:(_,__,s)=>Object.assign(el(),{textContent:s}),toast(){},state:{connected:true,savedDevice:'USB1'},refreshCards(){}});
 (async()=>{document.getElementById('operator-device').value='USB1';await delivery.refresh();document.getElementById('operator-device').value='';await delivery.refresh();assert.strictEqual(document.getElementById('operator-device').value,'');
 const actions=el(),send=el(),record={delivery_review:{approval_state:'approved',approval:{approval_id:'a'.repeat(32)},envelope:{suggestion_id:'b'.repeat(32),suggestion_revision:'c'.repeat(64),source:'tiktok',status:'ready',suggested_reply:'PRIVATE EXACT TEXT'}}};
-delivery.attach(actions,record,send);assert.strictEqual(send.disabled,true);await send.listeners.click();assert(!calls.some(([p,b])=>p.endsWith('/send')));
+delivery.attach(actions,record,send);assert.strictEqual(send.disabled,true);assert.strictEqual(send.hidden,true);assert(!send.listeners.click);assert(!calls.some(([p,b])=>p.endsWith('/send')));
 const dry=actions.children.find(e=>e.textContent==='DRY RUN SEND');assert.strictEqual(dry.disabled,false);await dry.listeners.click();
 const posted=calls.find(([p,b])=>p.endsWith('/dry-run'))[1];assert.deepStrictEqual(Object.keys(posted).sort(),['approval_id','expected_suggestion_revision','idempotency_key','suggestion_id']);assert(!JSON.stringify(posted).includes('PRIVATE EXACT TEXT'));
 })().catch(e=>{console.error(e);process.exitCode=1});

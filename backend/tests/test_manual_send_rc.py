@@ -46,7 +46,7 @@ class Transport:
         self.calls.append((command, kwargs))
         if self.after: await self.after(command)
         if kwargs.get("guard") and not kwargs["guard"](): raise AdbError()
-        if command == AdbCommand.ACTIVATE: self.activations += 1
+        if command == AdbCommand.TAP_SEND: self.activations += 1
         root = ET.fromstring(self.xml)
         entry = next((n for n in root.iter() if n.get("resource-id") == rid("h4k")), None)
         if command == AdbCommand.DELETE: entry.set("text", "")
@@ -72,7 +72,7 @@ def forbid_process(monkeypatch):
 
 async def prepared(enabled=True, dest=None):
     dest = dest or target()
-    t = Transport(); c = ADBAndroidController(t, physical_enabled=enabled)
+    t = Transport(); c = ADBAndroidController(t, physical_enabled=enabled, confirmation_interval=0)
     assert await c.verify_account(dest)
     t.xml = xml("live_idle"); s = await c.inspect(dest); assert s.live_verified
     t.xml = xml("composer"); s = await c.inspect(dest)
@@ -182,8 +182,8 @@ async def test_ascii_exact_old_text_clear_spaces_punctuation(text):
     outcome=await c.submit(request(text), guard=lambda: True)
     assert outcome.status=="unknown"
     commands=[x[0] for x in t.calls]
-    assert commands.count(AdbCommand.SELECT_ALL)==commands.count(AdbCommand.DELETE)==commands.count(AdbCommand.TEXT)==commands.count(AdbCommand.ACTIVATE)==1
-    assert commands.index(AdbCommand.DELETE)<commands.index(AdbCommand.TEXT)<commands.index(AdbCommand.ACTIVATE)
+    assert commands.count(AdbCommand.SELECT_ALL)==commands.count(AdbCommand.DELETE)==commands.count(AdbCommand.TEXT)==commands.count(AdbCommand.TAP_SEND)==1
+    assert commands.index(AdbCommand.DELETE)<commands.index(AdbCommand.TEXT)<commands.index(AdbCommand.TAP_SEND)
     assert unique_node(t.xml,rid("h4k")).get("text")==text
 
 @pytest.mark.parametrize("text", ["Привет", "café", "你好", "100% sure", "a\nb", "x$HOME", "x`id`", "", "\u200b"])
@@ -193,16 +193,16 @@ async def test_unsupported_input_never_types_or_sends(text):
     c,t=await prepared()
     outcome=await c.submit(request(text), guard=lambda: True)
     assert outcome.reason=="unicode_entry_unavailable"
-    assert not any(cmd in {AdbCommand.TEXT,AdbCommand.DELETE,AdbCommand.ACTIVATE} for cmd,_ in t.calls)
+    assert not any(cmd in {AdbCommand.TEXT,AdbCommand.DELETE,AdbCommand.TAP_SEND} for cmd,_ in t.calls)
 
 async def test_mismatch_clears_safely_no_send():
     c,t=await prepared(); t.mismatch=True
     outcome=await c.submit(request(),guard=lambda:True)
     assert outcome.status=="needs_operator"
     assert unique_node(t.xml,rid("h4k")).get("text")==""
-    assert not any(cmd==AdbCommand.ACTIVATE for cmd,_ in t.calls)
+    assert not any(cmd==AdbCommand.TAP_SEND for cmd,_ in t.calls)
 
-@pytest.mark.parametrize("change", ["gate", "focus", "security", "stale_guard", "no_focus_route", "lease", "session"])
+@pytest.mark.parametrize("change", ["gate", "focus", "security", "stale_guard", "missing_send_bounds", "lease", "session"])
 async def test_last_checks_no_send(change, monkeypatch):
     c,t=await prepared(enabled=change!="gate")
     dest=request()
@@ -210,15 +210,13 @@ async def test_last_checks_no_send(change, monkeypatch):
     elif change=="security": t.xml=t.xml.replace('text="Test"','text="security check"')
     elif change=="lease": monkeypatch.setattr("app.android.controller.monotonic", lambda: c._live_evidence[3]+91)
     elif change=="session": dest=dest.model_copy(update={"target":target("b"*32)})
-    elif change=="no_focus_route":
-        original=t.run
-        async def run(command,**kwargs):
-            if command==AdbCommand.TAB: return ""
-            return await original(command,**kwargs)
-        t.run=run
+    elif change=="missing_send_bounds":
+        root=ET.fromstring(t.xml)
+        next(n for n in root.iter() if n.get("resource-id")==rid("vpl")).set("bounds","[0,0][0,0]")
+        t.xml=ET.tostring(root,encoding="unicode")
     outcome=await c.submit(dest,guard=lambda:change!="stale_guard")
     assert outcome.status!="unknown"
-    assert not any(cmd==AdbCommand.ACTIVATE for cmd,_ in t.calls)
+    assert not any(cmd==AdbCommand.TAP_SEND for cmd,_ in t.calls)
 
 def test_text_argv_device_shell_quote(tmp_path):
     adb=tmp_path/"adb.exe"; adb.touch(); t=AdbTransport(adb)
@@ -322,19 +320,21 @@ async def test_production_ascii_coordinator_final_binding_and_unknown_no_retry(s
     journal=SQLiteDeliveryOperationStore(tmp_path/"operations.db")
     settings=settings.model_copy(update={"enable_physical_tiktok_send":True})
     service=ManualDeliveryService(settings,r.store,lambda:r.context,controller=c,journal_factory=lambda:journal)
+    service.set_mode("AUTOMATIC", e.live_session_id, e.active_runtime_revision)
+    approval=r.store.authorize_auto(e.suggestion_id,service.auto_context())
     body=ManualDeliveryInput(suggestion_id=e.suggestion_id,expected_suggestion_revision=e.suggestion_revision,
         approval_id=approval.approval_id,idempotency_key="rc_test")
     mutated=False
     async def after(command):
         nonlocal mutated
-        if command!=AdbCommand.TAB or mutated or not revoke:return
+        if command!=AdbCommand.TEXT or mutated or not revoke:return
         mutated=True
-        if revoke=="approval":r.store.approvals.clear()
+        if revoke=="approval":r.store.auto_authorizations.clear()
         elif revoke=="expiry":e._monotonic_deadline=0
         elif revoke=="session":r.context=r.context.model_copy(update={"live_session_id":"d"*32})
         elif revoke=="runtime":r.context=r.context.model_copy(update={"active_runtime_revision":"d"*32})
         elif revoke=="reservation":journal.connection.execute("UPDATE operations SET status='not_sent',reason='rejected'")
-        elif revoke=="text":t.xml=t.xml.replace(e.suggested_reply,"changed")
+        elif revoke=="text":t.mismatch=True
     t.after=after
     try:
         result=await service.send(body)

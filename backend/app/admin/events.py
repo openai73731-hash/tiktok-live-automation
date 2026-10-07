@@ -7,6 +7,7 @@ import json
 from app.admin.models import AIStatus, CommentView, LiveReplyEvent, LiveView, PlaygroundResultEvent, OperatorView
 from app.quality.models import QualityUpdate
 from app.delivery.models import ApprovalEvent
+from app.delivery.service import DeliveryView
 
 PAYLOAD_TYPES = {
     "live_state": LiveView, "comment_received": CommentView,
@@ -15,6 +16,7 @@ PAYLOAD_TYPES = {
     "quality_update": QualityUpdate,
     "operator_settings": OperatorView,
     "suggestion_approval": ApprovalEvent,
+    "delivery_status": DeliveryView,
 }
 
 

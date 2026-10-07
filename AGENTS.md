@@ -1,5 +1,31 @@
 # Project scope and rules
 
+- Stage 4B.4 (explicit user authorization) supersedes Stage 4B.3 MANUAL SEND and
+  older AUTO/input restrictions below. Default MANUAL: human APPROVE -> guarded ASCII
+  FILL PHONE -> human taps Send; manual fill NEVER activates Send, even with startup
+  physical flag true. Fill is allowed with ENABLE_PHYSICAL_TIKTOK_SEND=false. Operator
+  opens/focuses composer; no opening selector or guessed clicks. COPY for unsupported
+  Unicode. AUTOMATIC requires separate CSRF session/runtime-bound opt-in, startup-only
+  physical flag (default false), exact existing device/account/install/profile/lease,
+  private deterministic approved-content proof, fresh non-expired real SDK identity,
+  safety/source/runtime/knowledge/policy bindings and persistent dedup. No provider flag
+  authorizes delivery. Queue <=10, serialized owned operations, startup cooldown 5s
+  (3..60), recheck after waits; disarm/pause drains queue and revokes pre-action guard.
+  Replace TAB/DPAD production commands with ONE tap resolved solely from unique confirmed
+  reviewed vp8 -> vpl visible/enabled/clickable bounded node and contained ancestor bounds.
+  No hardcoded/guessed coordinates, Enter or fallback. Transient reviewed achievement
+  overlay blocks input/send without invalidating session; security/unknown fails closed.
+  At most four read-only post-action inspections in four seconds: normal own LIVE header
+  user_info_container/user_name and oyh -> msx row -> pov/poq plus sibling f41 must show
+  exact normalized host/reply pair absent from the pre-action snapshot. Display names are
+  UI evidence only, never account proof. ADB success/blank input/absence are not proof.
+  Missing positive evidence -> UNKNOWN, pause, NO RETRY, including restart. Manual filled
+  is not sent; optional explicit read-only verification settles confirmed/unknown. Journal
+  migration preserves every dedup/reserved row; unresolved filled also blocks restart retry.
+  The agent NEVER performs real input/SEND/LIVE/paid API; first phone tests belong to
+  operator. Raw captures remain ignored/local; only artificial minimal fixtures commit.
+  Preserve all prior security guards and LIVE freshness bounds. See current README.
+
 - Stage 4B.3 authorizes the manual release candidate described in README's current
   section; it supersedes older "no production profile/input" restrictions below.
   Ship only reviewed TikTok You 46.8.3/code2024608030 on Xiaomi M2101K9G/Android13/

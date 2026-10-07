@@ -195,6 +195,14 @@ def reviewed_hierarchy(root, nodes, profile, result, account_bound, live_bound, 
     for n in nodes: groups.setdefault(n.get("resource-id"), []).append(n)
     def one(identity):
         matches = groups.get(identity, []); return matches[0] if len(matches) == 1 else None
+    overlay = (("n5z", "android.view.ViewGroup"), ("n5m", "android.widget.LinearLayout"),
+               ("n5w", "android.widget.LinearLayout"), ("n60", "android.widget.TextView"))
+    overlay_nodes = [one(rid(identity)) for identity, _ in overlay]
+    if all(n is not None and n.get("class") == klass and n.get("enabled") == "true"
+           for n, (_, klass) in zip(overlay_nodes, overlay)):
+        if all(child in list(parent) for parent, child in zip(overlay_nodes, overlay_nodes[1:])):
+            return result | dict(screen=ScreenState.TRANSIENT_OVERLAY, reason="transient_overlay",
+                profile_verified=True, account_verified=account_bound)
     live = all((n := one(identity)) is not None and n.get("class") == klass and n.get("enabled") == "true"
         for identity, klass in profile.live_markers)
     composer = composer_shape(root)
@@ -214,3 +222,31 @@ def reviewed_hierarchy(root, nodes, profile, result, account_bound, live_bound, 
     screen = ScreenState.COMMENT_INPUT_READY if composer and entry is not None else ScreenState.LIVE_READY
     reason = "account_unverified" if not account_bound else "input_unavailable" if not composer else "send_control_unverified" if not candidate or not send_confirmed else "ready"
     return result | dict(screen=screen, reason=reason)
+
+
+def resolved_send_point(xml, profile):
+    """A single reviewed child, visible nonempty bounds contained by its ancestors."""
+    root = parse_hierarchy(xml)
+    if root is None or not composer_shape(root): return None
+    def one(identity):
+        matches = [n for n in root.iter() if n.get("resource-id") == identity]
+        return matches[0] if len(matches) == 1 else None
+    parent, child = one(profile.send_id), one(rid("vpl"))
+    if parent is None or child is None or child not in list(parent): return None
+    if (parent.get("class") != "android.widget.FrameLayout" or child.get("class") != "android.widget.ImageView"
+            or any(n.get(k) != "true" for n in (parent, child) for k in ("enabled", "clickable"))): return None
+    ancestors = {c: p for p in root.iter() for c in p}
+    bounds = []
+    current = child
+    while current is not root:
+        if current.get("visible-to-user", "true") != "true": return None
+        match = re.fullmatch(r"\[(\d{1,4}),(\d{1,4})\]\[(\d{1,4}),(\d{1,4})\]", current.get("bounds", ""))
+        if not match: return None
+        x1,y1,x2,y2 = map(int, match.groups())
+        if not (0 <= x1 < x2 <= 8192 and 0 <= y1 < y2 <= 8192): return None
+        bounds.append((x1,y1,x2,y2))
+        current = ancestors[current]
+    for inner, outer in zip(bounds, bounds[1:]):
+        if not (outer[0] <= inner[0] < inner[2] <= outer[2] and outer[1] <= inner[1] < inner[3] <= outer[3]): return None
+    x1,y1,x2,y2 = bounds[0]
+    return ((x1+x2)//2, (y1+y2)//2)
