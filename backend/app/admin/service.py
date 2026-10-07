@@ -1,6 +1,6 @@
 """Production processors with separate LIVE/Playground ownership and histories."""
 import asyncio
-from collections import deque
+from collections import deque, OrderedDict
 from datetime import UTC, datetime
 import logging
 from time import perf_counter
@@ -18,7 +18,7 @@ from app.ai.processor import CommentProcessor
 from app.live.models import Comment, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
 from app.delivery.models import DeliveryContext
-from app.delivery.suggestions import SuggestionStore, digest, policy_revision
+from app.delivery.suggestions import SuggestionStore, digest, policy_revision, comment_identity
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -111,6 +111,12 @@ class AdminService:
         self.started = perf_counter()
         self.live_service = None
         self.live_history: deque[ReplyRecord] = deque(maxlen=50)
+        self.live_archive = deque(maxlen=50)
+        self.live_pending = OrderedDict()
+        self.live_seen = OrderedDict()
+        self.history_session = None
+        self.last_comment_at = None
+        self.current_comment_count = 0
         self.metrics = Metrics()
         self.live_status = LiveStatus(username=settings.tiktok_username or "demo", mode=settings.live_mode)
         project = playground.processor.project
@@ -128,16 +134,19 @@ class AdminService:
         processor = self.playground.processor
         live = self.live_view()
         invalid = not self.runtime or self.runtime.closed or self.runtime.live.session_invalidated
-        context = DeliveryContext(live_session_id=None if invalid else live.live_session_id, target_account=live.username or None,
+        account = live.username if live.connection_owned else self.runtime.username if self.runtime else live.username
+        context = DeliveryContext(live_session_id=None if invalid else live.live_session_id, target_account=account or None,
             active_runtime_revision=self.runtime.active_runtime_revision if self.runtime else "unavailable",
             knowledge_revision=digest(processor.knowledge), policy_revision=policy_revision(processor),
             connected=not invalid and live.connection_owned and live.state == "connected" and live.terminal_state is None,
             active=live.activity == "active")
         if self.delivery is not None:
+            controller = self.delivery.controller
+            device_ready = controller.ready_for(context.live_session_id, context.target_account) if hasattr(controller, "ready_for") else controller.last.ready
             context = context.model_copy(update={
                 "operator_paused": self.delivery.paused or self.delivery.closed,
                 "delivery_available": self.settings.enable_physical_tiktok_send,
-                "device_available": self.delivery.controller.last.ready})
+                "device_available": device_ready})
         return context
 
     def register_record(self, record, comment, processor, *, session_id=None, target_account=None):
@@ -147,7 +156,31 @@ class AdminService:
         return self.review_record(record)
 
     def review_record(self, record):
-        return record.model_copy(update={"delivery_review": self.suggestions.view(record.id, self.delivery_context())})
+        return record.model_copy(update={"delivery_review": self.review_view(record.id)})
+
+    def review_view(self, suggestion_id):
+        review = self.suggestions.view(suggestion_id, self.delivery_context())
+        actions = getattr(self.delivery.controller, "actions", None) if self.delivery else None
+        return review.model_copy(update={"physical_send_allowed": bool(self.delivery and self.delivery.can_send(review)),
+            "text_entry_supported": bool(actions and actions.supports(review.envelope.suggested_reply))})
+
+    def begin_live_session(self, session_id):
+        self.live_archive.extend(self.live_history)
+        self.live_history.clear()
+        self.live_pending.clear()
+        self.live_seen.clear()
+        self.history_session = session_id
+        self.last_comment_at = None
+        self.current_comment_count = 0
+
+    def current_live_history(self):
+        if self.runtime and self.history_session != self.runtime.live.session_id:
+            return []
+        return [*self.live_pending.values(), *(self.review_record(r) for r in self.live_history)]
+
+    def accepts_session(self, session_id):
+        return (not self.runtime or session_id is None and self.runtime.live.session_id is None or
+                session_id == self.runtime.live.session_id and not self.runtime.live.session_invalidated)
 
     def live_view(self) -> LiveView:
         status = self.live_status
@@ -166,6 +199,8 @@ class AdminService:
                                   len(status.username) <= 24 and all(c.isascii() and (c.isalnum() or c in "._") for c in status.username) else ""),
                         connection_owned=bool(self.runtime and self.runtime.live.service is not None),
                         live_session_id=self.runtime.live.session_id if self.runtime else None,
+                        last_comment_at=self.last_comment_at if not self.runtime or self.runtime.live.session_id else None,
+                        current_comment_count=self.current_comment_count if not self.runtime or self.runtime.live.session_id else 0,
                         cleanup_state=status.cleanup_state)
 
     def status(self) -> AdminStatus:
@@ -198,18 +233,34 @@ class AdminService:
         self.live_status = status
         self.events.publish("live_state", self.live_view())
 
-    async def handle_live(self, comment: Comment, processor: CommentProcessor, *, mode=None, session_id=None, target_account=None) -> ReplyRecord:
+    async def handle_live(self, comment: Comment, processor: CommentProcessor, *, mode=None, session_id=None, target_account=None) -> ReplyRecord | None:
         source = {"real": "tiktok", "fake": "fake", "replay": "replay"}[mode or self.settings.live_mode]
+        if not self.accepts_session(session_id) or source == "tiktok" and not session_id: return None
+        identity, _ = comment_identity(comment, source, session_id, target_account)
+        # Deduplicate SDK message IDs within a bounded receipt window. No unbounded log.
+        if source == "tiktok" and identity in self.live_seen: return None
         id = uuid4().hex
-        self.events.publish("comment_received", CommentView(id=id, source=source,
+        self.live_seen[identity] = id
+        while len(self.live_seen) > 1000: self.live_seen.popitem(last=False)
+        pending = CommentView(id=id, source=source,
             username=comment.username[:200], text=comment.text[:10_000], timestamp=comment.timestamp,
-            truncated=len(comment.text) > 10_000))
+            truncated=len(comment.text) > 10_000, live_session_id=session_id, comment_identity=identity)
+        self.live_pending[id] = pending
+        while len(self.live_pending) > 50: self.live_pending.popitem(last=False)
+        while self.live_history and len(self.live_pending) + len(self.live_history) > 50: self.live_history.pop()
+        self.last_comment_at = comment.timestamp
+        self.current_comment_count += 1
+        self.events.publish("comment_received", pending)
         self.events.publish("live_state", self.live_view())
         started = perf_counter()
         suggestion = await processor.handle(comment)
+        if not self.accepts_session(session_id): return None
+        self.live_pending.pop(id, None)
         record = record_for(comment, suggestion, source, round((perf_counter() - started) * 1000), id)
+        record = record.model_copy(update={"live_session_id": session_id, "comment_identity": identity})
         record = self.register_record(record, comment, processor, session_id=session_id, target_account=target_account)
         self.live_history.appendleft(record)
+        while self.live_history and len(self.live_pending) + len(self.live_history) > 50: self.live_history.pop()
         counts = self.metrics.model_dump()
         counts["processed"] += 1
         counts[suggestion.status] += 1

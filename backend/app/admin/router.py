@@ -1,6 +1,8 @@
 """Local observation, safe operator settings and read-only LIVE connection control."""
 import asyncio
 from pathlib import Path
+from typing import Literal
+from pydantic import Field, field_validator
 
 from fastapi import APIRouter, HTTPException, Request
 from starlette.background import BackgroundTask
@@ -21,6 +23,31 @@ ASSETS = Path(__file__).resolve().parents[1] / "static" / "admin"
 
 class EmptyInput(UIModel):
     pass
+
+
+class ConfirmSendInput(UIModel):
+    token: str = Field(pattern=r"^[a-f0-9]{32}$")
+    confirmed: Literal[True]
+
+    @field_validator("confirmed", mode="before")
+    @classmethod
+    def explicit_confirmation(cls, value):
+        if value is not True: raise ValueError("Explicit confirmation required")
+        return value
+
+
+@router.post("/api/admin/device/verify-account")
+async def verify_account(request: Request, body: EmptyInput):
+    try: return await request.app.state.delivery.trust_action(verify=True)
+    except SuggestionConflict:
+        raise HTTPException(409, detail="Откройте собственный Profile с точным настроенным @handle и повторите проверку.") from None
+
+
+@router.post("/api/admin/device/confirm-send")
+async def confirm_send(request: Request, body: ConfirmSendInput):
+    try: return await request.app.state.delivery.trust_action(token=body.token)
+    except SuggestionConflict:
+        raise HTTPException(409, detail="Кандидат изменился или не проверен. Проверьте устройство, LIVE и composer.") from None
 
 
 @router.get("/")
@@ -163,14 +190,14 @@ async def playground_history(request: Request):
 @router.get("/api/admin/live/history")
 async def live_history(request: Request):
     admin = request.app.state.admin
-    return [admin.review_record(record) for record in admin.live_history]
+    return admin.current_live_history()
 
 
 @router.get("/api/admin/suggestions/{suggestion_id}")
 async def suggestion_view(request: Request, suggestion_id: str):
     admin = request.app.state.admin
     try:
-        return admin.suggestions.view(suggestion_id, admin.delivery_context())
+        return admin.review_view(suggestion_id)
     except SuggestionConflict as exc:
         raise HTTPException(409, detail=str(exc)) from None
 
@@ -183,7 +210,7 @@ async def approve_suggestion(request: Request, suggestion_id: str, body: Approva
     except SuggestionConflict as exc:
         raise HTTPException(409, detail=str(exc)) from None
     admin.events.publish("suggestion_approval", ApprovalEvent(suggestion_id=suggestion_id))
-    return admin.suggestions.view(suggestion_id, admin.delivery_context())
+    return admin.review_view(suggestion_id)
 
 
 @router.post("/api/admin/playground/analyze")

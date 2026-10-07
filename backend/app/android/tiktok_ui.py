@@ -17,6 +17,72 @@ class ScreenProfile:
     verified: bool = False
     client_variant: ClientVariant = ClientVariant.UNKNOWN
     activities: tuple[str, ...] = ()
+    version_code: str | None = None
+    serial: str | None = None
+    live_markers: tuple[tuple[str, str], ...] = ()
+
+
+PACKAGE = "com.zhiliaoapp.musically"
+def rid(name): return PACKAGE + ":id/" + name
+
+TIKTOK_YOU_4683 = ScreenProfile(PACKAGE, "46.8.3", rid("h4k"), rid("vp8"), rid("sxp"), "",
+    True, ClientVariant.TIKTOK_YOU, ("com.windukk.mod.icon.default",), "2024608030", "903ed867",
+    ((rid("tv_online_audience_num"), "android.widget.TextView"),
+     (rid("oyh"), "androidx.recyclerview.widget.RecyclerView"),
+     (rid("user_info_container"), "android.view.ViewGroup"), (rid("ttlive_toolbar_more"), "android.widget.FrameLayout")))
+
+
+def parse_hierarchy(xml):
+    if len(xml.encode("utf-8")) > 524288 or re.search(r"<!\s*(?:DOCTYPE|ENTITY)", xml, re.I): return None
+    try: root = ET.fromstring(xml)
+    except (ET.ParseError, ValueError, RecursionError): return None
+    if root.tag != "hierarchy": return None
+    stack, count = [(root, 0)], 0
+    while stack:
+        n, depth = stack.pop(); count += 1
+        if count > 2000 or depth > 32: return None
+        stack.extend((c, depth+1) for c in n)
+    return root
+
+
+def unique_node(xml, identity, package=PACKAGE):
+    root = parse_hierarchy(xml)
+    nodes = [n for n in root.iter() if n.get("resource-id") == identity and n.get("package") == package] if root is not None else []
+    return nodes[0] if len(nodes) == 1 else None
+
+
+def profile_account(xml, expected):
+    root = parse_hierarchy(xml)
+    if root is None or not expected: return False
+    if any(n.get("package") not in {None, "", PACKAGE} or n.get("class") == "android.app.Dialog" for n in root.iter()): return False
+    # sxp is the exact handle button observed on Profile; LIVE user_name is never used.
+    nodes = [n for n in root.iter() if n.get("resource-id") == rid("sxp") and n.get("text") == "@" + expected
+        and n.get("class") == "android.widget.Button" and n.get("enabled") == "true" and n.get("package") == PACKAGE]
+    ids = {n.get("resource-id") for n in root.iter()}
+    owner = unique_node(xml, rid("sxq"))
+    owner_control = owner is not None and owner.get("class") == "android.widget.Button" and owner.get("enabled") == "true" and owner.get("text") == "Добавить описание"
+    return len(nodes) == 1 and owner_control and {rid("syx"), rid("sxx"), rid("viewpager")} <= ids
+
+
+def composer_shape(root):
+    ids = {n.get("resource-id") for n in root.iter() if n.get("resource-id")}
+    allowed = {"android:id/content", "android:id/navigationBarBackground", *(rid(n) for n in
+        ("f0t", "l_8", "view_shadow", "l_6", "lbz", "yo8", "lcm", "h4k", "qde", "qcv", "vp8", "vpl", "l_7"))}
+    required = {rid(n) for n in ("l_8", "view_shadow", "l_6", "lbz", "yo8", "lcm", "h4k", "vp8", "vpl")}
+    if not required <= ids or not ids <= allowed: return False
+    # The reviewed composer is a separate window, not the host hierarchy behind it.
+    # Accept exactly its two inert anonymous wrappers; unknown overlays fail closed.
+    anonymous = [n for n in root.iter("node") if not n.get("resource-id")]
+    if len(anonymous) != 2 or any(n.get("class") != "android.widget.FrameLayout" or
+            n.get("clickable") != "false" or n.get("text") or n.get("content-desc") for n in anonymous): return False
+    if any(sum(n.get("resource-id") == identity for n in root.iter()) != 1 for identity in ids): return False
+    def chain(names):
+        nodes = [root]
+        for name in names:
+            nodes = [c for n in nodes for c in (n.iter() if n is root else n) if c.get("resource-id") == rid(name)]
+            if len(nodes) != 1: return False
+        return True
+    return chain(("l_8", "l_6", "lbz", "yo8", "lcm", "h4k")) and chain(("l_8", "l_6", "lbz", "vp8", "vpl"))
 
 
 def foreground(output):
@@ -58,7 +124,7 @@ def package_version(output):
     return version, code
 
 
-def inspect_hierarchy(xml, package, target, profile=None):
+def inspect_hierarchy(xml, package, target, profile=None, *, account_bound=False, live_bound=False, send_confirmed=False):
     result = dict(screen=ScreenState.UNKNOWN_SCREEN, reason="unknown_screen", comment_input_found=False,
         send_button_found=False, security_state=False, account_verified=False, live_verified=False, profile_verified=False)
     if len(xml.encode("utf-8")) > 524288 or re.search(r"<!\s*(?:DOCTYPE|ENTITY)", xml, re.I): return result
@@ -86,6 +152,8 @@ def inspect_hierarchy(xml, package, target, profile=None):
     app_nodes = [n for n in nodes if n.get("package") == package]
     if profile is None or not profile.verified or profile.package != package:
         return result | dict(reason="profile_unverified")
+    if profile.live_markers:
+        return reviewed_hierarchy(root, nodes, profile, result, account_bound, live_bound, send_confirmed)
     by_id = {}
     for node in app_nodes:
         identity = node.get("resource-id")
@@ -118,3 +186,31 @@ def exact_input(xml, profile, text):
         return len(nodes) == 1 and nodes[0].get("text") == text
     except (ET.ParseError, ValueError, RecursionError):
         return False
+
+
+def reviewed_hierarchy(root, nodes, profile, result, account_bound, live_bound, send_confirmed):
+    if any(n.get("package") not in {None, "", profile.package} for n in nodes): return result
+    if any(n.get("class") == "android.app.Dialog" for n in nodes): return result
+    groups = {}
+    for n in nodes: groups.setdefault(n.get("resource-id"), []).append(n)
+    def one(identity):
+        matches = groups.get(identity, []); return matches[0] if len(matches) == 1 else None
+    live = all((n := one(identity)) is not None and n.get("class") == klass and n.get("enabled") == "true"
+        for identity, klass in profile.live_markers)
+    composer = composer_shape(root)
+    result.update(profile_verified=True, account_verified=account_bound, live_verified=live or composer and live_bound)
+    if not result["live_verified"]: return result | dict(reason="live_unverified")
+    entry, send, child = one(profile.input_id), one(profile.send_id), one(rid("vpl"))
+    if entry is not None or groups.get(profile.input_id):
+        if (not composer or entry is None or entry.get("class") != "android.widget.EditText" or
+                any(entry.get(k) != "true" for k in ("enabled", "focusable")) or entry.get("password") == "true"):
+            return result | dict(reason="unknown_screen", live_verified=False)
+    result["comment_input_found"] = entry is not None
+    candidate = (composer and send is not None and child is not None and send.get("class") == "android.widget.FrameLayout"
+        and child.get("class") == "android.widget.ImageView" and all(n.get(k) == "true" for n in (send,child) for k in ("clickable","focusable"))
+        and all(n.get("enabled") in {"true", "false"} for n in (send, child)))
+    result["send_button_found"] = bool(candidate and send_confirmed)
+    result["send_control_state"] = "VERIFIED" if candidate and send_confirmed else "SEND_CONTROL_CANDIDATE" if candidate else "UNAVAILABLE"
+    screen = ScreenState.COMMENT_INPUT_READY if composer and entry is not None else ScreenState.LIVE_READY
+    reason = "account_unverified" if not account_bound else "input_unavailable" if not composer else "send_control_unverified" if not candidate or not send_confirmed else "ready"
+    return result | dict(screen=screen, reason=reason)

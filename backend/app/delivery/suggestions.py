@@ -21,6 +21,14 @@ def reply_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest() if text is not None else None
 
 
+def comment_identity(comment, source, session_id, target_account):
+    kind = "sdk_message_id" if comment.message_id and source == "tiktok" else "fingerprint"
+    return digest({"source": source, "session": session_id, "account": target_account,
+        "id": comment.message_id if kind == "sdk_message_id" else None,
+        "fallback": None if kind == "sdk_message_id" else
+        [comment.user_id, comment.username, comment.text, int(comment.timestamp.timestamp()) // 30]}), kind
+
+
 def policy_revision(processor):
     from app.ai.social import bank
     return digest({"version": "stage4a4-safety-v1", "project": processor.project.model_dump(mode="json"),
@@ -82,12 +90,8 @@ class SuggestionStore:
         self.approvals = {}
 
     def register(self, record, comment, processor, runtime_revision, *, session_id=None, target_account=None):
-        identity_kind = "sdk_message_id" if comment.message_id and record.source == "tiktok" else "fingerprint"
         # Fallback is a conservative 30-second receipt bucket, not a TikTok ID.
-        identity = digest({"source": record.source, "session": session_id, "account": target_account,
-            "id": comment.message_id if identity_kind == "sdk_message_id" else None,
-            "fallback": None if identity_kind == "sdk_message_id" else
-            [comment.user_id, comment.username, comment.text, int(comment.timestamp.timestamp()) // 30]})
+        identity, identity_kind = comment_identity(comment, record.source, session_id, target_account)
         now = datetime.now(UTC)
         values = record.suggestion.model_dump(mode="json") | dict(suggestion_id=record.id,
             source=record.source, comment_identity=identity, comment_identity_kind=identity_kind,

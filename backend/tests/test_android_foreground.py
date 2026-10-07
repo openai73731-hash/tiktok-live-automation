@@ -144,7 +144,10 @@ async def test_open_tiktok_detected_without_promoting_unknown_profile_to_ready(a
     assert state.screen == ScreenState.UNKNOWN_SCREEN and state.reason == "profile_unverified"
     assert not any((state.ready, state.account_verified, state.live_verified, state.profile_verified,
         state.comment_input_found, state.send_button_found, state.interaction_available))
-    assert not controller.physical_enabled and controller.actions is None and not controller.profiles
+    assert not controller.physical_enabled
+    # RC ships a strictly version/device bound profile, never a wildcard match.
+    assert all(p.serial == "903ed867" and p.version == "46.8.3" for p in controller.profiles)
+    assert controller._profile is None
     assert transport.calls == [AdbCommand.DEVICES, AdbCommand.PACKAGES, AdbCommand.FOREGROUND,
         AdbCommand.DUMP, AdbCommand.HIERARCHY, AdbCommand.PACKAGE_INFO, AdbCommand.FOREGROUND]
 

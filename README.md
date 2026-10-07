@@ -1,5 +1,144 @@
 # tiktok-live-automation
 
+## Stage 4B.3: MANUAL SEND release candidate
+
+Этот раздел описывает текущую поставку; ограничения более ранних stages ниже —
+история. Добавлен reviewed UI profile **TikTok You 46.8.3 / 2024608030**, package
+`com.zhiliaoapp.musically`, activity `com.windukk.mod.icon.default`, только Xiaomi
+M2101K9G / Android 13 / serial `903ed867`. Profile основан на локальных real captures,
+а не на guessed coordinates. Это не проверка подлинности APK. Агент **не выполнял
+физический SEND**, не запускал real LIVE или платный AI. Реальное поведение ASCII
+ввода и клавиатурного перехода к Send должен проверить оператор первым manual тестом.
+
+### Profile, аккаунт и composer
+
+Host LIVE требует одновременно уникальные enabled markers: `tv_online_audience_num`
+(TextView), `oyh` (RecyclerView), `user_info_container` (ViewGroup),
+`ttlive_toolbar_more` (FrameLayout). ID перечислены относительно указанного package.
+Повторяющиеся ID строк RecyclerView допустимы; повтор control/marker ID запрещён.
+`f41` — текст real viewer comment, `poq` — имя зрителя; `text` — system events.
+Эти строки не доказывают account binding. `user_name` — display name и не используется
+для привязки собственного аккаунта.
+
+Вручную откройте собственный Profile и нажмите **ПРОВЕРИТЬ АККАУНТ НА PROFILE**.
+Backend проверяет exact настроенный `@handle` в `sxp/Button`, Profile containers и
+наблюдавшийся owner control `sxq/Button` «Добавить описание». Другой язык/изменившаяся
+Profile UI требует отдельного review capture. Binding только в памяти: serial/model/OS,
+package/version/code/client, firstInstallTime/lastUpdateTime и username. Reinstall/update,
+смена устройства/аккаунта, APPLY или restart инвалидируют verification. Никаких cookies,
+паролей, sessionid. Это доверенная локальная проверка UI, не криптографическое доказательство.
+
+Оператор открывает composer вручную. Exact input — уникальный `h4k/EditText`, enabled,
+focusable, не password. Перед вводом он обязан иметь единственный keyboard focus.
+Composer проверяется по observed parent chains `l_8/l_6/lbz/yo8/lcm/h4k` и
+`l_8/l_6/lbz/vp8/vpl`; неизвестные resource IDs, overlays, foreign packages и modals
+закрывают доступ. Composer в capture является отдельным окном и **не содержит**
+host LIVE markers. Поэтому сначала явно проверяют idle host LIVE, а потом за **90 секунд**
+открывают composer. Короткий LIVE lease связан с тем же account/device/installation и
+LIVE session; composer не продлевает его. Если lease истёк, закройте composer и повторите
+inspection host LIVE. Backend listener также должен оставаться CONNECTED/ACTIVE.
+
+`vp8/FrameLayout` с child `vpl/ImageView` не имеют semantic label Send в capture.
+Изначально это **SEND_CONTROL_CANDIDATE**. После account verification, LIVE inspection
+и открытия composer оператор отдельно подтверждает **ПОДТВЕРДИТЬ SEND CONTROL**.
+CSRF endpoint принимает только backend nonce и строго `confirmed=true`, никогда
+browser resource ID. Подтверждается только этот reviewed candidate для exact binding;
+restart/смена binding отменяет confirmation. Confirmation ничего не нажимает на телефоне.
+
+### ASCII entry и единственная отправка
+
+Production `ASCIITextEntryBackend` поддерживает латинские A–Z/a–z, цифры, обычные
+пробелы и `. , ! ? ' : ; ( ) -`, максимум 400 символов. Unicode, `%`, переводы строк,
+shell metacharacters вне списка запрещены: `unicode_entry_unavailable`, COPY остаётся.
+`TextEntryBackend` допускает будущий отдельный Unicode adapter; helper APK/ADB Keyboard
+не устанавливается, root и clipboard assumption отсутствуют.
+
+Текст берётся только из неизменяемого server SuggestionEnvelope. Browser SEND передаёт
+только identity/revision/approval/idempotency. Фиксированные argv используют Android 13
+`input keycombination 113 29` (Ctrl+A), `input keyevent KEYCODE_DEL`, затем `input text`.
+Пробелы кодируются `%s`; аргумент дополнительно POSIX-quoted для **remote Android shell**,
+включая apostrophe/semicolon. На Windows используется `create_subprocess_exec`, без
+shell=True. Поддержка Android command проверена по
+[AOSP Android 13 InputShellCommand](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-13.0.0_r1/services/core/java/com/android/server/input/InputShellCommand.java).
+Это не обещание корректной работы стороннего IME: blank readback после очистки и
+**exact Unicode-string readback** после ввода обязательны. Mismatch → безопасная
+повторная очистка только проверенного focused field, NEED_OPERATOR, никакого Send.
+
+Для Send нет coordinate fallback, tap по bounds или Enter на EditText. Backend делает
+не более восьми TAB navigation steps, каждый раз заново проверяя device/profile/account/
+LIVE/composer/security, exact text и authoritative envelope/approval/session/runtime/
+expiry/reservation. Только единственный focused confirmed `vp8` либо его `vpl` child,
+оба enabled, допускает **один KEYCODE_DPAD_CENTER**. Неожиданный focus, cycle или
+недоступный keyboard navigation → отказ, без activation. Такое клавиатурное поведение
+на данном телефоне ещё не измерено; если UI не передаёт focus ожидаемому узлу, RC
+закрывается безопасно и требует следующего reviewed adapter, без координатного обхода.
+
+ADB exit 0 не доказывает публикацию. После возможной activation результат **UNKNOWN**,
+delivery paused, повтор запрещён. `not_sent` означает определённый pre-action отказ;
+security/unknown state/mismatch требуют оператора. CONFIRMED пока не выставляется.
+SQLite dedup сохраняется после restart: reserved/UNKNOWN не освобождают suggestion или
+comment. Restart не разрешает retry и уничтожает approvals/account/send confirmations.
+SEND UI учитывает backend eligibility, expiry, exact ASCII capability, current session,
+runtime, account/device/profile/lease, approval, pause/busy/cooldown и существующую operation.
+Финальные проверки повторяются backend независимо от браузерной кнопки.
+
+### LIVE freshness
+
+Каждый принятый unique real CommentEvent сразу попадает в current-session history и
+SSE `comment_received`, ещё до AI. Comment и ReplyRecord содержат `live_session_id` и
+одинаковую hashed `comment_identity`, также используемую delivery envelope. SDK msg_id
+дедуплицируется в bounded receipt window последних 1000 identities; без msg_id используется
+прежний ограниченный 30-second fingerprint. Delivery journal обеспечивает отдельный
+постоянный dedup отправки. Dashboard показывает last comment receipt time, current N,
+действительное SSE CONNECTED/RECONNECTING и listener state.
+
+New CONNECT очищает current history, count и timestamp; до 50 завершённых старых карточек
+остаются во внутреннем in-memory archive, без нового archive UI. Current history/pending
+вместе ограничены 50. Старые callback/AI completion игнорируются; frontend не принимает
+карточки другой сессии. SSE reconnect делает GET current history и merge по ID, сохраняет
+уже пришедшие события и не понижает готовую карточку до pending. Старый backend, разрыв
+SSE/SDK или отсутствие новых SDK событий всё ещё могут объяснять отсутствие комментариев;
+Android NOT READY не останавливает CommentEvent pipeline. Исправлены подтверждённые
+архитектурные причины старых карточек: общая история между CONNECT и отсутствие session
+filter в browser; причину конкретного прошлого live run без его логов установить нельзя.
+
+### Первый manual SEND: только оператор
+
+Перед запуском остановите старый backend. Сначала можно проверить UI с default false.
+Для отдельного первого физического теста оператор самостоятельно запускает backend:
+
+```powershell
+Set-Location C:\Users\user\Documents\tiktok-live-automation
+$env:ADMIN_LIVE_ENABLED = 'false'
+$env:ENABLE_PHYSICAL_TIKTOK_SEND = 'true'
+# При необходимости прежний установленный ADB, без установки helpers:
+# $env:ADB_EXECUTABLE = 'C:\Android\platform-tools\adb.exe'
+& .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+1. Выберите discovered `903ed867`; настройте `@mitchelljoneswn0632256`, LM Studio/Qwen,
+   SAVE/APPLY. Откройте own Profile и подтвердите account inspection после APPLY.
+2. Самостоятельно запустите own LIVE; нажмите Admin CONNECT. Новый комментарий со второго
+   аккаунта должен немедленно дать pending/card, last time и current N. Проверьте
+   оригинал, оба перевода и READY reply; выполните APPROVE.
+3. На телефоне покажите idle host LIVE и нажмите ПРОВЕРИТЬ УСТРОЙСТВО. В течение 90 секунд
+   вручную откройте composer, поставьте focus в h4k и снова выполните inspection.
+4. Подтвердите reviewed Send candidate один раз; refresh/inspection должен показать
+   COMMENT_INPUT_READY, VERIFIED и разрешить SEND только для ASCII reply.
+5. Нажмите SEND **один раз**. Backend очистит поле, введёт immutable reply, проверит exact
+   readback, найдёт keyboard focus подтверждённого control и выполнит одну activation.
+6. При UNKNOWN проверьте результат вручную на TikTok; **не повторяйте**. Непроходимый TAB,
+   mismatch, security, expired lease или неизвестный экран требуют оператора, не fallback.
+
+После теста остановите backend и верните `$env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'`.
+Browser не меняет startup flag. AUTOMATIC отсутствует, `auto_send_eligible=false`.
+Sanitized real idle/comments/composer/Profile fixtures и RC regressions находятся в
+`backend/tests/fixtures/android` и `backend/tests/test_manual_send_rc.py`; raw captures
+остаются только в ignored diagnostics/android. Проверки перед release: полный pytest,
+pip check, fake CLI и все десять offline replay, без real LIVE/OpenAI/physical SEND.
+Итог RC: **1089 tests passed** (62 новых), два прежних SDK deprecation warnings;
+**10/10 replay PASS**, `pip check` — no broken requirements, fake CLI — exit 0.
+
 ## Stage 4B.2: TikTok You, MIUI foreground и локальный UI capture
 
 Реальная строка `topResumedActivity=ActivityRecord{588bfc5 u0

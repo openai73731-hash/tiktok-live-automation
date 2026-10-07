@@ -5,6 +5,8 @@
   const state = {connected: false, busy: false, suite: false, stopSuite: false, csrf: null,
     settings: null, status: null, presets: [], history: new Map(), live: new Map(), stream: null};
   let quality, operator, delivery;
+  const liveFeed = createLiveFeed(); state.live = liveFeed.rows;
+  let eventRevision = 0;
   const providerName = (name) => ({fake: "Fake · фикстуры", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
   const liveName = (value) => value === "operator_required" ? "NEED_OPERATOR" : String(value).toUpperCase();
   const statusName = (value) => ({ready: "READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
@@ -59,6 +61,7 @@
     $("backend-dot").className = `dot ${value ? "good" : "warning"}`;
     text("backend-label", value ? "Работает" : "Нет связи");
     text("dash-backend", value ? "RUNNING" : "Нет связи");
+    text("dash-sse", state.stream?.readyState === 1 ? "CONNECTED" : "RECONNECTING");
     $("connection-warning").hidden = value;
     updateControls();
   }
@@ -67,9 +70,12 @@
     text("nav-live-count", metrics.processed);
   }
   function renderLiveStatus(live) {
+    liveFeed.select(live.live_session_id); renderLive();
     if (state.status) state.status.live = live;
     text("dash-tiktok", liveName(live.state)); text("dash-live", live.activity.toUpperCase());
     text("dash-queue", live.queue_size);
+    text("dash-last-comment", time(live.last_comment_at));
+    text("dash-current-comments", live.current_comment_count || 0);
     text("live-mode-label", !live.enabled ? "LIVE ввод отключён" : ({fake: "Имитация LIVE · Fake", replay: "Синтетический Replay", real: "Чтение собственного LIVE"}[live.mode]));
     text("terminal-state", live.terminal_state ? `Завершение: ${liveName(live.terminal_state)}` : "Состояние эфира отдельно от backend");
     text("tiktok-label", live.mode === "real" && live.enabled ? liveName(live.state) : live.enabled ? "Демо" : "Отключён");
@@ -212,11 +218,13 @@
     $("result-content").replaceChildren(replyCard(record)); text("result-duration", `${record.duration_ms} мс`);
   }
   async function refreshReviews() {
+    const liveToken = liveFeed.token();
     const version = state.reviewRefreshVersion = (state.reviewRefreshVersion || 0) + 1;
     const [history, live] = await Promise.all([api("/api/admin/playground/history"), api("/api/admin/live/history")]);
     if (version !== state.reviewRefreshVersion) return;
     state.history = new Map(history.map((record) => [record.id, record]));
-    state.live = new Map(live.map((record) => [record.id, record]));
+    liveFeed.hydrate(live, liveToken);
+    live.forEach(r => { if (r.live_session_id === state.status?.live?.live_session_id && state.live.has(r.id) && r.suggestion) liveFeed.put(r); });
     renderHistory(); renderLive();
     if (state.selectedSuggestion && state.history.has(state.selectedSuggestion)) showResult(state.history.get(state.selectedSuggestion));
   }
@@ -259,13 +267,15 @@
     remember(record); showResult(record); return record;
   }
   async function refresh() {
+    const revision = eventRevision, liveToken = liveFeed.token();
     const [session, status, settings, presets, history, live, operatorSettings] = await Promise.all([
       api("/api/admin/session"), api("/api/admin/status"), api("/api/admin/settings"),
       api("/api/admin/playground/presets"), api("/api/admin/playground/history"), api("/api/admin/live/history"), api("/api/admin/operator/settings")]);
-    state.csrf = session.csrf_token; renderSettings(settings); renderStatus(status);
+    state.csrf = session.csrf_token; renderSettings(settings);
+    if (revision === eventRevision) renderStatus(status);
     state.presets = presets; renderPresets();
     state.history = new Map(history.map((record) => [record.id, record])); trimMap(state.history, 100); renderHistory();
-    state.live = new Map(live.map((record) => [record.id, record])); trimMap(state.live, 50); renderLive();
+    liveFeed.hydrate(live, revision === eventRevision ? liveFeed.token() : liveToken); renderLive();
     setConnected(true);
     operator.render(operatorSettings);
     await quality.refresh();
@@ -275,9 +285,9 @@
     if (state.stream) return;
     const stream = new EventSource("/api/admin/events"); state.stream = stream;
     const receive = (name, handler) => stream.addEventListener(name, (event) => {
-      try { handler(JSON.parse(event.data)); } catch { toast("Не удалось обновить данные. Переподключение восстановит историю."); }
+      try { eventRevision++; handler(JSON.parse(event.data)); } catch { toast("Не удалось обновить данные. Переподключение восстановит историю."); }
     });
-    stream.onopen = () => { refresh().catch(() => setConnected(false)); };
+    stream.onopen = () => { text("dash-sse", "CONNECTED"); refresh().catch(() => setConnected(false)); };
     stream.onerror = () => setConnected(false);
     receive("snapshot", renderStatus);
     receive("quality_update", quality.apply);
@@ -289,15 +299,15 @@
       if (changed) refreshReviews().catch(() => setConnected(false));
     });
     receive("ai_status", renderAI);
-    receive("reply_suggestion", (value) => { state.live.set(value.record.id, value.record); trimMap(state.live, 50); renderLive(); renderMetrics(value.metrics); });
-    receive("comment_received", (value) => { state.live.set(value.id, value); trimMap(state.live, 50); renderLive(); });
+    receive("reply_suggestion", (value) => { if (liveFeed.put(value.record)) { renderLive(); renderMetrics(value.metrics); } });
+    receive("comment_received", (value) => { if (liveFeed.put(value)) renderLive(); });
     receive("playground_result", (value) => { remember(value.record); if (state.status) state.status.playground_processed = value.processed; text("playground-count", value.processed); });
     receive("resync", () => { refresh().catch(() => setConnected(false)); });
   }
   quality = window.createQualityLab({api, node, replyCard, toast, state, updateControls});
   operator = window.createOperatorControls({api, state, toast, renderSettings, renderStatus,
     refreshQuality: async () => { await quality.refresh(); await delivery.refresh(); }});
-  delivery = window.createDeliveryControls({api, node, toast, state, refreshCards: () => {
+  delivery = window.createDeliveryControls({api, node, toast, state, refreshReviews, refreshCards: () => {
     renderLive();
     if (state.selectedSuggestion && state.history.has(state.selectedSuggestion)) showResult(state.history.get(state.selectedSuggestion));
   }});

@@ -1,5 +1,5 @@
 /* Explicit device inspection and manual identity-only delivery requests. */
-window.createDeliveryControls = ({api, node, toast, state, refreshCards}) => {
+window.createDeliveryControls = ({api, node, toast, state, refreshCards, refreshReviews = async () => {}}) => {
   const $ = (id) => document.getElementById(id);
   let view = null, version = 0, busy = false;
   const keys = new Map();
@@ -11,6 +11,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards}) => {
       ["TikTok package", d.package], ["Version", d.version], ["Version code", d.version_code],
       ["Foreground", d.foreground_activity], ["Screen", d.screen], ["Profile", d.profile_verified ? "VERIFIED" : "UNVERIFIED"],
       ["Comment input / Send", `${d.comment_input_found} / ${d.send_button_found}`],
+      ["Send control", d.send_control_state],
       ["Account / LIVE verified", `${d.account_verified} / ${d.live_verified}`],
       ["Security UI", d.security_state], ["Delivery", next.delivery],
       ["Physical SEND", next.physical_delivery_enabled ? "GATE ENABLED · проверка обязательна" : "DISABLED"],
@@ -31,11 +32,15 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards}) => {
     select.replaceChildren(automatic, ...devices); select.value = wanted;
     $("inspect-device").disabled = busy || !state.connected;
     $("capture-device").disabled = busy || !state.connected;
+    $("verify-account").disabled = busy || !state.connected;
+    $("confirm-send").disabled = busy || !state.connected || !d.send_confirmation_token;
     refreshCards();
   }
   async function refresh() {
     const token = ++version;
     const [next, history] = await Promise.all([api("/api/admin/delivery/status"), api("/api/admin/delivery/history")]);
+    if (token !== version) return;
+    await refreshReviews();
     if (token !== version) return;
     render(next);
     $("delivery-history").replaceChildren(...history.map((entry) => {
@@ -64,14 +69,31 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards}) => {
     } catch (error) { toast(error.message); }
     finally { busy = false; $("capture-device").disabled = $("inspect-device").disabled = !state.connected; }
   });
+  $("verify-account").addEventListener("click", async () => {
+    if (busy || !state.connected) return;
+    busy = true;
+    try { render(await api("/api/admin/device/verify-account", {})); toast("Аккаунт проверен. Откройте host LIVE и проверьте устройство, затем откройте composer вручную."); }
+    catch (error) { toast(error.message); }
+    finally { busy = false; await refresh(); }
+  });
+  $("confirm-send").addEventListener("click", async () => {
+    const token = view?.inspection.send_confirmation_token;
+    if (busy || !token || !state.connected) return;
+    if (!window.confirm("Подтверждаю, что vp8/vpl в открытом composer — кнопка отправки. Привязка действует только для проверенного Xiaomi / TikTok You 46.8.3 и аккаунта. Сейчас ничего не отправляется.")) return;
+    busy = true;
+    try { render(await api("/api/admin/device/confirm-send", {token, confirmed: true})); }
+    catch (error) { toast(error.message); }
+    finally { busy = false; await refresh(); }
+  });
   function attach(actions, record, send) {
     const review = record.delivery_review, e = review?.envelope;
     const approved = review?.approval_state === "approved" && review.approval;
     const live = e?.source === "tiktok";
     const allowed = Boolean(approved && live && e.status === "ready");
     send.textContent = "SEND";
-    send.disabled = !allowed || !view?.physical_ready || busy || !state.connected;
-    send.title = !allowed ? "Нужен актуальный approval реального LIVE" : view?.reason || "Устройство не проверено";
+    send.disabled = !allowed || !review?.physical_send_allowed || !view?.physical_ready || view?.busy || busy || !state.connected || Date.now() >= Date.parse(e?.expires_at);
+    if (!send.disabled) setTimeout(() => { send.disabled = true; send.title = "Истёк срок предложения. Обновите проверку."; }, Math.max(0, Math.min(Date.parse(e.expires_at) - Date.now(), 90000)));
+    send.title = !allowed ? "Нужен актуальный approval реального LIVE" : !review?.text_entry_supported ? "unicode_entry_unavailable · доступен COPY" : !review?.eligibility?.eligible ? review?.eligibility?.reason || "Обновите проверку" : view?.reason || "Устройство не проверено";
     const dry = node("button", "button secondary-button", "DRY RUN SEND");
     dry.type = "button"; dry.disabled = !allowed || busy || !state.connected;
     actions.append(dry);
@@ -91,7 +113,10 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards}) => {
       } catch (error) { toast(error.message); }
       finally {
         busy = false;
-        try { await refresh(); }
+        try {
+          record.delivery_review = await api(`/api/admin/suggestions/${e.suggestion_id}`);
+          await refresh();
+        }
         catch (error) { view = null; refreshCards(); toast(error.message); }
       }
     };

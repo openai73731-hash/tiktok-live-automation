@@ -249,8 +249,11 @@ def test_adb_fixed_allowlist_and_pinned_server(tmp_path):
     for command in AdbCommand:
         kwargs = {} if command == AdbCommand.DEVICES else {"serial": "USB1"}
         if command == AdbCommand.PACKAGE_INFO: kwargs["package"] = PACKAGE
+        if command == AdbCommand.TEXT: kwargs["text"] = "Safe text."
         args = adb.argv(command, **kwargs)
-        assert all(word not in args for word in ["input", "tap", "install", "kill-server"])
+        assert all(word not in args for word in ["tap", "install", "kill-server"])
+        if "input" in args:
+            assert command in {AdbCommand.TEXT, AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TAB, AdbCommand.ACTIVATE}
     with pytest.raises(AdbError): adb.argv("shell", serial="USB1")
     with pytest.raises(AdbError): adb.argv(AdbCommand.PACKAGE_INFO, serial="USB1", package="browser.app")
 
@@ -319,13 +322,16 @@ async def test_unknown_account_live_modal_and_missing_controls_fail_closed(xml, 
     assert not a.entries and not a.clicks
 
 
-async def test_no_real_profile_or_native_unicode_backend_is_shipped():
+async def test_rc_profile_is_explicit_and_unicode_remains_unavailable():
     c, _, a = device(profiles=())
     assert (await c.submit(submission(), guard=lambda: True)).reason == "profile_unverified"
     assert not a.entries
     c, _, _ = device(actions=False)
     assert not (await c.inspect(submission().target)).ready
-    assert not ADBAndroidController().profiles and ADBAndroidController().actions is None
+    from app.android.tiktok_ui import TIKTOK_YOU_4683
+    rc = ADBAndroidController()
+    assert rc.profiles == (TIKTOK_YOU_4683,)
+    assert rc.actions.supports("Hello!") and not rc.actions.supports("Привет")
 
 
 @pytest.mark.parametrize("text", ["Hello, exact reply.", "Привет, точный ответ.", "Sí, está automatizado.",

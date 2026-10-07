@@ -51,9 +51,11 @@ class DeviceInspection(DeviceModel):
     live_verified: bool = False
     profile_verified: bool = False
     interaction_available: bool = False
+    send_control_state: Literal["UNAVAILABLE", "SEND_CONTROL_CANDIDATE", "VERIFIED"] = "UNAVAILABLE"
+    send_confirmation_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     reason: Literal["not_checked", "adb_unavailable", "device_missing", "multiple_devices", "unauthorized",
         "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen", "profile_unverified",
-        "account_unverified", "live_unverified", "input_unavailable", "ready"] = "not_checked"
+        "account_unverified", "live_unverified", "input_unavailable", "send_control_unverified", "ready"] = "not_checked"
 
     @property
     def ready(self):
@@ -62,12 +64,18 @@ class DeviceInspection(DeviceModel):
                 self.interaction_available and not self.security_state)
 
 
-class UIActionBackend(Protocol):
-    """Future reviewed accessibility/native adapter; never installed automatically.
+class TextEntryBackend(Protocol):
+    """Explicit character capability and exact readback, including future Unicode adapters."""
+    def supports(self, text: str) -> bool: ...
+    async def prepare_exact(self, serial: str, resource_id: str, text: str) -> str: ...
+
+
+class UIActionBackend(TextEntryBackend, Protocol):
+    """Reviewed UI adapter; never installed automatically.
 
     prepare_exact must target a semantic node, return a freshly read exact field
     value, and never press Send. click_send may perform ONE action, no retries.
-    No production backend/profile is shipped without device verification.
+    ASCII RC uses a manually focused verified field and selector-checked keyboard focus.
     """
     def supports(self, text: str) -> bool: ...
     async def prepare_exact(self, serial: str, resource_id: str, text: str) -> str: ...

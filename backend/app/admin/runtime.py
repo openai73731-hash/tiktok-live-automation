@@ -62,6 +62,7 @@ class AdminLiveController:
                 raise
             self.processor, self.service = processor, service
             self.session_id = self.last_session_id = session_id
+            self.runtime.admin.begin_live_session(session_id)
             self.session_invalidated = False
             self.processor_closed = False
             self.runtime.admin.live_status = LiveStatus(username=username, mode=config.live_mode, state=LiveState.CONNECTING)

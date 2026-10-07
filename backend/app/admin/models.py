@@ -26,6 +26,8 @@ class CommentView(UIModel):
     text: str = Field(max_length=10_000)
     timestamp: datetime
     truncated: bool = False
+    live_session_id: str | None = None
+    comment_identity: str | None = None
 
 
 class ReplyRecord(UIModel):
@@ -36,6 +38,8 @@ class ReplyRecord(UIModel):
     original_truncated: bool = False
     suggestion: ReplySuggestion
     delivery_review: SuggestionView | None = None
+    live_session_id: str | None = None
+    comment_identity: str | None = None
 
 
 class LiveView(UIModel):
@@ -49,6 +53,8 @@ class LiveView(UIModel):
     username: str = ""
     connection_owned: bool = False
     live_session_id: str | None = None
+    last_comment_at: datetime | None = None
+    current_comment_count: int = 0
     delivery_ready: Literal[False] = False
     cleanup_state: Literal["not_started", "running", "complete", "failed"] = "not_started"
 

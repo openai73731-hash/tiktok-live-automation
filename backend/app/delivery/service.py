@@ -62,8 +62,8 @@ class ManualDeliveryService:
 
     def view(self):
         inspected = self.controller.last
-        ready = (not self.closed and not self.paused and not self.cooldown and inspected.ready and
-                 self.settings.enable_physical_tiktok_send)
+        ready = (not self.closed and not self.paused and not self.cooldown and getattr(self.controller, "current_ready", inspected.ready) and
+                 self.context().device_available and self.settings.enable_physical_tiktok_send)
         reason = "delivery_paused" if self.closed or self.paused else "cooldown" if self.cooldown else (
             "physical_delivery_disabled" if not self.settings.enable_physical_tiktok_send else "ready" if ready else "device_unavailable")
         return DeliveryView(inspection=inspected, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
@@ -76,7 +76,30 @@ class ManualDeliveryService:
 
     def set_serial(self, serial):
         self.controller.serial = serial
+        if hasattr(self.controller, "invalidate_trust"): self.controller.invalidate_trust()
         self.controller.last = DeviceInspection(reason="not_checked")
+
+    def can_send(self, review):
+        if not review.eligibility.eligible or not self.view().physical_ready or self.busy: return False
+        actions = getattr(self.controller, "actions", None)
+        if actions is None or not actions.supports(review.envelope.suggested_reply): return False
+        try:
+            return not self.journal or not self.journal.has_operation(review.envelope.suggestion_id, review.envelope.comment_identity)
+        except Exception:
+            return False
+
+    async def trust_action(self, *, token=None, verify=False):
+        async def run():
+            async with self.lock:
+                ctx = self.context()
+                account = ctx.target_account
+                if not account: raise SuggestionConflict("Сначала укажите аккаунт собственного LIVE.")
+                target = AndroidTarget(live_session_id=ctx.live_session_id or "0" * 32,
+                    account=account, device_serial=self.controller.serial)
+                valid = await self.controller.verify_account(target) if verify else await self.controller.confirm_send(target, token)
+                if not valid: raise SuggestionConflict("Проверка не выполнена. Проверьте Profile, LIVE и reviewed composer.")
+                return self.view()
+        return await self._owned(run)
 
     async def _owned(self, action):
         if self.closed: raise SuggestionConflict("Delivery завершает работу.")

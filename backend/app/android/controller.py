@@ -1,24 +1,60 @@
 """ADB inspection and a separately gated semantic UI action boundary."""
 import asyncio
 import re
+from time import monotonic
+from uuid import uuid4
+from hashlib import sha256
 from app.android.adb import AdbTransport, AdbCommand, AdbError, PACKAGES, parse_devices, DUMP_PATH
 from app.android.models import ClientVariant, DeviceInspection, ScreenState, AndroidOutcome
-from app.android.tiktok_ui import foreground, inspect_hierarchy, exact_input, observed_variant, package_version
+from app.android.tiktok_ui import (foreground, inspect_hierarchy, exact_input, observed_variant, package_version,
+    TIKTOK_YOU_4683, profile_account)
 from app.android.diagnostics import CaptureError, save_capture
 
 
 class ADBAndroidController:
-    def __init__(self, transport=None, *, serial=None, physical_enabled=False, profiles=(), actions=None):
+    def __init__(self, transport=None, *, serial=None, physical_enabled=False, profiles=None, actions=None):
         self.transport = transport or AdbTransport()
         self.serial = serial
         self.physical_enabled = physical_enabled
-        self.profiles = tuple(profiles)  # No unverified real-device selector guesses are shipped.
+        self.profiles = (TIKTOK_YOU_4683,) if profiles is None else tuple(profiles)
         self.actions = actions
+        if profiles is None and actions is None:
+            from app.android.text_entry import ASCIITextEntryBackend
+            self.actions = ASCIITextEntryBackend(self)
         self.lock = asyncio.Lock()
         self.last = DeviceInspection()
         self.closed = False
         self._profile = None
         self._xml = ""
+        self.invalidate_trust()
+
+    def invalidate_trust(self):
+        self._account_binding = self._send_binding = self._candidate_key = self._candidate_token = None
+        self._live_evidence = None
+        self._installation = None
+
+    @property
+    def current_ready(self):
+        if not self.last.ready: return False
+        if self._profile and self._profile.live_markers:
+            return bool(self._live_evidence and monotonic() - self._live_evidence[3] < 90
+                and self._account_binding == self._send_binding and self._send_binding is not None)
+        return True
+
+    def ready_for(self, session_id, account):
+        if not self.current_ready: return False
+        if self._profile and self._profile.live_markers:
+            return self._live_evidence[:3] == (self._installation, account, session_id)
+        return True
+
+    @staticmethod
+    def installation(info):
+        values = []
+        for name in ("firstInstallTime", "lastUpdateTime"):
+            matches = re.findall(r"(?m)^\s*" + name + r"=([^\r\n]+)", info)
+            if len(matches) != 1 or not re.fullmatch(r"[0-9T: .+\-]{10,80}", matches[0].strip()): return None
+            values.append(matches[0].strip())
+        return sha256(repr(values).encode()).hexdigest()
 
     async def _inspect(self, target=None):
         self._profile, self._xml = None, ""
@@ -32,12 +68,14 @@ class ADBAndroidController:
             selected = next((d for d in devices if d.serial == self.serial), None) if self.serial else None
             if selected is None and self.serial is None and len(devices) == 1: selected = devices[0]
             if selected is None:
+                self.invalidate_trust()
                 multiple = self.serial is None and len(devices) > 1
                 self.last = DeviceInspection(**values, device="MULTIPLE_DEVICES" if multiple else "MISSING",
                     reason="multiple_devices" if multiple else "device_missing")
                 return self.last
             values.update(serial=selected.serial, device=selected.state)
             if selected.state != "CONNECTED":
+                self.invalidate_trust()
                 self.last = DeviceInspection(**values, reason="unauthorized" if selected.state == "UNAUTHORIZED" else "offline")
                 return self.last
             listed = await self.transport.run(AdbCommand.PACKAGES, serial=selected.serial)
@@ -45,6 +83,7 @@ class ADBAndroidController:
             before = await self.transport.run(AdbCommand.FOREGROUND, serial=selected.serial)
             package, activity = foreground(before)
             if package not in PACKAGES or package not in installed:
+                self.invalidate_trust()
                 self.last = DeviceInspection(**values, screen=ScreenState.TIKTOK_NOT_RUNNING, reason="tiktok_not_running")
                 return self.last
             values.update(package=package, foreground_activity=activity)
@@ -53,29 +92,86 @@ class ADBAndroidController:
             xml = await self.transport.run(AdbCommand.HIERARCHY, serial=selected.serial)
             info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=selected.serial, package=package)
             version, code = package_version(info)
-            after = await self.transport.run(AdbCommand.FOREGROUND, serial=selected.serial)
-            if foreground(after) != (package, activity): raise AdbError()
             variant = observed_variant(package, activity)
             values.update(version=version, version_code=code, client_variant=variant)
             profile = None
             matching = [p for p in self.profiles if p.package == package and p.verified and p.version == version
+                and (p.version_code is None or p.version_code == code) and (p.serial is None or p.serial == selected.serial)
                 and (p.client_variant == ClientVariant.UNKNOWN and variant == ClientVariant.UNKNOWN and not p.activities
                      or activity in p.activities and variant in {ClientVariant.UNKNOWN, p.client_variant})]
             if len(matching) == 1:
                 profile = matching[0]
                 values["client_variant"] = profile.client_variant
-            parsed = inspect_hierarchy(xml, package, getattr(target, "account", None), profile)
+            model = android = None
+            if profile and profile.live_markers:
+                model = (await self.transport.run(AdbCommand.DEVICE_MODEL, serial=selected.serial)).strip()
+                android = (await self.transport.run(AdbCommand.ANDROID_VERSION, serial=selected.serial)).strip()
+                # Metadata is part of this exact device profile, not just a display hint.
+                if model != "M2101K9G" or android != "13": profile = None
+            after = await self.transport.run(AdbCommand.FOREGROUND, serial=selected.serial)
+            if foreground(after) != (package, activity): raise AdbError()
+            account = getattr(target, "account", None)
+            if self._account_binding is not None and self._account_binding[1] != account:
+                self.invalidate_trust()
+            key = (selected.serial, package, version, code, values["client_variant"], model, android, self.installation(info))
+            if self._installation is not None and key != self._installation: self.invalidate_trust()
+            self._installation = key
+            account_bound = bool(key[-1] and self._account_binding == (key, account))
+            session = getattr(target, "live_session_id", None)
+            live_bound = bool(self._live_evidence and self._live_evidence[:3] == (key, account, session)
+                and monotonic() - self._live_evidence[3] < 90)
+            parsed = inspect_hierarchy(xml, package, account, profile, account_bound=account_bound,
+                live_bound=live_bound, send_confirmed=self._send_binding == (key, account))
+            if profile and profile.live_markers:
+                if parsed["screen"] == ScreenState.LIVE_READY and parsed["live_verified"] and account_bound and session:
+                    self._live_evidence = (key, account, session, monotonic())
+                elif not parsed["live_verified"]: self._live_evidence = None
+                if parsed.get("send_control_state") == "SEND_CONTROL_CANDIDATE" and account_bound:
+                    candidate_key = (key, account)
+                    if self._candidate_key != candidate_key or self._candidate_token is None:
+                        self._candidate_key, self._candidate_token = candidate_key, uuid4().hex
+                    parsed["send_confirmation_token"] = self._candidate_token
             self._profile, self._xml = profile, xml
-            parsed["interaction_available"] = self.actions is not None
+            parsed["interaction_available"] = self.actions is not None and profile is not None
             if parsed["reason"] == "ready" and self.actions is not None: values["device"] = "READY"
             self.last = DeviceInspection(**values, **parsed)
         except (AdbError, ValueError):
+            self._live_evidence = None
             self.last = DeviceInspection(**values, reason="adb_failed")
         return self.last
 
     async def inspect(self, target=None):
         async with self.lock:
             return await self._inspect(target)
+
+    async def verify_account(self, target):
+        async with self.lock:
+            self.invalidate_trust()
+            state = await self._inspect(target)
+            if (state.security_state or self._profile != TIKTOK_YOU_4683 or not self._installation[-1]
+                    or not profile_account(self._xml, target.account)):
+                return False
+            model = (await self.transport.run(AdbCommand.DEVICE_MODEL, serial=state.serial)).strip()
+            android = (await self.transport.run(AdbCommand.ANDROID_VERSION, serial=state.serial)).strip()
+            # Reinspect after device metadata, so Profile cannot change during binding.
+            key = self._installation
+            await self._inspect(target)
+            if (model != "M2101K9G" or android != "13" or self.last.security_state or self._profile != TIKTOK_YOU_4683
+                    or self._installation != key or not profile_account(self._xml, target.account)): return False
+            self._account_binding = (self._installation, target.account)
+            self.last = self.last.model_copy(update={"account_verified": True})
+            return True
+
+    async def confirm_send(self, target, token):
+        async with self.lock:
+            state = await self._inspect(target)
+            if (not token or token != self._candidate_token or self._candidate_key != (self._installation, target.account)
+                    or state.send_control_state != "SEND_CONTROL_CANDIDATE" or not state.account_verified
+                    or not state.live_verified or state.security_state): return False
+            self._send_binding = self._candidate_key
+            self._candidate_token = None
+            await self._inspect(target)
+            return self.last.ready
 
     async def capture(self):
         async with self.lock:
@@ -111,7 +207,12 @@ class ADBAndroidController:
             if not self.actions.supports(request.text):
                 return AndroidOutcome(status="needs_operator", reason="unicode_entry_unavailable")
             profile = self._profile
-            entered = await self.actions.prepare_exact(inspected.serial, profile.input_id, request.text)
+            from app.android.text_entry import ASCIITextEntryBackend, TextEntryError
+            if isinstance(self.actions, ASCIITextEntryBackend): self.actions.bind(request.target, guard)
+            try:
+                entered = await self.actions.prepare_exact(inspected.serial, profile.input_id, request.text)
+            except (TextEntryError, AdbError):
+                return AndroidOutcome(status="needs_operator", reason="rejected")
             if entered != request.text: return AndroidOutcome(status="not_sent", reason="rejected")
             final = await self._inspect(request.target)
             if final.security_state:
@@ -121,7 +222,10 @@ class ADBAndroidController:
                 return AndroidOutcome(status="needs_operator", reason="unknown_screen")
             # No await between this authoritative check and the semantic action call.
             if not guard(): return AndroidOutcome(status="not_sent", reason="rejected")
-            issued = await self.actions.click_send(final.serial, profile.send_id, guard)
+            try:
+                issued = await self.actions.click_send(final.serial, profile.send_id, guard)
+            except TextEntryError:
+                return AndroidOutcome(status="needs_operator", reason="rejected")
             if issued is False: return AndroidOutcome(status="not_sent", reason="rejected")
             # Exit status is not delivery proof. No verified confirmation reader exists yet.
             return AndroidOutcome(status="unknown", reason="interrupted")

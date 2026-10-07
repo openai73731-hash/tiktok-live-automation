@@ -1,5 +1,30 @@
 # Project scope and rules
 
+- Stage 4B.3 authorizes the manual release candidate described in README's current
+  section; it supersedes older "no production profile/input" restrictions below.
+  Ship only reviewed TikTok You 46.8.3/code2024608030 on Xiaomi M2101K9G/Android13/
+  serial903ed867, with exact activities, multiple host LIVE markers, unique h4k and
+  strict observed composer shape. vp8/vpl remain SEND_CONTROL_CANDIDATE until explicit
+  CSRF operator confirmation of a backend nonce for the exact account/device/install
+  binding. Browser never supplies a selector. Verify own Profile exact handle + owner
+  control; bind installation dates/version/device/account in memory, invalidate on
+  change/APPLY/restart. Never use LIVE display name as account proof. Composer hides
+  LIVE markers: require a <=90-second host inspection lease in the same LIVE session.
+  Production ASCII entry uses only immutable server text, fixed argv, remote shell
+  quoting, guarded Ctrl+A/Delete, exact blank/text readback and safe clear on mismatch.
+  No Unicode claim, helper auto-install, root or clipboard assumption. Operator opens
+  and focuses composer manually. Find only confirmed vp8/vpl via bounded TAB + fresh
+  full inspection/readback; one DPAD_CENTER activation, no coordinates/Enter fallback.
+  Recheck reservation, approval/envelope/expiry/runtime/session/account and device before
+  action. ADB success is UNKNOWN, pauses delivery and forbids retry. Default startup
+  physical flag remains false and browser cannot change it. The agent NEVER performs
+  physical SEND. Real keyboard navigation/IME behavior needs the operator's first test.
+  Keep current LIVE pending/history together <=50, a separate bounded archive, session
+  IDs and shared hashed comment identity in history/SSE, bounded receipt dedup, immediate
+  count/time before AI and rejection of old callbacks/completions. Browser reconnect
+  merges only current-session rows. Android readiness never gates incoming comments.
+  AUTO remains absent and auto_send_eligible=false. Preserve prior security guards.
+
 - Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A, Stage 4A.1, Stage 4A.2, Stage 4A.3, Stage 4A.4 and Stage 4B manual infrastructure are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,

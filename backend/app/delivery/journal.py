@@ -40,7 +40,8 @@ class Operation(FrozenModel):
 class DeliveryOperationStore(Protocol):
     def reserve(self, request) -> tuple[Operation, bool]: ...
     def finish(self, operation_id: str, result: DeliveryResult) -> Operation: ...
-    def has_operation(self, suggestion_id: str) -> bool: ...
+    def has_operation(self, suggestion_id: str, comment_identity: str | None = None) -> bool: ...
+    def lookup(self, key: str) -> Operation | None: ...
 
 
 class SQLiteDeliveryOperationStore:
@@ -85,8 +86,8 @@ class SQLiteDeliveryOperationStore:
     def _operation(self, row):
         return Operation.model_validate(dict(row))
 
-    def has_operation(self, suggestion_id):
-        return self.connection.execute("SELECT 1 FROM operations WHERE suggestion_id=?", (suggestion_id,)).fetchone() is not None
+    def has_operation(self, suggestion_id, comment_identity=None):
+        return self.connection.execute("SELECT 1 FROM operations WHERE suggestion_id=? OR comment_identity=?", (suggestion_id, comment_identity)).fetchone() is not None
 
     def reserve(self, request):
         request = DeliveryRequest.model_validate(request.model_dump())

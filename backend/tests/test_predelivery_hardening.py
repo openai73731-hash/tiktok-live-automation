@@ -411,7 +411,9 @@ async def test_session_identity_reconnect_and_stale_disconnect(panel):
     assert (await client.post("/api/admin/live/disconnect", json={"expected_live_session_id": session})).status_code == 409
     assert runtime.live.session_id == new_session and not runtime.live.task.done()
     assert (await client.post(route, json=body)).status_code == 409
-    assert (await client.get("/api/admin/live/history")).json()[0]["delivery_review"]["approval_state"] == "stale"
+    assert (await client.get("/api/admin/live/history")).json() == []
+    assert runtime.admin.live_archive[0].id == record.id
+    assert runtime.admin.suggestions.view(record.id, runtime.admin.delivery_context()).approval_state == "stale"
 
 
 @pytest.mark.parametrize("terminal", [LiveState.ENDED, LiveState.OPERATOR_REQUIRED])

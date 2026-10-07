@@ -20,10 +20,13 @@ class DeliveryCoordinator:
         try:
             e, _, verdict = self.suggestions.authoritative(request.suggestion_id, request.approval_id,
                 request.suggestion_revision, self.context())
+            operation = self.journal.lookup(request.idempotency_key)
+            if operation is None or operation.status != "reserved" or operation.operation_id != request.operation_id:
+                return False
             return (not self.closed and not self.failed and verdict.eligible and
                     e.suggested_reply == request.text and e.suggested_reply_hash == request.suggested_reply_hash and
                     e.live_session_id == request.live_session_id and e.target_account == request.target_account)
-        except SuggestionConflict:
+        except Exception:
             return False
 
     async def execute(self, suggestion_id, approval_id, expected_revision, idempotency_key, *, timeout=5,

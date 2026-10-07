@@ -85,6 +85,8 @@ class SuggestionView(FrozenModel):
     approval_state: Literal["missing", "approved", "stale"]
     eligibility: Eligibility
     delivery: Literal["NOT CONFIGURED"] = "NOT CONFIGURED"
+    physical_send_allowed: bool = False
+    text_entry_supported: bool = False
 
 
 class ApprovalEvent(FrozenModel):
@@ -151,7 +153,7 @@ class DryRunView(FrozenModel):
     would_send: bool
     reason: EligibilityReason | Literal["not_checked", "adb_unavailable", "device_missing", "multiple_devices",
         "unauthorized", "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen",
-        "profile_unverified", "account_unverified", "live_unverified", "input_unavailable", "ready", "rejected"]
+        "profile_unverified", "account_unverified", "live_unverified", "input_unavailable", "send_control_unverified", "ready", "rejected"]
     diagnostic_id: OpaqueId
     physical_action: Literal[False] = False
 

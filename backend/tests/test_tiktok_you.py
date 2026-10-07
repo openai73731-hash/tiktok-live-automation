@@ -148,7 +148,9 @@ async def test_capture_writes_raw_only_locally_and_hashes_serial(tmp_path):
         AdbCommand.DUMP, AdbCommand.HIERARCHY, AdbCommand.PACKAGE_INFO, AdbCommand.FOREGROUND,
         AdbCommand.DEVICE_MODEL, AdbCommand.ANDROID_VERSION, AdbCommand.PACKAGE_INFO, AdbCommand.FOREGROUND]
     assert all(kwargs.get("serial") == "USB_FIXTURE" for c, kwargs in transport.calls if c != AdbCommand.DEVICES)
-    assert controller.actions is None and not controller.physical_enabled
+    assert not controller.physical_enabled
+    assert not controller.last.ready and controller._profile is None
+    assert not any(c in {AdbCommand.TEXT, AdbCommand.DELETE, AdbCommand.ACTIVATE} for c, _ in transport.calls)
 
 
 @pytest.mark.parametrize("change", ["foreground", "version", "model"])

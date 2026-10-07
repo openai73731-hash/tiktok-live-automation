@@ -5,12 +5,18 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 from app.android.models import Device, SERIAL_PATTERN
 from app.lifecycle import finish_owned
 
 DUMP_PATH = "/data/local/tmp/tiktok-live-hierarchy.xml"
 # Shared package; it does not identify an official installation or client variant.
 PACKAGES = frozenset({"com.zhiliaoapp.musically"})
+ASCII_PATTERN = r"[A-Za-z0-9 .,!?':;()\-]{1,400}"
+
+
+def ascii_supported(text):
+    return isinstance(text, str) and re.fullmatch(ASCII_PATTERN, text) is not None
 
 
 class AdbCommand(StrEnum):
@@ -22,6 +28,11 @@ class AdbCommand(StrEnum):
     PACKAGE_INFO = "package_info"
     DEVICE_MODEL = "device_model"
     ANDROID_VERSION = "android_version"
+    SELECT_ALL = "select_all"
+    DELETE = "delete"
+    TEXT = "text"
+    TAB = "tab"
+    ACTIVATE = "activate"
 
 
 class AdbError(RuntimeError):
@@ -52,8 +63,9 @@ class AdbTransport:
         self.processes = set()
         self.closed = False
 
-    def argv(self, command, *, serial=None, package=None):
+    def argv(self, command, *, serial=None, package=None, text=None):
         if not isinstance(command, AdbCommand) or self.executable is None: raise AdbError()
+        if text is not None and command != AdbCommand.TEXT: raise AdbError()
         args = [str(self.executable), "-H", "127.0.0.1", "-P", "5037"]
         if command == AdbCommand.DEVICES:
             if serial is not None or package is not None: raise AdbError()
@@ -67,16 +79,24 @@ class AdbTransport:
             AdbCommand.HIERARCHY: ["exec-out", "cat", DUMP_PATH],
             AdbCommand.DEVICE_MODEL: ["shell", "getprop", "ro.product.model"],
             AdbCommand.ANDROID_VERSION: ["shell", "getprop", "ro.build.version.release"],
+            AdbCommand.SELECT_ALL: ["shell", "input", "keycombination", "113", "29"],
+            AdbCommand.DELETE: ["shell", "input", "keyevent", "KEYCODE_DEL"],
+            AdbCommand.TAB: ["shell", "input", "keyevent", "KEYCODE_TAB"],
+            AdbCommand.ACTIVATE: ["shell", "input", "keyevent", "KEYCODE_DPAD_CENTER"],
         }
         if command == AdbCommand.PACKAGE_INFO:
             if package not in PACKAGES: raise AdbError()
             return args + ["shell", "dumpsys", "package", package]
         if package is not None: raise AdbError()
+        if command == AdbCommand.TEXT:
+            if not ascii_supported(text): raise AdbError()
+            # adb shell joins argv on the DEVICE: quote there as well, not just on Windows.
+            return args + ["shell", "input", "text", shlex.quote(text.replace(" ", "%s"))]
         return args + commands[command]
 
-    async def run(self, command, *, serial=None, package=None):
+    async def run(self, command, *, serial=None, package=None, text=None, guard=None):
         if self.closed: raise AdbError()
-        args = self.argv(command, serial=serial, package=package)
+        args = self.argv(command, serial=serial, package=package, text=text)
         # Do not forward API keys, proxy settings or remote ADB server overrides.
         permitted = {"SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}
         env = {k: v for k, v in os.environ.items() if k.upper() in permitted}
@@ -85,9 +105,12 @@ class AdbTransport:
         readers = []
         try:
             async with asyncio.timeout(self.timeout):
-                spawn = asyncio.create_task(asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.DEVNULL, env=env,
-                    **({"creationflags": 0x08000000} if os.name == "nt" else {})))
+                async def start():
+                    if guard is not None and not guard(): raise AdbError()
+                    return await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.DEVNULL, env=env,
+                        **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+                spawn = asyncio.create_task(start())
                 process = await asyncio.shield(spawn)
                 self.processes.add(process)
                 async def read(stream, limit):
