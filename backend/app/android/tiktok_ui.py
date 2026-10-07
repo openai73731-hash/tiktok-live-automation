@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 import re
 import xml.etree.ElementTree as ET
-from app.android.models import ScreenState
+from app.android.models import ClientVariant, ScreenState
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,8 @@ class ScreenProfile:
     account_id: str
     live_id: str
     verified: bool = False
+    client_variant: ClientVariant = ClientVariant.UNKNOWN
+    activities: tuple[str, ...] = ()
 
 
 def foreground(output):
@@ -23,7 +25,9 @@ def foreground(output):
     for line in output.splitlines():
         marker = re.fullmatch(r"[ \t]*(topResumedActivity|mResumedActivity|ResumedActivity)(?=[ \t=:]|$)(.*)", line)
         if marker is None: continue
-        record = re.fullmatch(r"[ \t]*[=:][ \t]*ActivityRecord\{([^{}\r\n]*)\}[ \t]*", marker[2])
+        # MIUI can put the numeric task outside the component's closing brace.
+        # Accept only that observed suffix, never arbitrary trailing history/text.
+        record = re.fullmatch(r"[ \t]*[=:][ \t]*ActivityRecord\{([^{}\r\n]*)\}(?:[ \t]+t[0-9]{1,10}\})?[ \t]*", marker[2])
         components = re.findall(r"(?:^|[ \t])([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)(?=[ \t]|$)", record[1]) if record else []
         component = components[0] if len(components) == 1 and len(components[0][1]) <= 200 else None
         records.setdefault(marker[1], set()).add(component)
@@ -35,6 +39,23 @@ def foreground(output):
             # Preserve Android relative activity spelling, including the leading dot.
             return next(iter(candidates))
     return None, None
+
+
+def observed_variant(package, activity):
+    # A display hint, never proof of authenticity, account, LIVE or delivery safety.
+    if package == "com.zhiliaoapp.musically" and activity == "com.windukk.mod.icon.default":
+        return ClientVariant.TIKTOK_YOU
+    return ClientVariant.UNKNOWN
+
+
+def package_version(output):
+    versions = set(re.findall(r"\bversionName=([^\s]+)", output))
+    codes = set(re.findall(r"\bversionCode=([^\s]+)", output))
+    version = next(iter(versions)) if len(versions) == 1 else None
+    code = next(iter(codes)) if len(codes) == 1 else None
+    if version is None or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}", version): version = None
+    if code is None or not re.fullmatch(r"[0-9]{1,12}", code): code = None
+    return version, code
 
 
 def inspect_hierarchy(xml, package, target, profile=None):

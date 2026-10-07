@@ -13,6 +13,7 @@ from app.admin.runtime import RuntimeConflict
 from app.admin.service import PaidRequestNotConfirmed, PlaygroundBusy, PRESETS
 from app.delivery.models import ApprovalInput, ApprovalEvent, ManualDeliveryInput
 from app.delivery.suggestions import SuggestionConflict
+from app.android.diagnostics import CaptureError
 
 router = APIRouter()
 ASSETS = Path(__file__).resolve().parents[1] / "static" / "admin"
@@ -108,6 +109,14 @@ async def inspect_device(request: Request, body: UIModel):
 @router.post("/api/admin/delivery/prepare")
 async def prepare_delivery(request: Request, body: UIModel):
     return request.app.state.delivery.prepare()
+
+
+@router.post("/api/admin/device/capture")
+async def capture_device(request: Request, body: EmptyInput):
+    try:
+        return await request.app.state.delivery.capture()
+    except (CaptureError, SuggestionConflict):
+        raise HTTPException(409, detail="Capture недоступен: проверьте устройство, foreground и локальный каталог diagnostics/android (не более 20 captures).") from None
 
 
 @router.post("/api/admin/delivery/dry-run")

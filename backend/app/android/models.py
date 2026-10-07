@@ -22,6 +22,12 @@ class ScreenState(StrEnum):
     UNKNOWN_SCREEN = "UNKNOWN_SCREEN"
 
 
+class ClientVariant(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    OFFICIAL = "OFFICIAL"
+    TIKTOK_YOU = "TIKTOK_YOU"
+
+
 class Device(DeviceModel):
     serial: str = Field(pattern=SERIAL_PATTERN)
     state: Literal["CONNECTED", "UNAUTHORIZED", "OFFLINE"]
@@ -34,6 +40,9 @@ class DeviceInspection(DeviceModel):
     serial: str | None = Field(default=None, pattern=SERIAL_PATTERN)
     package: Literal["com.zhiliaoapp.musically"] | None = None
     foreground_activity: str | None = Field(default=None, max_length=200, pattern=r"^[A-Za-z0-9._$]+$")
+    client_variant: ClientVariant = ClientVariant.UNKNOWN
+    version: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+    version_code: str | None = Field(default=None, pattern=r"^[0-9]{1,12}$")
     screen: ScreenState = ScreenState.DEVICE_DISCONNECTED
     comment_input_found: bool = False
     send_button_found: bool = False
@@ -73,3 +82,8 @@ class AndroidOutcome(DeviceModel):
     reason: Literal["physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen",
         "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
         "rejected", "interrupted"]
+
+
+class CaptureResult(DeviceModel):
+    status: Literal["captured"] = "captured"
+    capture_id: str = Field(pattern=r"^[a-f0-9]{32}$")

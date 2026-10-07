@@ -128,6 +128,8 @@ class OperatorView(UIModel):
     saved_config_revision: str
     active_runtime_revision: str
     active_device_serial: str | None = None
+    connect_allowed: bool = False
+    connect_block_reason: str | None = None
 
 
 class SaveSettingsInput(UIModel):

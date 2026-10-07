@@ -7,7 +7,9 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards}) => {
     view = next;
     const d = next.inspection;
     const items = [["ADB", d.adb], ["Device", d.device], ["Serial", d.serial],
-      ["TikTok package", d.package], ["Foreground", d.foreground_activity], ["Screen", d.screen],
+      ["Client", ({TIKTOK_YOU: "TikTok You · observed hint", OFFICIAL: "Official profile · локально reviewed", UNKNOWN: "UNKNOWN"}[d.client_variant] || "UNKNOWN")],
+      ["TikTok package", d.package], ["Version", d.version], ["Version code", d.version_code],
+      ["Foreground", d.foreground_activity], ["Screen", d.screen], ["Profile", d.profile_verified ? "VERIFIED" : "UNVERIFIED"],
       ["Comment input / Send", `${d.comment_input_found} / ${d.send_button_found}`],
       ["Account / LIVE verified", `${d.account_verified} / ${d.live_verified}`],
       ["Security UI", d.security_state], ["Delivery", next.delivery],
@@ -28,6 +30,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards}) => {
     const automatic = node("option", "", "Единственное устройство (если подключено одно)"); automatic.value = "";
     select.replaceChildren(automatic, ...devices); select.value = wanted;
     $("inspect-device").disabled = busy || !state.connected;
+    $("capture-device").disabled = busy || !state.connected;
     refreshCards();
   }
   async function refresh() {
@@ -44,11 +47,22 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards}) => {
     $("delivery-history-empty").hidden = history.length > 0;
   }
   $("inspect-device").addEventListener("click", async () => {
-    if (busy) return;
-    busy = true; $("inspect-device").disabled = true;
+    if (busy || !state.connected) return;
+    busy = true; $("capture-device").disabled = $("inspect-device").disabled = true;
     try { render(await api("/api/admin/device/inspect", {})); await refresh(); }
     catch (error) { toast(error.message); }
-    finally { busy = false; $("inspect-device").disabled = !state.connected; }
+    finally { busy = false; $("capture-device").disabled = $("inspect-device").disabled = !state.connected; }
+  });
+  $("capture-device").addEventListener("click", async () => {
+    if (busy || !state.connected) return;
+    busy = true; $("capture-device").disabled = $("inspect-device").disabled = true;
+    try {
+      const result = await api("/api/admin/device/capture", {});
+      $("capture-result").textContent = `Сохранено локально: diagnostics/android/${result.capture_id}/ (hierarchy.xml, metadata.json). Ничего не отправлено.`;
+      toast("UI capture сохранён только локально. Проверьте файл перед передачей.");
+      await refresh();
+    } catch (error) { toast(error.message); }
+    finally { busy = false; $("capture-device").disabled = $("inspect-device").disabled = !state.connected; }
   });
   function attach(actions, record, send) {
     const review = record.delivery_review, e = review?.envelope;

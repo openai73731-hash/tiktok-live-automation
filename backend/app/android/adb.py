@@ -9,7 +9,7 @@ from app.android.models import Device, SERIAL_PATTERN
 from app.lifecycle import finish_owned
 
 DUMP_PATH = "/data/local/tmp/tiktok-live-hierarchy.xml"
-# Documented Google Play package. Other regional/Lite variants need separate review.
+# Shared package; it does not identify an official installation or client variant.
 PACKAGES = frozenset({"com.zhiliaoapp.musically"})
 
 
@@ -20,6 +20,8 @@ class AdbCommand(StrEnum):
     DUMP = "dump"
     HIERARCHY = "hierarchy"
     PACKAGE_INFO = "package_info"
+    DEVICE_MODEL = "device_model"
+    ANDROID_VERSION = "android_version"
 
 
 class AdbError(RuntimeError):
@@ -63,6 +65,8 @@ class AdbTransport:
             AdbCommand.FOREGROUND: ["shell", "dumpsys", "activity", "activities"],
             AdbCommand.DUMP: ["shell", "uiautomator", "dump", DUMP_PATH],
             AdbCommand.HIERARCHY: ["exec-out", "cat", DUMP_PATH],
+            AdbCommand.DEVICE_MODEL: ["shell", "getprop", "ro.product.model"],
+            AdbCommand.ANDROID_VERSION: ["shell", "getprop", "ro.build.version.release"],
         }
         if command == AdbCommand.PACKAGE_INFO:
             if package not in PACKAGES: raise AdbError()

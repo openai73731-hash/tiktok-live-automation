@@ -2,8 +2,9 @@
 import asyncio
 import re
 from app.android.adb import AdbTransport, AdbCommand, AdbError, PACKAGES, parse_devices, DUMP_PATH
-from app.android.models import DeviceInspection, ScreenState, AndroidOutcome
-from app.android.tiktok_ui import foreground, inspect_hierarchy, exact_input
+from app.android.models import ClientVariant, DeviceInspection, ScreenState, AndroidOutcome
+from app.android.tiktok_ui import foreground, inspect_hierarchy, exact_input, observed_variant, package_version
+from app.android.diagnostics import CaptureError, save_capture
 
 
 class ADBAndroidController:
@@ -50,15 +51,19 @@ class ADBAndroidController:
             dumped = await self.transport.run(AdbCommand.DUMP, serial=selected.serial)
             if DUMP_PATH not in dumped: raise AdbError()
             xml = await self.transport.run(AdbCommand.HIERARCHY, serial=selected.serial)
+            info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=selected.serial, package=package)
+            version, code = package_version(info)
             after = await self.transport.run(AdbCommand.FOREGROUND, serial=selected.serial)
             if foreground(after) != (package, activity): raise AdbError()
+            variant = observed_variant(package, activity)
+            values.update(version=version, version_code=code, client_variant=variant)
             profile = None
-            candidates = [p for p in self.profiles if p.package == package and p.verified]
-            if candidates:
-                info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=selected.serial, package=package)
-                versions = set(re.findall(r"\bversionName=([^\s]+)", info))
-                matching = [p for p in candidates if versions == {p.version}]
-                if len(matching) == 1: profile = matching[0]
+            matching = [p for p in self.profiles if p.package == package and p.verified and p.version == version
+                and (p.client_variant == ClientVariant.UNKNOWN and variant == ClientVariant.UNKNOWN and not p.activities
+                     or activity in p.activities and variant in {ClientVariant.UNKNOWN, p.client_variant})]
+            if len(matching) == 1:
+                profile = matching[0]
+                values["client_variant"] = profile.client_variant
             parsed = inspect_hierarchy(xml, package, getattr(target, "account", None), profile)
             self._profile, self._xml = profile, xml
             parsed["interaction_available"] = self.actions is not None
@@ -71,6 +76,23 @@ class ADBAndroidController:
     async def inspect(self, target=None):
         async with self.lock:
             return await self._inspect(target)
+
+    async def capture(self):
+        async with self.lock:
+            try:
+                state = await self._inspect()
+                if state.package is None or not self._xml or state.reason == "adb_failed": raise CaptureError()
+                model = (await self.transport.run(AdbCommand.DEVICE_MODEL, serial=state.serial)).strip()
+                android = (await self.transport.run(AdbCommand.ANDROID_VERSION, serial=state.serial)).strip()
+                if not re.fullmatch(r"[A-Za-z0-9._ ()+-]{1,80}", model): raise CaptureError()
+                if not re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", android): raise CaptureError()
+                info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=state.serial, package=state.package)
+                after = await self.transport.run(AdbCommand.FOREGROUND, serial=state.serial)
+                if (foreground(after) != (state.package, state.foreground_activity)
+                        or package_version(info) != (state.version, state.version_code)): raise CaptureError()
+                return save_capture(self._xml, state, model, android)
+            except (AdbError, OSError, ValueError):
+                raise CaptureError() from None
 
     async def submit(self, request, *, guard=lambda: False):
         if not self.physical_enabled:

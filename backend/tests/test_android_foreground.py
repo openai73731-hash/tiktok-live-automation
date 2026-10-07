@@ -122,6 +122,7 @@ class InspectionTransport:
         responses = {
             AdbCommand.DEVICES: "List of devices attached\nUSB_FIXTURE device\n",
             AdbCommand.PACKAGES: "package:" + PACKAGE,
+            AdbCommand.PACKAGE_INFO: "versionName=47.0.3 versionCode=2024700030",
             AdbCommand.DUMP: "UI hierarchy dumped to: " + DUMP_PATH,
             # Generic editable/send nodes must not establish TikTok controls without a reviewed profile.
             AdbCommand.HIERARCHY: f'<hierarchy><node package="{PACKAGE}" class="android.widget.EditText"/>'
@@ -145,7 +146,7 @@ async def test_open_tiktok_detected_without_promoting_unknown_profile_to_ready(a
         state.comment_input_found, state.send_button_found, state.interaction_available))
     assert not controller.physical_enabled and controller.actions is None and not controller.profiles
     assert transport.calls == [AdbCommand.DEVICES, AdbCommand.PACKAGES, AdbCommand.FOREGROUND,
-        AdbCommand.DUMP, AdbCommand.HIERARCHY, AdbCommand.FOREGROUND]
+        AdbCommand.DUMP, AdbCommand.HIERARCHY, AdbCommand.PACKAGE_INFO, AdbCommand.FOREGROUND]
 
 
 async def test_relative_activity_is_preserved_through_controller_model():

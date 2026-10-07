@@ -38,18 +38,11 @@ class AdminLiveController:
 
     async def connect(self, username, *, startup=False):
         async with self.runtime.lock:
-            self.runtime.ensure_idle()
             username = TikTokOverride(username=username).username
             if not username:
                 raise ValueError("Own TikTok username required")
-            if self.runtime.config_error:
-                raise RuntimeConflict("Исправьте или сбросьте локальные настройки перед подключением.")
-            if self.runtime.admin.live_status.cleanup_state == "failed":
-                raise RuntimeConflict("Очистка LIVE не завершена. Требуется оператор и перезапуск backend.")
-            if self.runtime.pending:
-                raise RuntimeConflict("Сначала примените сохранённые настройки.")
-            if self.runtime.project.ai.provider == "openai" and not startup:
-                raise RuntimeConflict("Для LIVE выберите и примените Fake или LM Studio; платные запросы не разрешены.")
+            reason = self.runtime.connect_block_reason(username, startup=startup)
+            if reason: raise RuntimeConflict(reason)
             config = self.runtime.settings.model_copy(update={"tiktok_username": username,
                 **({} if startup else {"live_mode": "real", "diagnostic": False, "replay_scenario": None})})
             processor = create_processor(config, project=self.runtime.project)
@@ -179,14 +172,30 @@ class OperatorRuntime:
         if reason:
             raise RuntimeConflict(reason)
 
+    def connect_block_reason(self, username=None, *, startup=False):
+        # Listener input is independent of Android readiness/client/profile.
+        if self.closed: return "Панель завершает работу."
+        reason = self.lock_reason()
+        if reason: return reason
+        if self.config_error: return "Исправьте или сбросьте локальные настройки перед подключением."
+        if self.admin.live_status.cleanup_state == "failed":
+            return "Очистка LIVE не завершена. Требуется оператор и перезапуск backend."
+        if self.pending: return "Сначала примените сохранённые настройки."
+        if self.project.ai.provider == "openai" and not startup:
+            return "Для LIVE выберите и примените Fake или LM Studio; платные запросы не разрешены."
+        if not (self.username if username is None else username): return "Укажите и примените username собственного LIVE."
+        return None
+
     def view(self):
         reason = self.lock_reason()
+        connect_reason = self.connect_block_reason()
         return OperatorView(saved=self.saved, active=self.admin.public_settings(),
             desired=self.admin.public_settings(self.store.validate(self.saved)), username=self.username,
             saved_username=self.saved.tiktok.username if self.saved.tiktok.username is not None else self.settings.tiktok_username,
             pending=self.pending, locked=reason is not None, lock_reason=reason, config_error=self.config_error,
             saved_config_revision=self.saved_config_revision, active_runtime_revision=self.active_runtime_revision,
-            active_device_serial=self.android_serial)
+            active_device_serial=self.android_serial, connect_allowed=connect_reason is None,
+            connect_block_reason=connect_reason)
 
     def publish(self):
         if not self.closed:

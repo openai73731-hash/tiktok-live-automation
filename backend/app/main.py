@@ -59,6 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         application.state.quality = quality
         delivery = ManualDeliveryService(config, admin.suggestions, admin.delivery_context, serial=runtime.android_serial)
         application.state.delivery = admin.delivery = delivery
+        delivery.on_idle = runtime.publish
         runtime.live._sync()
         try:
             if config.admin_live_enabled and not runtime.config_error:

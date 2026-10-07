@@ -9,6 +9,24 @@
   CommentProcessor/FakeAI ReplySuggestion, ignored UnknownEvent, LiveEndEvent,
   ENDED -> STOPPED. Stage 3B implements OpenAI; paid API quality/access remains
   unverified until the operator runs the separate manual AI smoke test.
+- Stage 4B.2 supports the observed MIUI ActivityRecord component followed by a
+  bounded numeric task suffix (`} t197}`), preserving resumed-marker priority and
+  foreground consistency. Activity namespace is independent of package. Client
+  variants are UNKNOWN/OFFICIAL/TIKTOK_YOU: the exact observed TikTok You activity
+  is only a display hint; package/version/namespace never prove authenticity.
+  Non-UNKNOWN reviewed backend profiles bind explicit activities and version.
+  No verified real-device profile or action backend is shipped. Explicit CSRF
+  CAPTURE UI PROFILE DATA reads only the selected device, rechecks foreground and
+  version, and writes raw XML plus bounded metadata only in ignored diagnostics/android.
+  Metadata contains a serial hash, never the full serial. No raw hierarchy reaches
+  API/SSE/logs/static serving. Retain at most 20 captures, then fail closed without
+  eviction. Captures contain private UI text; operator reviews/redacts before sharing.
+  Capture never focuses/types/taps/sends and never starts inference or LIVE.
+  Android readiness/variant/profile does not gate LIVE Connect. Backend projects
+  its static Connect blocker; browser also explains unsaved edits or connectivity.
+  Owned device/delivery operations publish an unlocked operator snapshot after
+  settlement, including failure/cancellation, so observed busy cannot stick in UI.
+  Only operator may run real-device capture or real LIVE. Physical SEND stays NO-GO.
 - Stage 4B.1 supports topResumedActivity, mResumedActivity and ResumedActivity with
   colon/equals separators and that priority; only resumed records are authoritative.
   Preserve relative activities and before/after foreground consistency. Malformed
@@ -232,7 +250,10 @@
   Future AUTO needs deterministic eligibility, rate limit/cooldown/queue/dedup,
   delivery result, audit and PAUSE AUTO. Unknown/security UI, CAPTCHA, verification
   or login requires NEED_OPERATOR and pauses AUTO; only the operator resolves it.
-  Future Android uses the official TikTok UI; no private API bypass or evasion.
+  Android delivery uses only explicitly reviewed locally configured TikTok client
+  profiles (OFFICIAL or separately reviewed TIKTOK_YOU) on the user's own device,
+  through ordinary comment UI. Never use modified-client features for CAPTCHA,
+  verification/login/rate-limit bypass, anti-detection, session extraction or private API.
 - The project accompanies OWN TikTok LIVE streams. A separate desktop trading
   program analyzes markets, opens trades and speaks about its actions. That
   trading system is external and MUST NOT be implemented or controlled here.

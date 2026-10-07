@@ -51,6 +51,7 @@ class ManualDeliveryService:
         self.closed = self.paused = False
         self.last_attempt = float("-inf")
         self.history = deque(maxlen=50)
+        self.on_idle = lambda: None
 
     @property
     def busy(self): return self.lock.locked() or self.controller.lock.locked()
@@ -90,7 +91,12 @@ class ManualDeliveryService:
                     if not task.done(): task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
                 finally: self.tasks.discard(task)
-            await finish_owned(asyncio.create_task(settle(), name="admin-delivery-cleanup"))
+            try:
+                await finish_owned(asyncio.create_task(settle(), name="admin-delivery-cleanup"))
+            finally:
+                # A browser may have observed locked=True during inspection/capture.
+                # Publish again after owned work releases its locks, even on failure/cancel.
+                self.on_idle()
 
     async def inspect(self):
         async def run():
@@ -100,6 +106,12 @@ class ManualDeliveryService:
                     device_serial=self.controller.serial) if ctx.target_account else None
                 await self.controller.inspect(target)
                 return self.view()
+        return await self._owned(run)
+
+    async def capture(self):
+        async def run():
+            async with self.lock:
+                return await self.controller.capture()
         return await self._owned(run)
 
     def prepare(self):

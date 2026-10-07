@@ -14,3 +14,4 @@ work/
 config/operator.local.yaml
 config/.operator-*.tmp
 data/delivery.sqlite3*
+diagnostics/android/

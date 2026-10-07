@@ -1,5 +1,95 @@
 # tiktok-live-automation
 
+## Stage 4B.2: TikTok You, MIUI foreground и локальный UI capture
+
+Реальная строка `topResumedActivity=ActivityRecord{588bfc5 u0
+com.zhiliaoapp.musically/com.windukk.mod.icon.default} t197}` содержит task suffix
+после закрывающей скобки component. Parser Stage 4B.1 требовал конец строки сразу
+после неё. Теперь разрешён только этот дополнительный формат: пробелы/табуляция,
+`t` и 1–10 цифр, затем `}`. Обычный формат по-прежнему работает; arbitrary suffix
+и ACTIVITY history не принимаются. Priority top → m → bare и before/after guard сохранены.
+
+Package и activity namespace независимы. Точное сочетание package
+`com.zhiliaoapp.musically` и activity `com.windukk.mod.icon.default` отображается как
+**TikTok You · observed hint**. Это признак для оператора, не security proof или
+доказательство происхождения APK. Общий package или официальный activity namespace
+сами по себе дают UNKNOWN. Контракт backend profile поддерживает UNKNOWN/OFFICIAL/
+TIKTOK_YOU; конкретный reviewed profile связывает version и явные activities.
+Profile другого variant не принимается по совпадению package/version.
+
+Dashboard показывает Client, package, version/versionCode, activity, screen и
+VERIFIED/UNVERIFIED. Для наблюдавшегося TikTok You 47.0.3 / 2024700030 без UI profile:
+AVAILABLE, CONNECTED, TikTok You, `UNKNOWN_SCREEN`, UNVERIFIED; account/LIVE/input/Send
+остаются false. Реальные selectors не угаданы и не добавлены. Physical SEND DISABLED.
+
+Delivery допускает только явно reviewed локальные client profiles на собственном
+Android оператора: official profile либо отдельно reviewed TikTok You profile.
+В поставке нет проверенного real-device profile ни для одного варианта. Допустим
+только обычный UI комментариев; запрещены CAPTCHA/verification/login/rate-limit bypass,
+anti-detection, session extraction и private API. AUTO отсутствует.
+
+### CAPTURE UI PROFILE DATA
+
+Явная кнопка Dashboard выполняет CSRF-защищённый POST для выбранного backend device.
+Повторяются inspection и before/after foreground checks; отдельно читаются фиксированные
+getprop model/Android release, package version и финальный foreground. Несовпадение
+foreground/version или ошибка означает отсутствие нового capture. Никакого focus,
+ввода, taps, Send, AI или listener connect. Один device lock сериализует inspection/capture.
+
+Только локально создаётся `diagnostics/android/<capture_id>/hierarchy.xml` и
+`metadata.json`: UTC timestamp, model, Android release, SHA-256 serial, package,
+version/versionCode, activity, client variant, profile flag и SHA-256 XML. Каталог ignored;
+API возвращает только status и opaque capture_id. XML не отдаётся API/SSE/logs или
+static server. Лимит — 20 captures; при заполнении операция отказывается, старые записи
+не удаляются. Оператор вручную архивирует/удаляет ненужные captures. Symlink/reparse
+каталоги отвергаются; содержащие каталоги должны оставаться доверенными, как overlay.
+Raw XML может содержать имена, комментарии и иные личные данные: просмотрите его и
+удалите личные данные из отдельной копии перед передачей. Capture не утверждает selectors.
+
+### Следующий шаг оператора на Xiaomi M2101K9G / Android 13
+
+1. Остановите старый backend и запустите обновлённый из workspace, сохранив настроенный
+   ADB_EXECUTABLE (либо adb в PATH):
+
+   ```powershell
+   $env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'
+   $env:ADMIN_LIVE_ENABLED = 'false'
+   & .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+   ```
+
+2. Подключите собственный телефон, подтвердите USB debugging вручную. Откройте TikTok You
+   и нажмите **ПРОВЕРИТЬ УСТРОЙСТВО**. При нескольких devices выберите обнаруженный
+   `903ed867`, SAVE/APPLY и повторите inspection. Ожидаются Client TikTok You,
+   package `com.zhiliaoapp.musically`, version 47.0.3, observed activity и UNKNOWN_SCREEN.
+3. В Settings задайте собственный `@mitchelljoneswn0632256`, LM Studio и
+   `qwen/qwen3-8b`; SAVE, затем APPLY. Локальный сервер/модель запустите самостоятельно.
+   Connect должен быть enabled при idle listener; Android NOT READY этому не мешает.
+   Если disabled, прочитайте причину под кнопкой и в её tooltip: связь, несохранённые
+   изменения, pending APPLY, config error, owned session, занятая операция, OpenAI либо
+   failed SDK cleanup. Проверка модели GET сама inference не вызывает.
+4. Самостоятельно запустите собственный LIVE и нажмите Connect, чтобы читать comments.
+   Listener не зависит от Android variant. Qwen обрабатывает поступившие comments;
+   все ReplySuggestion требуют approval и не отправляются автоматически.
+5. На телефоне вручную откройте нужный экран LIVE/комментариев и нажмите
+   **CAPTURE UI PROFILE DATA**. UI покажет capture_id и локальный каталог.
+   Просмотрите hierarchy.xml и metadata.json; передайте проверенную копию для
+   следующего отдельного UI profile шага. SEND не включайте и не нажимайте.
+
+SAVE/APPLY/Connect regression для указанного username проходит с Android UNKNOWN_SCREEN
+и NOT READY. Исправлен воспроизводимый источник stale disabled: browser мог прочитать
+locked=true во время inspection, без финального события разблокировки после операции.
+Owned операции теперь публикуют окончательное состояние после освобождения locks,
+включая failure/cancellation. Без старого browser snapshot нельзя доказать, что именно
+это случилось у оператора; текущие blocker reasons показываются явно. Android readiness
+не добавляется в условия Connect. Агент не запускал реальный LIVE, реальный ADB/capture,
+LM Studio inference, платный API или physical SEND в Stage 4B.2.
+
+Проверка Stage 4B.2 (2026-10-07): **1027 tests passed** (53 новых), без skipped;
+два прежних SDK deprecation warnings. Проверены exact MIUI fixtures, variant/version,
+profile isolation, capture/privacy/limits/cancellation, SAVE/APPLY/Connect и browser
+controls через Node. Fake CLI завершён, 10/10 CLI replay scenarios PASS, `pip check`:
+no broken requirements. Все Android/provider/LIVE boundaries в тестах замоканы.
+
 ## Stage 4B.1: Android foreground compatibility
 
 Исправлен parser `dumpsys activity activities`: Android 13 / MIUI использует
@@ -119,7 +209,7 @@ account/LIVE verification, security, Delivery NOT READY / DRY RUN READY и physi
 Google Play подтверждает package-кандидат
 [`com.zhiliaoapp.musically`](https://play.google.com/store/apps/details?id=com.zhiliaoapp.musically).
 Это allowlist для inspection, **не доказательство подлинности установленного APK**.
-Конкретная версия/установка из официального источника должны быть проверены оператором;
+Конкретная установка и версия выбранного client profile должны быть проверены оператором;
 региональные/Lite варианты пока не поддержаны и не выбираются браузером.
 
 Screen states: DEVICE_DISCONNECTED, TIKTOK_NOT_RUNNING, LIVE_READY,
@@ -199,7 +289,7 @@ Overlay дополнительно отвергает существующие s
 подмены файлов/каталогов локальным процессом между check/open/replace.
 
 Перед FIRST PHYSICAL MANUAL SEND нужны: собственное авторизованное устройство; проверка
-официальной установки/package/version; reviewed UI profile с достоверными account/LIVE
+выбранной установки/package/version/client variant; reviewed UI profile с достоверными account/LIVE
 bindings; отдельный native/accessibility exact-Unicode backend и readback на шести языках;
 проверка final guard/cancellation на телефоне; reliable confirmation design либо явно
 принятый UNKNOWN workflow; отдельная операторская авторизация и только затем trusted
@@ -1475,7 +1565,7 @@ LIVE ACTIVE/ENDED; MANUAL/AUTOMATIC; queue count и auto paused state. При AU
 
 ReplySender Protocol (`send(reply)`) должен отделить AI от физической доставки.
 Будущие варианты: ConsoleReplySender, AndroidTikTokReplySender, опционально
-TikFinityReplySender. AndroidController управляет официальным TikTok UI собственного
+TikFinityReplySender. AndroidController использует явно reviewed локальный TikTok client UI собственного
 авторизованного устройства: comment field → paste/type → Send. Private TikTok API,
 anti-detection, fingerprint/evasion и обход защиты не применяются.
 

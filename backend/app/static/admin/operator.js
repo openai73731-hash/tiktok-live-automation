@@ -19,11 +19,26 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
     const liveLabel = live?.terminal_state === "operator_required" && owned ? "ТРЕБУЕТСЯ ОПЕРАТОР" : String(live?.state || "disconnected").toUpperCase();
     $("operator-live-state").textContent = liveLabel + (live?.username && owned ? " @" + live.username : "");
     $("dash-live-account").textContent = owned ? `${liveLabel} @${live.username || ""}` : value("username") ? `Аккаунт: @${value("username").replace(/^@/, "")}` : "Укажите свой username в настройках";
+    const connectReason = !state.connected ? "Нет связи с backend."
+      : !view ? "Загружаются настройки подключения."
+      : owned ? "LIVE-сессия уже создана; сначала отключите её."
+      : busy || state.busy ? "Дождитесь завершения текущей операции."
+      : dirty ? "Сохраните и примените изменения настроек."
+      : view.config_error ? "Исправьте или сбросьте локальные настройки."
+      : view.pending ? "Примените сохранённые настройки."
+      : !value("username").trim() ? "Укажите и примените username собственного LIVE."
+      : !/^[A-Za-z0-9._]{1,24}$/.test(value("username").trim().replace(/^@/, "")) ? "Username должен содержать 1–24 буквы, цифры, точки или подчёркивания."
+      : value("provider") === "openai" ? "Для LIVE выберите и примените Fake или LM Studio."
+      : view.connect_block_reason || (view.locked ? view.lock_reason || "Backend занят." : null);
+    document.querySelectorAll("[data-live-connect-reason]").forEach((element) => {
+      element.textContent = connectReason ? `Connect недоступен: ${connectReason}` : "Готово к чтению собственного LIVE. Android readiness не требуется.";
+    });
     document.querySelectorAll('[data-live-action="connect"]').forEach((button) => {
       const connecting = owned && ["starting", "connecting"].includes(live?.state);
       button.hidden = owned && !connecting;
       button.textContent = connecting ? "Подключение…" : "Подключиться к LIVE";
-      button.disabled = owned || !state.connected || busy || dirty || Boolean(view?.pending || view?.config_error || view?.locked) || !value("username").trim() || value("provider") === "openai";
+      button.disabled = Boolean(connectReason);
+      button.title = connectReason || "Читать комментарии собственного LIVE";
     });
     document.querySelectorAll('[data-live-action="disconnect"]').forEach((button) => {
       button.hidden = !owned; button.disabled = !state.connected || busy;
