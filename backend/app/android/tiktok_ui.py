@@ -18,11 +18,23 @@ class ScreenProfile:
 
 
 def foreground(output):
-    matches = re.findall(r"(?:mResumedActivity|topResumedActivity):[^\n]*?\s([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)", output)
-    if not matches or len(set(matches)) != 1: return None, None
-    package, activity = matches[0]
-    if len(activity) > 200: return None, None
-    return package, activity
+    """Read only resumed records, preferring the current top marker over history."""
+    records = {}
+    for line in output.splitlines():
+        marker = re.fullmatch(r"[ \t]*(topResumedActivity|mResumedActivity|ResumedActivity)(?=[ \t=:]|$)(.*)", line)
+        if marker is None: continue
+        record = re.fullmatch(r"[ \t]*[=:][ \t]*ActivityRecord\{([^{}\r\n]*)\}[ \t]*", marker[2])
+        components = re.findall(r"(?:^|[ \t])([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)(?=[ \t]|$)", record[1]) if record else []
+        component = components[0] if len(components) == 1 and len(components[0][1]) <= 200 else None
+        records.setdefault(marker[1], set()).add(component)
+    for name in ("topResumedActivity", "mResumedActivity", "ResumedActivity"):
+        if name in records:
+            candidates = records[name]
+            # Conflicting/malformed authoritative records cannot fall back to history.
+            if None in candidates or len(candidates) != 1: return None, None
+            # Preserve Android relative activity spelling, including the leading dot.
+            return next(iter(candidates))
+    return None, None
 
 
 def inspect_hierarchy(xml, package, target, profile=None):
@@ -51,8 +63,6 @@ def inspect_hierarchy(xml, package, target, profile=None):
             if any(marker in values for marker in markers):
                 return result | dict(screen=state, reason="security_ui", security_state=True)
     app_nodes = [n for n in nodes if n.get("package") == package]
-    result["comment_input_found"] = any(n.get("class") == "android.widget.EditText" for n in app_nodes)
-    result["send_button_found"] = any(n.get("content-desc", "").casefold() == "send" for n in app_nodes)
     if profile is None or not profile.verified or profile.package != package:
         return result | dict(reason="profile_unverified")
     by_id = {}

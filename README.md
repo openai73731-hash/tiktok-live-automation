@@ -1,5 +1,57 @@
 # tiktok-live-automation
 
+## Stage 4B.1: Android foreground compatibility
+
+Исправлен parser `dumpsys activity activities`: Android 13 / MIUI использует
+`topResumedActivity=ActivityRecord{...}`, а прежний parser требовал `:` и не знал
+`ResumedActivity` без `m`. Поддерживаются `topResumedActivity`, `mResumedActivity`,
+`ResumedActivity` с `=` или `:`, включая пробелы/табуляцию вокруг разделителя.
+Приоритет: `topResumedActivity` → `mResumedActivity` → `ResumedActivity`, независимо
+от порядка строк. Произвольная `ACTIVITY` history не используется; malformed или
+противоречивый authoritative marker означает отсутствие достоверного foreground.
+Безопасная ASCII validation сохранена; relative activity `.SomeActivity` остаётся
+как есть. Controller по-прежнему сравнивает package/activity до и после hierarchy
+inspection; изменение или неоднозначность завершают проверку безопасной ошибкой.
+
+Foreground TikTok подтверждает только открытое приложение. Для версии 47.0.3 нет
+reviewed UI profile: ожидается `UNKNOWN_SCREEN` / `profile_unverified`, account/LIVE
+и input/Send остаются неподтверждёнными. Generic EditText или надпись Send без profile
+больше не отмечаются как найденные TikTok controls. UI selectors не добавлялись.
+
+### Повторная проверка собственного телефона
+
+1. Остановите прежний локальный backend и запустите обновлённый из рабочей директории
+   в PowerShell, сохранив ранее настроенный `ADB_EXECUTABLE` (либо ADB в PATH):
+
+   ```powershell
+   $env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'
+   $env:ADMIN_LIVE_ENABLED = 'false'
+   & .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+   ```
+
+2. Подключите свой M2101K9G по USB, подтвердите USB debugging самостоятельно и
+   вручную откройте TikTok. Запускать LIVE для этой проверки не требуется.
+3. В Dashboard нажмите **ПРОВЕРИТЬ УСТРОЙСТВО**. При нескольких устройствах выберите
+   обнаруженный serial `903ed867` в Settings, выполните SAVE и APPLY, затем повторите
+   проверку. Если нужный serial не обнаружен, проверьте подключение вручную.
+4. Ожидается `ADB AVAILABLE`, `Device CONNECTED`, package `com.zhiliaoapp.musically`,
+   foreground `com.ss.android.ugc.aweme.splash.SplashActivity` для наблюдавшегося экрана
+   (при переходе TikTok может показать другую activity), `UNKNOWN_SCREEN`, verification
+   и input/Send flags false, physical SEND disabled. Если открыт package installer,
+   `TIKTOK_NOT_RUNNING` корректен. Ограничьтесь inspection, без CONNECT/DRY RUN/SEND.
+
+Реальную проверку после исправления выполняет оператор; mock tests её не заменяют.
+Physical SEND, ввод, taps и AUTO в этом исправлении не выполнялись и не включались.
+Тесты используют отдельную копию project config без пользовательского overlay;
+реальный HTTP transport заблокирован, включая localhost inference. Настройки оператора
+не перемещаются и не изменяются при проверках.
+
+Проверка Stage 4B.1 (2026-10-07): **974 tests passed** (71 новый regression test),
+включая 173 Android/ADB tests; fake CLI завершён, 10/10 CLI replay scenarios PASS,
+`pip check`: no broken requirements. Первый полный прогон выявил чтение реального
+operator overlay тестами и обращения к LM Studio; повторный прогон после изоляции
+прошёл с запретом реального HTTP. Реальный телефон после исправления агент не проверял.
+
 ## Stage 4B: manual delivery infrastructure — physical SEND NO-GO
 
 Реализованы Android/ADB inspection, `AndroidTikTokReplySender`, manual coordinator,

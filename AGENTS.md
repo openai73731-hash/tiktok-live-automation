@@ -9,6 +9,11 @@
   CommentProcessor/FakeAI ReplySuggestion, ignored UnknownEvent, LiveEndEvent,
   ENDED -> STOPPED. Stage 3B implements OpenAI; paid API quality/access remains
   unverified until the operator runs the separate manual AI smoke test.
+- Stage 4B.1 supports topResumedActivity, mResumedActivity and ResumedActivity with
+  colon/equals separators and that priority; only resumed records are authoritative.
+  Preserve relative activities and before/after foreground consistency. Malformed
+  or conflicting authoritative records fail closed. Without a reviewed UI profile,
+  generic editable/Send nodes do not establish TikTok controls, account or LIVE.
 - Stage 4B implements ADB inspection, AndroidTikTokReplySender, explicit manual
   delivery/dry-run routes and UI, device selection and lazy production SQLite.
   Physical SEND is NO-GO: ENABLE_PHYSICAL_TIKTOK_SEND defaults false, startup-only;
