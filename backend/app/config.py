@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     diagnostic: bool = False
     # Web UI is observation/Playground only unless LIVE is explicitly enabled.
     admin_live_enabled: bool = False
+    # Trusted startup only. Neither flag/path can be supplied through Admin UI.
+    enable_physical_tiktok_send: bool = False
+    adb_executable: Path | None = None
+    manual_delivery_min_interval_seconds: float = Field(default=3, ge=2, le=60, allow_inf_nan=False)
     openai_api_key: SecretStr = Field(default=SecretStr(""), repr=False, exclude=True)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_dir: Path = Path("logs")

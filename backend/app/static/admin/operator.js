@@ -1,7 +1,7 @@
 /* Presentation of allowlisted operator settings and explicit LIVE actions. */
 window.createOperatorControls = ({api, state, toast, renderSettings, renderStatus, refreshQuality}) => {
   const $ = (id) => document.getElementById(id);
-  const fields = ["username", "provider", "model", "temperature", "timeout", "policy", "sentences", "chars"];
+  const fields = ["username", "provider", "model", "temperature", "timeout", "policy", "sentences", "chars", "device"];
   let view = null, dirty = false, busy = false, editedRevision = null;
   const value = (name) => $("operator-" + name).value;
   function controls() {
@@ -33,9 +33,14 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
     view = next;
     if (!dirty || force) {
       const desired = next.desired;
+      state.savedDevice = next.saved.android.device_serial;
+      if (state.savedDevice && !Array.from($("operator-device").options).some(o => o.value === state.savedDevice)) {
+        const option = document.createElement("option"); option.value = state.savedDevice; option.textContent = state.savedDevice;
+        $("operator-device").append(option);
+      }
       const values = {username: next.saved_username ? "@" + next.saved_username : "", provider: desired.provider,
         model: desired.model, temperature: desired.temperature, timeout: desired.timeout_seconds,
-        policy: desired.reply_policy, sentences: desired.max_reply_sentences, chars: desired.max_reply_chars};
+        policy: desired.reply_policy, sentences: desired.max_reply_sentences, chars: desired.max_reply_chars, device: state.savedDevice || ""};
       fields.forEach((name) => { $("operator-" + name).value = values[name]; });
       dirty = false;
       editedRevision = next.saved_config_revision;
@@ -74,7 +79,8 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
     event.preventDefault(); if ($("operator-save").disabled) return;
     action("/api/admin/operator/settings", {expected_saved_revision: editedRevision, settings: {tiktok: {username: value("username")},
       ai: {provider: value("provider"), model: value("model"), temperature: Number(value("temperature")), timeout_seconds: Number(value("timeout"))},
-      reply: {mode: value("policy"), max_sentences: Number(value("sentences")), max_chars: Number(value("chars"))}}});
+      reply: {mode: value("policy"), max_sentences: Number(value("sentences")), max_chars: Number(value("chars"))},
+      android: {device_serial: value("device") || null}}});
   });
   $("operator-apply").addEventListener("click", () => action("/api/admin/operator/apply", {expected_saved_revision: view.saved_config_revision, expected_active_runtime_revision: view.active_runtime_revision}));
   $("operator-reset").addEventListener("click", () => action("/api/admin/operator/reset", {expected_saved_revision: view.saved_config_revision}));

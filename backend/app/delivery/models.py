@@ -1,7 +1,8 @@
 """Immutable server bindings and minimal delivery/device contracts."""
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, Callable
+from app.android.models import DeviceInspection, AndroidOutcome
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, PrivateAttr
 
 from app.ai.models import ReplySuggestion
 
@@ -15,6 +16,8 @@ class FrozenModel(BaseModel):
 
 
 class SuggestionEnvelope(ReplySuggestion):
+    # Absent on a deserialized envelope: only the server store grants lifetime.
+    _monotonic_deadline: float | None = PrivateAttr(default=None)
     suggestion_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     suggestion_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     source: Literal["tiktok", "fake", "replay", "playground"]
@@ -91,7 +94,10 @@ class ApprovalEvent(FrozenModel):
 
 DeliveryStatus = Literal["confirmed", "not_sent", "unknown", "needs_operator"]
 DeliveryReason = Literal["mock_confirmed", "not_configured", "rejected", "timeout",
-                         "cancelled", "sender_failed", "interrupted", "operator_required"]
+    "cancelled", "sender_failed", "interrupted", "operator_required",
+    "physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen",
+    "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
+    "journal_unavailable", "delivery_paused", "cooldown", "dry_run", "shutdown"]
 
 
 class DeliveryResult(FrozenModel):
@@ -112,6 +118,7 @@ class DeliveryRequest(FrozenModel):
     target_account: Account
     active_runtime_revision: OpaqueId
     expires_at: AwareDatetime
+    device_serial: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
 class ReplySenderProtocol(Protocol):
@@ -121,6 +128,7 @@ class ReplySenderProtocol(Protocol):
 class AndroidTarget(FrozenModel):
     live_session_id: OpaqueId
     account: Account
+    device_serial: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
 class AndroidSubmission(FrozenModel):
@@ -130,10 +138,29 @@ class AndroidSubmission(FrozenModel):
     expires_at: AwareDatetime
 
 
+class ManualDeliveryInput(FrozenModel):
+    suggestion_id: OpaqueId
+    expected_suggestion_revision: Revision
+    approval_id: OpaqueId
+    idempotency_key: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class DryRunView(FrozenModel):
+    eligible: bool
+    device_ready: bool
+    would_send: bool
+    reason: EligibilityReason | Literal["not_checked", "adb_unavailable", "device_missing", "multiple_devices",
+        "unauthorized", "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen",
+        "profile_unverified", "account_unverified", "live_unverified", "input_unavailable", "ready", "rejected"]
+    diagnostic_id: OpaqueId
+    physical_action: Literal[False] = False
+
+
 class AndroidState(FrozenModel):
     state: Literal["not_configured", "ready", "needs_operator"]
 
 
 class AndroidControllerProtocol(Protocol):
-    async def inspect(self, target: AndroidTarget) -> AndroidState: ...
-    async def submit(self, request: AndroidSubmission) -> DeliveryResult: ...
+    async def inspect(self, target: AndroidTarget | None = None) -> DeviceInspection: ...
+    async def submit(self, request: AndroidSubmission, *, guard: Callable[[], bool]) -> AndroidOutcome: ...
+    async def aclose(self) -> None: ...

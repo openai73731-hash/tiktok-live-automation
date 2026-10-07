@@ -11,7 +11,7 @@ from app.admin.models import (AnalyzeInput, UIModel, ConnectInput, SaveSettingsI
     ApplySettingsInput, ResetSettingsInput, DisconnectInput)
 from app.admin.runtime import RuntimeConflict
 from app.admin.service import PaidRequestNotConfirmed, PlaygroundBusy, PRESETS
-from app.delivery.models import ApprovalInput, ApprovalEvent
+from app.delivery.models import ApprovalInput, ApprovalEvent, ManualDeliveryInput
 from app.delivery.suggestions import SuggestionConflict
 
 router = APIRouter()
@@ -57,6 +57,8 @@ async def runtime_action(action, *args):
         return await action(*args)
     except RuntimeConflict as exc:
         raise HTTPException(409, detail=str(exc)) from None
+    except SuggestionConflict:
+        raise HTTPException(409, detail="Выберите устройство из последнего списка backend.") from None
     except ValueError:
         raise HTTPException(422, detail="Проверьте username и допустимые параметры настроек.") from None
     except OSError:
@@ -86,6 +88,43 @@ async def live_connect(request: Request, body: ConnectInput):
 @router.post("/api/admin/live/disconnect")
 async def live_disconnect(request: Request, body: DisconnectInput):
     return await runtime_action(request.app.state.operator_runtime.live.disconnect, body.expected_live_session_id)
+
+
+@router.get("/api/admin/delivery/status")
+async def delivery_status(request: Request):
+    return request.app.state.delivery.view()
+
+
+@router.get("/api/admin/delivery/history")
+async def delivery_history(request: Request):
+    return request.app.state.delivery.recent()
+
+
+@router.post("/api/admin/device/inspect")
+async def inspect_device(request: Request, body: UIModel):
+    return await request.app.state.delivery.inspect()
+
+
+@router.post("/api/admin/delivery/prepare")
+async def prepare_delivery(request: Request, body: UIModel):
+    return request.app.state.delivery.prepare()
+
+
+@router.post("/api/admin/delivery/dry-run")
+async def dry_run(request: Request, body: ManualDeliveryInput):
+    return await delivery_action(request.app.state.delivery.dry_run, body)
+
+
+@router.post("/api/admin/delivery/send")
+async def send_reply(request: Request, body: ManualDeliveryInput):
+    return await delivery_action(request.app.state.delivery.send, body)
+
+
+async def delivery_action(action, body):
+    try:
+        return await action(body)
+    except SuggestionConflict:
+        raise HTTPException(409, detail="Delivery binding изменён. Проверьте карточку и состояние устройства.") from None
 
 
 @router.get("/api/admin/ai/status")

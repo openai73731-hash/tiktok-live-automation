@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const state = {connected: false, busy: false, suite: false, stopSuite: false, csrf: null,
     settings: null, status: null, presets: [], history: new Map(), live: new Map(), stream: null};
-  let quality, operator;
+  let quality, operator, delivery;
   const providerName = (name) => ({fake: "Fake · фикстуры", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
   const liveName = (value) => value === "operator_required" ? "NEED_OPERATOR" : String(value).toUpperCase();
   const statusName = (value) => ({ready: "READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
@@ -203,6 +203,7 @@
       });
       actions.prepend(approve);
     }
+    delivery?.attach(actions, record, send);
     return card;
   }
   function showResult(record) {
@@ -268,6 +269,7 @@
     setConnected(true);
     operator.render(operatorSettings);
     await quality.refresh();
+    await delivery.refresh();
   }
   function connectEvents() {
     if (state.stream) return;
@@ -294,7 +296,11 @@
   }
   quality = window.createQualityLab({api, node, replyCard, toast, state, updateControls});
   operator = window.createOperatorControls({api, state, toast, renderSettings, renderStatus,
-    refreshQuality: () => quality.refresh()});
+    refreshQuality: async () => { await quality.refresh(); await delivery.refresh(); }});
+  delivery = window.createDeliveryControls({api, node, toast, state, refreshCards: () => {
+    renderLive();
+    if (state.selectedSuggestion && state.history.has(state.selectedSuggestion)) showResult(state.history.get(state.selectedSuggestion));
+  }});
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => openPage(button.dataset.page)));
   document.querySelectorAll("[data-open]").forEach((button) => button.addEventListener("click", () => openPage(button.dataset.open)));
   $("comment-input").addEventListener("input", updateControls); $("allow-paid").addEventListener("change", updateControls);

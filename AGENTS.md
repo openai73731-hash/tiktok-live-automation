@@ -1,6 +1,6 @@
 # Project scope and rules
 
-- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A, Stage 4A.1, Stage 4A.2, Stage 4A.3 and Stage 4A.4 are authorized and implemented. Stage two
+- Scope: stages one, two, Stage 3A, Stage 3B, Stage 3C, Stage 4A, Stage 4A.1, Stage 4A.2, Stage 4A.3, Stage 4A.4 and Stage 4B manual infrastructure are authorized and implemented. Stage two
   provides CommentProcessor, ReplySuggestion, a provider-independent AI Reply
   Engine, deterministic FakeAIReplyEngine, Russian operator translations,
   knowledge configuration and business/safety validation. Stage 3A is VERIFIED
@@ -9,7 +9,43 @@
   CommentProcessor/FakeAI ReplySuggestion, ignored UnknownEvent, LiveEndEvent,
   ENDED -> STOPPED. Stage 3B implements OpenAI; paid API quality/access remains
   unverified until the operator runs the separate manual AI smoke test.
-- Stage 4A.4 hardens pre-delivery only. SDK cleanup and processor retirement are
+- Stage 4B implements ADB inspection, AndroidTikTokReplySender, explicit manual
+  delivery/dry-run routes and UI, device selection and lazy production SQLite.
+  Physical SEND is NO-GO: ENABLE_PHYSICAL_TIKTOK_SEND defaults false, startup-only;
+  no verified real-device profile, semantic Unicode action backend or confirmation
+  reader ships. Even a true flag cannot authorize unknown UI/account/LIVE/input.
+  The agent must NEVER perform physical TikTok SEND. AUTO remains absent.
+  ADB uses one fixed executable, literal local server, bounded async argv allowlist,
+  no generic shell/browser command, no input text/tap/coordinates/install command.
+  Discovery is explicit; multiple devices require exact backend-discovered ASCII
+  serial selected via ignored android.device_serial overlay and SAVE/APPLY.
+  Inspect reads hierarchy/foreground/package only, never focuses/types/taps/sends.
+  Only reviewed package/version resource IDs may verify account and LIVE; generic
+  foreground TikTok and a text match alone do not establish a real verified profile.
+  Unknown/modals/CAPTCHA/verification/login/security require NEED_OPERATOR, no bypass.
+  UIActionBackend is a separate semantic exact-Unicode contract: prepare/readback
+  without sending, then final hierarchy + authoritative guard; the action adapter
+  must invoke guard after every await and immediately before its single native action.
+  No APK/helper is installed automatically. English/Russian/Spanish/German/Portuguese/
+  Turkish contract tests use synthetic devices; they do not prove real text entry.
+  Production sender cannot claim confirmed: possible action without device proof
+  is UNKNOWN, pauses delivery, never retries. No resolution/delete-dedup UI exists.
+  Lifespan owns delivery tasks and ADB subprocesses; cancellation/timeout/DB failure
+  always settle owned work and persist UNKNOWN or retain reserved-safe metadata.
+  No unrelated task/client/server is cancelled. Manual cooldown defaults three seconds.
+  Browser SEND accepts suggestion ID/revision/approval ID/idempotency key only.
+  Authoritative envelope/approval/context are reread after reservation and after
+  Android awaits before irreversible action; eviction/revocation means no SEND.
+  Lifetime is a private monotonic deadline from comment receipt including queue/AI
+  delay; wall-clock timestamps are UI/audit only and cannot revive expiry.
+  Dry-run uses production eligibility/reservation code with a separate in-memory
+  SQLite database, no input and no production dedup consumption. Startup/GET/SSE
+  create no ADB process, delivery database, listener or inference.
+  APPLY publishes final unlocked SSE on success/failure/cancellation/retirement;
+  Quality GET uses request generations and retired epochs cannot return.
+  Overlay rejects existing symlink/reparse points and parents, but containing
+  directories remain trusted against concurrent replacement races.
+- Stage 4A.4 hardens pre-delivery only; Stage 4B extends it above. SDK cleanup and processor retirement are
   finite owned transitions that repeated caller cancellation must finish. SDK
   cleanup records complete/failed, attempts both HTTP pools, socket, heartbeat and
   waiters, and never cancels unrelated tasks. A failed cleanup blocks new CONNECT
@@ -37,9 +73,9 @@
   translation_review_confirmed only, and never sends. Non-ready, expired, modified
   or stale envelopes cannot be approved. Browser text is never delivery authority.
   DeliveryEligibility is pure, deterministic and uses allowlisted reasons; production
-  delivery/device remain unavailable. ReplySenderProtocol and AndroidControllerProtocol
-  are contracts only. DeliveryCoordinator has no web route or production sender;
-  mocks exist only in tests. Results: confirmed/not_sent/unknown/needs_operator.
+  production physical delivery remains gated by Stage 4B. ReplySenderProtocol and
+  AndroidControllerProtocol separate delivery from AI. Real action adapters/profiles
+  remain unverified; mocks exist only in tests. Results: confirmed/not_sent/unknown/needs_operator.
   Timeout/cancellation after dispatch is UNKNOWN, never an automatic retry.
   SQLiteDeliveryOperationStore uses ignored data/delivery.sqlite3 with transactional
   reservation and unique suggestion/comment/idempotency identities. Retain at most
@@ -49,8 +85,8 @@
   suggestion/comment. Database construction is deferred; web startup/GET/SSE create
   no operation, database, listener or inference. Approval/history are in memory;
   restart invalidates them via a new active runtime token. APPROVE != SEND.
-  ADB, Android implementation, physical TikTok SEND and AUTO remain absent and need
-  a separate Stage 4B authorization. Preserve all existing local/security guards.
+  Physical TikTok SEND remains disabled pending separate operator verification;
+  AUTO/restart remain absent. Preserve all existing local/security guards.
 - Stage 4A implements a local operator Admin UI served by this FastAPI backend:
   HTML/CSS/vanilla JavaScript only, no CDN/npm/frontend server. Bind only to
   127.0.0.1; loopback peer/Host, same-origin JSON and per-lifespan CSRF guards apply.
@@ -70,9 +106,9 @@
   OpenAI status never makes paid requests; each explicit Playground analysis
   requires confirmation. Automated tests mock both providers.
   MANUAL is fixed; COPY REPLY writes only to the operator clipboard. SEND and
-  AUTOMATIC are disabled. No TikTok delivery, sent state, Android or restart is
-  implemented. Future SEND/AUTO require separate explicit authorization and
-  backend delivery/eligibility design; ready still requires human approval.
+  AUTOMATIC remains disabled. Stage 4B adds gated manual infrastructure and Android
+  inspection above; no verified physical sending, sent state or restart is enabled.
+  Physical use/AUTO require separate authorization; ready still requires human approval.
 - Stage 4A.1 adds Quality Lab under AI Playground. The canonical 75-case corpus
   is config/ai_quality_cases.yaml (JSON syntax, valid YAML); case IDs/expectations
   are version-controlled and validated against approved knowledge. Runtime
@@ -148,8 +184,8 @@
   social binding is rechecked against input/policy/bank, approval remains mandatory.
   The 75-case Quality Lab baseline requires FOCUSED; a separate small friendly
   corpus tests the social bank. No free social generation is enabled. Reply policy
-  FOCUSED/FRIENDLY is separate from delivery mode MANUAL/AUTOMATIC. SEND/AUTO/Android
-  remain absent. Tests mock LIVE and providers; manual UI/localhost smoke may not
+  FOCUSED/FRIENDLY is separate from delivery mode MANUAL/AUTOMATIC. Physical SEND
+  remains gated; AUTO absent. Stage 4B adds Android inspection. Tests mock LIVE and providers; manual UI/localhost smoke may not
   start real TikTok or paid OpenAI. Only the operator may press real CONNECT.
 - Stage 3C adds LMStudioReplyEngine through the same AIReplyEngine/factory contract.
   Configuration selects provider/model; fake remains default. LM Studio is trusted
@@ -285,8 +321,9 @@
   security challenge, login request, unknown UI or ambiguous control state must
   enter NEED_OPERATOR and never trigger an attempted bypass. The existing
   listener's operator_required state expresses this requirement for LIVE input.
-- Android automation, comment sending, LIVE restart and additional provider adapters
-  require a separate explicit user instruction. Public/remote admin remains out
+- Physical comment sending, LIVE restart, AUTO, verified real Android action adapters
+  and additional provider adapters require a separate explicit user instruction.
+  Stage 4B permits inspection and gated manual infrastructure only. Public/remote admin remains out
   of scope. Committing or pushing a completed stage never authorizes the next.
 - Python 3.12+, asyncio, FastAPI, Pydantic Settings, pytest. Avoid extra technologies.
 - Only backend/app/live/listener.py may import TikTokLive in production code.

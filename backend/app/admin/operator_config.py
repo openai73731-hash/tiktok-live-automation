@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import tempfile
+import stat
 from typing import Literal
 
 import yaml
@@ -40,10 +41,16 @@ class ReplyOverride(ConfigModel):
     max_chars: int | None = Field(default=None, ge=40, le=400, strict=True)
 
 
+class AndroidOverride(ConfigModel):
+    device_serial: str | None = Field(default=None, strict=True, min_length=1, max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
 class OperatorOverlay(ConfigModel):
     tiktok: TikTokOverride = Field(default_factory=TikTokOverride)
     ai: AIOverride = Field(default_factory=AIOverride)
     reply: ReplyOverride = Field(default_factory=ReplyOverride)
+    android: AndroidOverride = Field(default_factory=AndroidOverride)
 
 
 class StrictLoader(yaml.SafeLoader):
@@ -93,8 +100,20 @@ class OperatorStore:
     def validate(self, overlay: OperatorOverlay) -> ProjectConfig:
         return effective(self.base, overlay)
 
+    def guard_path(self):
+        # Detect existing links/junctions on Windows and POSIX, including parents.
+        # The containing directory must still be trusted against concurrent replacement.
+        for path in (self.path, *self.path.absolute().parents):
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise LocalConfigError("Invalid local settings; check operator.local.yaml")
+
     def load(self) -> OperatorOverlay:
         try:
+            self.guard_path()
             with self.path.open("rb") as stream:
                 data_bytes = stream.read(16_385)
             if len(data_bytes) > 16_384:
@@ -111,6 +130,7 @@ class OperatorStore:
             raise LocalConfigError("Invalid local settings; check operator.local.yaml") from None
 
     def save(self, overlay: OperatorOverlay) -> None:
+        self.guard_path()
         self.validate(overlay)
         data = yaml.safe_dump(overlay.model_dump(exclude_none=True), allow_unicode=True, sort_keys=False)
         temporary = None
@@ -121,10 +141,12 @@ class OperatorStore:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
+            self.guard_path()
             os.replace(temporary, self.path)
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
     def reset(self) -> None:
+        self.guard_path()
         self.path.unlink(missing_ok=True)

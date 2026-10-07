@@ -25,6 +25,8 @@ from app.admin.service import AdminService, PlaygroundService
 from app.admin.runtime import OperatorRuntime
 from app.quality.router import router as quality_router
 from app.quality.service import QualityService
+from app.delivery.service import ManualDeliveryService
+from app.lifecycle import finish_owned
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -55,6 +57,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 available=True if ai.provider == "fake" else None)
         quality = QualityService(playground, live_enabled=config.admin_live_enabled)
         application.state.quality = quality
+        delivery = ManualDeliveryService(config, admin.suggestions, admin.delivery_context, serial=runtime.android_serial)
+        application.state.delivery = admin.delivery = delivery
         runtime.live._sync()
         try:
             if config.admin_live_enabled and not runtime.config_error:
@@ -62,9 +66,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             runtime.closed = True
-            await runtime.live.stop_current()
-            await application.state.quality.aclose()
-            await admin.aclose()
+            async def shutdown():
+                try:
+                    await delivery.aclose()
+                finally:
+                    try:
+                        await runtime.live.stop_current()
+                    finally:
+                        try: await application.state.quality.aclose()
+                        finally: await admin.aclose()
+            await finish_owned(asyncio.create_task(shutdown(), name="owned-admin-shutdown"))
 
     application = FastAPI(title="TikTok LIVE Assistant", lifespan=lifespan,
                           docs_url=None, redoc_url=None, openapi_url=None)

@@ -120,6 +120,7 @@ class AdminService:
         self.check_task: asyncio.Task | None = None
         self.last_checked = 0.0
         self.runtime = None
+        self.delivery = None
         self.suggestions = SuggestionStore()
         playground.register_record = self.register_record
 
@@ -127,11 +128,17 @@ class AdminService:
         processor = self.playground.processor
         live = self.live_view()
         invalid = not self.runtime or self.runtime.closed or self.runtime.live.session_invalidated
-        return DeliveryContext(live_session_id=None if invalid else live.live_session_id, target_account=live.username or None,
+        context = DeliveryContext(live_session_id=None if invalid else live.live_session_id, target_account=live.username or None,
             active_runtime_revision=self.runtime.active_runtime_revision if self.runtime else "unavailable",
             knowledge_revision=digest(processor.knowledge), policy_revision=policy_revision(processor),
             connected=not invalid and live.connection_owned and live.state == "connected" and live.terminal_state is None,
             active=live.activity == "active")
+        if self.delivery is not None:
+            context = context.model_copy(update={
+                "operator_paused": self.delivery.paused or self.delivery.closed,
+                "delivery_available": self.settings.enable_physical_tiktok_send,
+                "device_available": self.delivery.controller.last.ready})
+        return context
 
     def register_record(self, record, comment, processor, *, session_id=None, target_account=None):
         self.suggestions.register(record, comment, processor,

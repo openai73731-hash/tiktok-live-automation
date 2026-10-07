@@ -3,6 +3,8 @@
 window.createQualityLab = ({api, node, replyCard, toast, state, updateControls}) => {
   const $ = (id) => document.getElementById(id);
   let dataset = null, run = null, results = new Map(), rows = new Map(), pending = false;
+  let generation = 0, requestNumber = 0;
+  const retiredEpochs = new Set();
   const active = () => pending || ["running", "stopping"].includes(run?.state);
   const pct = (value) => value === null ? "—" : `${value}%`;
   const ms = (value) => value === null ? "—" : `${value} мс`;
@@ -120,8 +122,13 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
     refs.content.append(checks, replyCard(result.record)); renderReview(refs.content, c, result);
   }
   function apply(value) {
+    if (retiredEpochs.has(value.run.service_epoch)) return;
     if (run && value.run.service_epoch === run.service_epoch && value.run.revision < run.revision) return;
     const epochChanged = value.run.service_epoch !== run?.service_epoch;
+    if (epochChanged) {
+      if (run) retiredEpochs.add(run.service_epoch);
+      generation += 1;
+    }
     const replaced = epochChanged || value.run.run_id !== run?.run_id || value.run.run_number !== run?.run_number;
     if (epochChanged) { dataset = null; results.clear(); rows.clear(); $("quality-cases").replaceChildren(); }
     run = value.run;
@@ -132,7 +139,12 @@ window.createQualityLab = ({api, node, replyCard, toast, state, updateControls})
     changed.forEach((result) => { results.set(result.case_id, result); const c = dataset.cases.find((entry) => entry.id === result.case_id); if (c) renderResult(c, result); });
     renderSummary(); controls(); updateControls();
   }
-  async function refresh() { apply(await api("/api/admin/quality")); }
+  async function refresh() {
+    const started = generation, request = ++requestNumber;
+    const value = await api("/api/admin/quality");
+    if (started !== generation || request !== requestNumber) return;
+    apply(value);
+  }
   async function start(runs) {
     pending = true; controls(); updateControls();
     try { apply({run: await api("/api/admin/quality/start", {runs})}); }

@@ -127,6 +127,7 @@ class OperatorView(UIModel):
     config_error: Literal["invalid_local_config"] | None = None
     saved_config_revision: str
     active_runtime_revision: str
+    active_device_serial: str | None = None
 
 
 class SaveSettingsInput(UIModel):

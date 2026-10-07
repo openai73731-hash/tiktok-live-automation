@@ -149,6 +149,7 @@ class OperatorRuntime:
             logger.error("operator_config_invalid", extra={"fields": {"error_type": "LocalConfigError"}})
         self.project = self.store.validate(self.saved)
         self.username = self.saved.tiktok.username if self.saved.tiktok.username is not None else settings.tiktok_username
+        self.android_serial = self.saved.android.device_serial
         self.lock = asyncio.Lock()
         self.applying = False
         self.closed = False
@@ -159,9 +160,12 @@ class OperatorRuntime:
     @property
     def pending(self):
         username = self.saved.tiktok.username if self.saved.tiktok.username is not None else self.settings.tiktok_username
-        return self.store.validate(self.saved) != self.project or username != self.username
+        return (self.store.validate(self.saved) != self.project or username != self.username or
+                self.saved.android.device_serial != self.android_serial)
 
     def lock_reason(self):
+        if getattr(self.admin, "delivery", None) and self.admin.delivery.busy:
+            return "Дождитесь завершения проверки устройства или delivery operation."
         if self.live.service is not None:
             return "Отключите LIVE перед изменением или применением настроек."
         if self.admin.playground.lock.locked() or self.admin.check_task is not None or self.applying:
@@ -181,7 +185,8 @@ class OperatorRuntime:
             desired=self.admin.public_settings(self.store.validate(self.saved)), username=self.username,
             saved_username=self.saved.tiktok.username if self.saved.tiktok.username is not None else self.settings.tiktok_username,
             pending=self.pending, locked=reason is not None, lock_reason=reason, config_error=self.config_error,
-            saved_config_revision=self.saved_config_revision, active_runtime_revision=self.active_runtime_revision)
+            saved_config_revision=self.saved_config_revision, active_runtime_revision=self.active_runtime_revision,
+            active_device_serial=self.android_serial)
 
     def publish(self):
         if not self.closed:
@@ -195,6 +200,8 @@ class OperatorRuntime:
         async with self.lock:
             self.require_saved(expected_saved_revision)
             self.ensure_idle()
+            if getattr(self.admin, "delivery", None) and overlay.android.device_serial != self.saved.android.device_serial:
+                self.admin.delivery.require_discovered(overlay.android.device_serial)
             self.store.save(overlay)
             self.saved = overlay
             self.config_error = None
@@ -214,6 +221,14 @@ class OperatorRuntime:
         return self.view()
 
     async def apply(self, expected_saved_revision, expected_active_runtime_revision):
+        try:
+            return await self._apply(expected_saved_revision, expected_active_runtime_revision)
+        finally:
+            # _apply has released both locks before observers see this snapshot.
+            if not self.lock.locked() and not self.admin.playground.lock.locked():
+                self.publish()
+
+    async def _apply(self, expected_saved_revision, expected_active_runtime_revision):
         async with self.lock:
             self.require_saved(expected_saved_revision)
             if expected_active_runtime_revision != self.active_runtime_revision:
@@ -239,6 +254,8 @@ class OperatorRuntime:
                 self.project = project
                 self.active_runtime_revision = uuid4().hex
                 self.username = self.saved.tiktok.username if self.saved.tiktok.username is not None else self.settings.tiktok_username
+                self.android_serial = self.saved.android.device_serial
+                if getattr(self.admin, "delivery", None): self.admin.delivery.set_serial(self.android_serial)
                 self.admin.ai_status = AIStatus(provider=project.ai.provider, model=project.ai.model,
                     state="available" if project.ai.provider == "fake" else "not_checked",
                     available=True if project.ai.provider == "fake" else None)

@@ -1,14 +1,16 @@
 """Transactional, persistent operation reservations. Contains no reply text.
 
-Never wired to a web delivery route. The fixed production location is ignored;
+Created lazily for explicit manual delivery. The fixed production location is ignored;
 tests inject a temporary location. Retention fails closed at the bounded cap.
 """
 from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
-from typing import Protocol
+from typing import Protocol, Literal
+from pydantic import Field
 
-from app.delivery.models import DeliveryRequest, DeliveryResult, FrozenModel
+from app.delivery.models import (DeliveryRequest, DeliveryResult, FrozenModel, DeliveryReason,
+    OpaqueId, Revision, Account)
 
 JOURNAL_PATH = Path("data/delivery.sqlite3")
 
@@ -18,19 +20,21 @@ class JournalConflict(ValueError):
 
 
 class Operation(FrozenModel):
-    operation_id: str
-    idempotency_key: str
-    suggestion_id: str
-    suggestion_revision: str
-    comment_identity: str
-    approval_id: str
-    reply_hash: str
-    live_session_id: str
-    target_account: str
-    runtime_revision: str
-    created_at: str
-    status: str
-    reason: str | None
+    operation_id: OpaqueId
+    idempotency_key: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    suggestion_id: OpaqueId
+    suggestion_revision: Revision
+    comment_identity: Revision
+    approval_id: OpaqueId
+    reply_hash: Revision
+    live_session_id: OpaqueId
+    target_account: Account
+    runtime_revision: OpaqueId
+    created_at: str = Field(max_length=40)
+    status: Literal["reserved", "confirmed", "not_sent", "unknown", "needs_operator"]
+    reason: DeliveryReason | None
+    device_serial: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    mode: Literal["MANUAL"] = "MANUAL"
 
 
 class DeliveryOperationStore(Protocol):
@@ -45,7 +49,14 @@ class SQLiteDeliveryOperationStore:
             raise ValueError("Invalid journal capacity")
         self.path, self.capacity = Path(path), capacity
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path, isolation_level=None, timeout=5)
+        self.connection = sqlite3.connect(self.path, isolation_level=None, timeout=0.1)
+        try:
+            self._initialize()
+        except BaseException:
+            self.connection.close()
+            raise
+
+    def _initialize(self):
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA synchronous=FULL")
@@ -57,6 +68,17 @@ class SQLiteDeliveryOperationStore:
             runtime_revision TEXT NOT NULL, created_at TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('reserved','confirmed','not_sent','unknown','needs_operator')),
             reason TEXT)""")
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {r[1] for r in self.connection.execute("PRAGMA table_info(operations)")}
+            if "device_serial" not in columns:
+                self.connection.execute("ALTER TABLE operations ADD COLUMN device_serial TEXT")
+            if "mode" not in columns:
+                self.connection.execute("ALTER TABLE operations ADD COLUMN mode TEXT NOT NULL DEFAULT 'MANUAL'")
+            self.connection.execute("COMMIT")
+        except BaseException:
+            if self.connection.in_transaction: self.connection.execute("ROLLBACK")
+            raise
         # A reserved row itself blocks retry after restart. Do not rewrite it on
         # connection open: another in-process coordinator could still own it.
 
@@ -76,7 +98,8 @@ class SQLiteDeliveryOperationStore:
                 fields = {"suggestion_id": request.suggestion_id, "suggestion_revision": request.suggestion_revision,
                     "comment_identity": request.comment_identity, "approval_id": request.approval_id,
                     "reply_hash": request.suggested_reply_hash, "live_session_id": request.live_session_id,
-                    "target_account": request.target_account, "runtime_revision": request.active_runtime_revision}
+                    "target_account": request.target_account, "runtime_revision": request.active_runtime_revision,
+                    "device_serial": request.device_serial}
                 if any(row[key] != value for key, value in fields.items()):
                     raise JournalConflict("Idempotency key binding conflict")
                 db.execute("COMMIT")
@@ -89,8 +112,8 @@ class SQLiteDeliveryOperationStore:
             values = (request.operation_id, request.idempotency_key, request.suggestion_id,
                 request.suggestion_revision, request.comment_identity, request.approval_id,
                 request.suggested_reply_hash, request.live_session_id, request.target_account,
-                request.active_runtime_revision, datetime.now(UTC).isoformat(), "reserved", None)
-            db.execute("INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
+                request.active_runtime_revision, datetime.now(UTC).isoformat(), "reserved", None, request.device_serial, "MANUAL")
+            db.execute("INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
             row = db.execute("SELECT * FROM operations WHERE operation_id=?", (request.operation_id,)).fetchone()
             db.execute("COMMIT")
             return self._operation(row), True
@@ -108,3 +131,14 @@ class SQLiteDeliveryOperationStore:
 
     def close(self):
         self.connection.close()
+
+    def recent(self):
+        return tuple(self._operation(r) for r in self.connection.execute(
+            "SELECT * FROM operations ORDER BY rowid DESC LIMIT 50"))
+
+    def lookup(self, key):
+        row = self.connection.execute("SELECT * FROM operations WHERE idempotency_key=?", (key,)).fetchone()
+        return self._operation(row) if row is not None else None
+
+    def unresolved(self):
+        return self.connection.execute("SELECT 1 FROM operations WHERE status IN ('reserved','unknown','needs_operator') LIMIT 1").fetchone() is not None

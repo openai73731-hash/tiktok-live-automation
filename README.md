@@ -1,5 +1,167 @@
 # tiktok-live-automation
 
+## Stage 4B: manual delivery infrastructure — physical SEND NO-GO
+
+Реализованы Android/ADB inspection, `AndroidTikTokReplySender`, manual coordinator,
+Dashboard устройства, DRY RUN SEND и read-only история последних 50 операций.
+**Агент не выполнял physical SEND. AUTO не реализован.** По умолчанию
+`ENABLE_PHYSICAL_TIKTOK_SEND=false`, кнопка SEND заблокирована. Browser не может
+изменить флаг, ADB executable, package, текст отправки или authoritative account/session.
+Описания прежних Stage ниже — история их scope; этот раздел уточняет актуальную доставку.
+
+В поставке **нет проверенного на реальном телефоне TikTok UI profile, Unicode action
+backend или confirmation reader**. Даже включение startup flag не делает SEND доступным.
+Первый physical manual SEND остаётся NO-GO до отдельной операторской проверки и
+авторизации. Сейчас можно проверять mock pipeline, устройство и dry-run.
+
+### Windows: подготовка Android для проверки
+
+1. Установите официальные [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools).
+2. На собственном Android включите Developer options → USB debugging; подключите USB.
+   Подтвердите RSA-запрос на разблокированном телефоне самостоятельно. Root и bootloader
+   unlock не нужны. Не обходите запрос авторизации.
+3. Выполните вручную в PowerShell (не является отправкой комментария):
+
+```powershell
+adb devices -l
+# Если adb не находится в PATH, задайте абсолютный путь в окружении запуска backend:
+$env:ADB_EXECUTABLE = 'C:\Android\platform-tools\adb.exe'
+$env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'
+$env:MANUAL_DELIVERY_MIN_INTERVAL_SECONDS = '3'
+& .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Не публикуйте localhost и не перенаправляйте порт. Backend разрешает только локальный
+ADB server `127.0.0.1:5037`; путь разрешается один раз при старте. Не запускаются generic
+shell strings, `input text`, taps, coordinates, install, root, reboot или kill-server.
+Allowlist: devices, package list, foreground dumpsys, uiautomator dump в фиксированный
+временный файл устройства, чтение этого файла и versionName известного package.
+Dump не меняет TikTok UI, но пишет диагностический XML во временный каталог телефона.
+XML читается ограниченно и не попадает в API, журналы или SQLite; дальнейшие dumps
+перезаписывают тот же файл. Закрываются только собственные ADB client subprocesses.
+См. [официальную документацию ADB](https://developer.android.com/tools/adb).
+
+### Device status и workflow оператора
+
+Откройте Dashboard → **ПРОВЕРИТЬ УСТРОЙСТВО**. Это явный POST с CSRF, без AI, LIVE
+connect, focus, input или SEND. Startup, GET, SSE и reconnect сами ADB не вызывают.
+
+| Status | Действие оператора |
+| --- | --- |
+| ADB UNAVAILABLE | Установить Platform Tools / проверить путь при следующем запуске |
+| MISSING | Подключить выбранный телефон; другой не подставляется автоматически |
+| MULTIPLE_DEVICES | Выбрать точный serial из backend discovery, сохранить и применить |
+| UNAUTHORIZED | Самостоятельно подтвердить USB debugging на телефоне |
+| OFFLINE | Проверить USB/состояние устройства вручную |
+| CONNECTED | USB доступен; account/LIVE/input ещё не обязательно проверены |
+| READY | Только с reviewed version profile, account/LIVE/control checks и action backend |
+
+В Settings → Android serial сохраняется только как `android.device_serial` в ignored
+`operator.local.yaml`. Новое значение должно точно входить в последний backend discovery.
+При одном устройстве разрешён однозначный автоматический выбор; при нескольких выбора
+нет. SAVE не меняет активное устройство, APPLY явно применяет его и сбрасывает inspection.
+Настройки заблокированы во время delivery/inspection и при owned LIVE, как прежде.
+
+Dashboard показывает detected package, foreground activity, screen, наличие input/Send,
+account/LIVE verification, security, Delivery NOT READY / DRY RUN READY и physical gate.
+Google Play подтверждает package-кандидат
+[`com.zhiliaoapp.musically`](https://play.google.com/store/apps/details?id=com.zhiliaoapp.musically).
+Это allowlist для inspection, **не доказательство подлинности установленного APK**.
+Конкретная версия/установка из официального источника должны быть проверены оператором;
+региональные/Lite варианты пока не поддержаны и не выбираются браузером.
+
+Screen states: DEVICE_DISCONNECTED, TIKTOK_NOT_RUNNING, LIVE_READY,
+COMMENT_INPUT_READY, CAPTCHA, VERIFY, LOGIN_REQUIRED, SECURITY_CHALLENGE, UNKNOWN_SCREEN.
+Semantic selectors берутся только из reviewed backend profile для package/version;
+пустая поставка не угадывает реальные TikTok resource IDs. Generic foreground или
+слово LIVE не доказывают правильный аккаунт и эфир. В fixture profile проверяются
+уникальные resource IDs, точный account, LIVE context, enabled controls и отсутствие
+посторонних окон. На настоящем телефоне эти признаки пока не верифицированы.
+Неизвестный экран/modal, login, CAPTCHA, verification и security требуют оператора:
+никакого ввода/tap/SEND, retries или bypass. Консервативный текстовый детектор может
+также остановиться на словах из комментария; это допустимый fail-closed false positive.
+
+После READY suggestion реального LIVE оператор проверяет оригинал, русский перевод,
+ответ и его перевод, затем APPROVE (для машинного перевода — explicit review checkbox).
+**APPROVE ≠ SEND.** Playground/fake/replay не становятся доставляемыми LIVE-комментариями.
+**DRY RUN SEND** проверяет approval, текущую eligibility, reservation и device inspection.
+Он не фокусирует поле, не вводит текст, не нажимает Send. Reservation использует отдельную
+in-memory SQLite, поэтому production dedup не расходуется и будущая доставка не блокируется.
+Результат: eligible, device_ready, would_send, safe reason; physical_action всегда false.
+`would_send` описывает проверки dry-run и не включает разрешение physical startup gate.
+
+### Exact Unicode и final preflight
+
+`adb shell input text` не принимается за надёжный ввод произвольного Unicode:
+Android реализует его через keyboard events; см.
+[официальный InputShellCommand](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/input/InputShellCommand.java).
+Вместо неподтверждённого обхода введён `UIActionBackend`: semantic prepare_exact без
+отправки, свежий exact text readback, затем один semantic Send action без retries.
+Ни helper APK, ни keyboard, ни accessibility service автоматически не устанавливается.
+Контракт проверен mock-текстами English/Russian/Spanish/German/Portuguese/Turkish;
+это **не real-device Unicode test**. Production backend этого интерфейса пока отсутствует.
+
+Сервер SEND принимает только suggestion_id, expected_suggestion_revision, approval_id,
+idempotency_key. Exact текст берётся из immutable server envelope, без повторного AI.
+Comment сохраняет private monotonic receipt при создании; deadline = receipt + 300 s,
+включая очередь и AI. UTC остаётся только для UI/audit. Clock rollback не возрождает expiry;
+десериализованный envelope без private server deadline не даёт eligibility.
+После SQLite reserve coordinator заново читает authoritative store/approval/context.
+Отзыв/eviction до dispatch означает sender calls=0. После Android await и свежей hierarchy
+снова проверяются approval, expiry, session, account, runtime, knowledge/policy и LIVE.
+Final readback должен точно совпасть с одобренным текстом, device/package/profile — прежние.
+Action adapter обязан повторить synchronous server guard после своих awaits прямо перед
+необратимым действием. Один async device lock сериализует sends/inspection; cooldown
+между manual attempts — по умолчанию 3 s, startup range 2–60 s. Используйте один backend
+на устройство; внешние ручные действия и другие процессы не входят в его lock.
+
+### Journal, UNKNOWN и shutdown
+
+Production `data/delivery.sqlite3` (Git ignored) создаётся лениво только явным manual
+preparation/SEND при включённом startup flag. GET/history не открывают отсутствующую DB.
+Транзакционные unique suggestion/comment/idempotency identities сохраняются после restart;
+10 000 metadata rows максимум, без eviction dedup. Хранятся только IDs/hashes/account/time/
+device/mode/result/reason, без reply/original текста и секретов. Browser history — последние 50.
+DB locked/full/corrupt до dispatch означает NO SEND; errors содержат static reason.
+Reserved после crash означает UNKNOWN и блокирует retry. Не удаляйте DB/строки для повтора.
+
+not_sent допустим только до irreversible action (gate/preflight/exact readback fail).
+Security/unknown account/LIVE требуют needs_operator. Если action могла произойти, timeout,
+cancel или утрата подтверждения означают **UNKNOWN**, delivery ставится на паузу.
+`adb exit 0` не подтверждает комментарий. В текущем production sender **нет критерия
+confirmed**: после semantic action возвращается UNKNOWN; confirmed есть только в mocks.
+Same key возвращает прежний outcome, другой key не отправляет тот же suggestion/comment.
+Автоматического retry нет; UI просит проверить TikTok вручную. Resolution workflow остаётся
+будущим этапом: сначала независимая операторская проверка, без удаления dedup записей.
+
+Persistence error не пропускает cleanup: owned sender сначала отменяется/дожидается,
+затем завершается journal; ошибка записи после possible dispatch оставляет UNKNOWN или
+reserved-safe запись и fail-closed pause. Lifespan перестаёт принимать delivery, отменяет/
+дожидается собственных задач, закрывает ADB resources и SQLite. Чужие tasks не отменяются.
+
+Закрыты пять review findings: monotonic expiry; authoritative pre-dispatch reread;
+finally-safe sender cleanup; финальный unlocked APPLY SSE даже при failure/cancellation/
+retirement error; JS generation/retired epochs против late Quality GET/SSE/resync.
+Overlay дополнительно отвергает существующие symlink/reparse points и parent junctions.
+Содержащие каталоги остаются доверенными: проверка lstat не защищает от конкурентной
+подмены файлов/каталогов локальным процессом между check/open/replace.
+
+Перед FIRST PHYSICAL MANUAL SEND нужны: собственное авторизованное устройство; проверка
+официальной установки/package/version; reviewed UI profile с достоверными account/LIVE
+bindings; отдельный native/accessibility exact-Unicode backend и readback на шести языках;
+проверка final guard/cancellation на телефоне; reliable confirmation design либо явно
+принятый UNKNOWN workflow; отдельная операторская авторизация и только затем trusted
+startup flag. Агент не выполняет такую отправку. AUTO/restart/security bypass отсутствуют.
+
+Проверка Stage 4B (2026-10-07): **903 tests passed** (прежние 801 + 102 новых),
+включая focused Quality Lab, friendly и predelivery regressions. Все Android/ADB/action
+tests используют mocks. `pip check`: no broken requirements; fake CLI завершён;
+10/10 CLI replay scenarios PASS. Wheel собран, проверены 65 packaged files и совпадение
+модулей/assets с workspace, отсутствие runtime DB/logs/secrets. Local UI GET smoke:
+ADB UNAVAILABLE, Device MISSING, Physical SEND DISABLED, JavaScript errors отсутствуют.
+На этой машине adb не найден в PATH; реальный Android не инспектировался/не проверялся.
+Реальный LIVE, платный OpenAI, helper APK, physical SEND и AUTO не запускались.
+
 ## Назначение и границы проекта
 
 Локальная система сопровождения **собственных TikTok LIVE**. Во время эфира

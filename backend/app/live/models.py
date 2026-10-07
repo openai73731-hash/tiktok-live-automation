@@ -2,12 +2,15 @@
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
+from time import monotonic
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, PrivateAttr
 
 
 class Comment(BaseModel):
     model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+    # Process-local receipt clock, never serialized or supplied by the browser.
+    _received_monotonic: float = PrivateAttr(default_factory=lambda: monotonic())
     username: str = Field(min_length=1)
     user_id: str | None = None
     message_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]{0,18}$")

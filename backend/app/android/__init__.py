@@ -1,2 +1,1 @@
-"""Reserved for future operator-controlled Android integration."""
-
+"""Official Android UI inspection. No AI, listener, credentials or generic commands."""

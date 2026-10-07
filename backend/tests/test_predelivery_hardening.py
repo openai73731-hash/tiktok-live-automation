@@ -186,7 +186,7 @@ async def test_pure_eligibility_all_reasons(suggestion, reason):
     elif reason == "translation_review_missing":
         e = rehash(e, translation_requires_review=True)
         a = a.model_copy(update={"suggestion_revision": e.suggestion_revision})
-    elif reason == "expired": e = rehash(e, expires_at=datetime.now(UTC) - timedelta(seconds=1))
+    elif reason == "expired": e._monotonic_deadline = 0
     elif reason == "duplicate_operation": duplicate = True
     result = DeliveryEligibility.evaluate(e, a, ctx, duplicate=duplicate)
     assert result.reason == reason and result.eligible == (reason == "eligible")
