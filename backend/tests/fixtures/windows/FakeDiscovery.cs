@@ -24,7 +24,7 @@ namespace LiveStudioDiscovery {
         public void Invoke() { throw new Exception("ACTION FORBIDDEN"); }
         public void SetValue() { throw new Exception("ACTION FORBIDDEN"); }
     }
-    public sealed class FakeDesktop : IReadOnlyDesktop {
+    public class FakeDesktop : IReadOnlyDesktop {
         public ScanLimits limits;
         public ScanLimits Limits { get { return limits; } }
         public RootScanStats stats = new RootScanStats { target_roots_total = 1, target_roots_selected = 1 };
@@ -36,6 +36,7 @@ namespace LiveStudioDiscovery {
         public Func<long, IMsaaNode> accessibleByHwnd;
         public Func<int, IEnumerable<long>> topFactory;
         public Func<long, IEnumerable<long>> childFactory;
+        public Func<long, WindowRow> windowFactory;
         public bool hwndCycle, hiddenRoots, secondWidget;
         public readonly Dictionary<long, int> ownerOverrides = new Dictionary<long, int>();
         public IEnumerable<long> TopWindows(int pid) {
@@ -49,6 +50,7 @@ namespace LiveStudioDiscovery {
         }
         public int WindowProcess(long hwnd) { int owner; if (ownerOverrides.TryGetValue(hwnd, out owner)) return owner; return hwnd >= 100 && hwnd < 113 ? 11300 : hwnd == 200 ? 11301 : 11302; }
         public WindowRow Window(long hwnd, bool names) {
+            if (windowFactory != null) return windowFactory(hwnd);
             if (badWindow) throw new Exception("PRIVATE WINDOW");
             return new WindowRow { hwnd = hwnd, parent_hwnd = hwnd >= 100 && hwnd < 113 ? (long?)null : hwnd == 400 && secondWidget ? 101 : hwnd == 200 || hwnd >= 400 ? 100 : 200,
                 process_id = WindowProcess(hwnd), class_name = hwnd == 100 || hwnd == 101 && secondWidget ? "Chrome_WidgetWin_1" : hwnd == 200 || hwnd == 400 && secondWidget ? "Chrome_RenderWidgetHostHWND" : "Chrome_Other",
@@ -98,6 +100,7 @@ namespace LiveStudioDiscovery {
             foreach (var item in VariantHarness.All()) result[item.Key] = item.Value;
             foreach (var item in NativeVariantHarness.All()) result[item.Key] = item.Value;
             foreach (var item in Ia2Harness.All()) result[item.Key] = item.Value;
+            foreach (var item in ClientHarness.All()) result[item.Key] = item.Value;
             return result;
         }
     }

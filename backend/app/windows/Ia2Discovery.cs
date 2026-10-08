@@ -23,6 +23,8 @@ namespace LiveStudioDiscovery {
     }
     interface IIa2Reads { Ia2Capability Capability(); }
     interface IIa2CapabilityNode { Ia2Capability Capability(); }
+    interface IIa2ProviderReads { Ia2Capability ProviderCapability(); }
+    interface IIa2ProviderNode { Ia2Capability ProviderCapability(); }
     static class Ia2Contract {
         // Chromium third_party/iaccessible2/ia2_api_all.idl, blob c8b3f354d96d8e5317428ed6dab2b8fd3082aee9:
         // https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/iaccessible2/ia2_api_all.idl
@@ -30,13 +32,14 @@ namespace LiveStudioDiscovery {
         internal static readonly Guid ProviderId = new Guid("6D5140C1-7436-11CE-8034-00AA006009FA");
         internal static readonly Guid ServiceId = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71");
         internal static readonly Guid InterfaceId = new Guid("E89F726E-C4F4-4C19-BB19-B647D7FA8478");
-        internal static Ia2Capability Check(IIa2Com api) {
+        internal static Ia2Capability Check(IIa2Com api, bool queryService = true) {
             var result = new Ia2Capability();
             try {
                 int hr = api.QueryProvider(ProviderId);
                 result.provider_hresult_category = VariantReader.Hresult(hr);
                 result.iserviceprovider_available = hr == 0;
                 if (hr != 0) result.status = "provider_unavailable";
+                else if (!queryService) result.status = "provider_only";
                 else {
                     result.query_service_attempted = true;
                     bool available; hr = api.QueryService(ServiceId, InterfaceId, out available);
@@ -129,6 +132,8 @@ namespace LiveStudioDiscovery {
         }
     }
     public sealed class Ia2Check {
+        public string source_kind = "objid_client";
+        public int object_id = -4;
         public int check_id, source_process_id;
         public long source_hwnd, root_hwnd;
         public long? owner_hwnd; public int? process_id;
@@ -174,8 +179,8 @@ namespace LiveStudioDiscovery {
         static int Priority(WindowRow w, Dictionary<long, bool> visible, long? primary) {
             bool rootVisible; visible.TryGetValue(w.root_hwnd, out rootVisible);
             if (w.hwnd == primary) return 0;
-            if (w.root_hwnd == primary && w.chromium_kind == "render_widget") return 1;
-            return rootVisible ? 2 : 3;
+            if (w.root_hwnd == primary && w.visible && w.chromium_kind == "render_widget") return 1;
+            return rootVisible && w.visible ? 2 : 3;
         }
         static bool InScope(IReadOnlyDesktop api, Work item, int pid) {
             try { return api.WindowProcess(item.Window.hwnd) == item.Window.process_id && api.WindowProcess(item.Window.root_hwnd) == pid; }

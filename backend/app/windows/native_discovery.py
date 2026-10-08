@@ -40,6 +40,8 @@ class HwndNode(FrozenModel):
 
 
 class MsaaNode(FrozenModel):
+    source_kind: Literal["objid_client", "objid_window"] = "objid_client"
+    object_id: Literal[-4, 0] = -4
     node_id: int = Field(ge=1, le=2000)
     parent_id: int | None
     depth: int = Field(ge=0, le=20)
@@ -142,6 +144,8 @@ class Ia2Capability(FrozenModel):
 
 
 class Ia2Check(FrozenModel):
+    source_kind: Literal["objid_client"] = "objid_client"
+    object_id: Literal[-4] = -4
     check_id: int = Field(ge=1, le=32)
     source_hwnd: int = Field(gt=0)
     root_hwnd: int = Field(gt=0)
@@ -174,10 +178,68 @@ class Ia2Section(FrozenModel):
     before_msaa: MsaaSection
 
 
+class ObjectObservation(FrozenModel):
+    source_kind: Literal["objid_client", "objid_window"]
+    object_id: Literal[-4, 0]
+    available: bool
+    status: Literal["not_attempted", "available", "unavailable", "protected", "unknown_protection",
+        "out_of_scope", "timeout", "capability_failed", "adapter_unavailable"]
+    hresult_category: HresultCategory | None
+    metadata_phase: Literal["before", "after", "window"] | None
+    role: int | None = Field(ge=0)
+    state: int | None = Field(ge=0)
+    child_count: int | None = Field(ge=0, le=2**31 - 1)
+    bounds: tuple[int, int, int, int] | None
+    name: str | None = Field(max_length=160)
+    iserviceprovider_available: bool | None
+    provider_hresult_category: HresultCategory | None
+    query_service_attempted: bool
+    query_hresult_category: HresultCategory | None
+    ia2_available: bool | None
+    ia2_query_status: Literal["not_queried", "not_queried_window", "supported", "provider_unavailable", "ia2_unavailable",
+        "capability_failed", "adapter_unavailable", "protected", "unknown_protection", "out_of_scope", "timeout"]
+
+    @model_validator(mode="after")
+    def contract(self):
+        if self.object_id != (-4 if self.source_kind == "objid_client" else 0):
+            raise ValueError("Invalid object source")
+        if self.available and self.hresult_category != "s_ok":
+            raise ValueError("Invalid object acquisition")
+        if self.iserviceprovider_available is True and self.provider_hresult_category != "s_ok":
+            raise ValueError("Invalid object provider")
+        if self.source_kind == "objid_window" and (self.query_service_attempted or self.ia2_available is not None or self.ia2_query_status != "not_queried_window"):
+            raise ValueError("WINDOW must not query IA2")
+        if self.query_service_attempted and (not self.available or self.iserviceprovider_available is not True):
+            raise ValueError("Invalid CLIENT query sequence")
+        if self.ia2_available is True and (not self.query_service_attempted or self.query_hresult_category != "s_ok"):
+            raise ValueError("Invalid CLIENT capability")
+        return self
+
+
+class ObjectPair(FrozenModel):
+    source_hwnd: int = Field(gt=0)
+    root_hwnd: int = Field(gt=0)
+    source_process_id: int = Field(gt=0)
+    source_visible: bool
+    visible_root: bool
+    chromium_kind: Literal["widget", "render_widget", "other"]
+    objid_client: ObjectObservation
+    objid_window: ObjectObservation
+
+
+class ClientObjects(FrozenModel):
+    primary_root_hwnd: int | None = Field(gt=0)
+    checks: tuple[ObjectPair, ...] = Field(max_length=32)
+    window_msaa: MsaaSection
+    visible_renderer_client_available: bool
+    visible_renderer_client_nodes: int = Field(ge=0, le=2000)
+    visible_renderer_client_ia2_supported: bool
+
+
 class DiscoveryReport(FrozenModel):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    backend: Literal["hwnd", "msaa", "all", "ia2"]
+    backend: Literal["hwnd", "msaa", "all", "ia2", "client"]
     process_id: int = Field(gt=0)
     status: Literal["discovered", "window_not_found", "unknown_ui_state", "native_unavailable", "unsupported_platform", "timeout"]
     studio_version: str | None = Field(default=None, pattern=r"^[0-9]+(?:\.[0-9]+){1,3}$")
@@ -186,6 +248,8 @@ class DiscoveryReport(FrozenModel):
     uia: ProbeReport | None = None
     hwnd: HwndSection = Field(default_factory=HwndSection)
     msaa: MsaaSection | None = None
+    msaa_client: MsaaSection | None = None
+    client_objects: ClientObjects | None = None
     ia2: Ia2Section | None = None
     truncated: bool = False
     unreadable: int = Field(default=0, ge=0)
@@ -194,13 +258,18 @@ class DiscoveryReport(FrozenModel):
 
     @model_validator(mode="after")
     def private_tree(self):
-        msaa_sections = [self.msaa.nodes if self.msaa else ()]
+        after = self.msaa_client if self.backend == "client" else self.msaa
+        msaa_sections = [after.nodes if after else ()]
+        if any(n.source_kind != "objid_client" or n.object_id != -4 for n in msaa_sections[0]):
+            raise ValueError("Invalid CLIENT tree")
         if self.ia2:
-            if self.backend != "ia2" or self.msaa is None:
+            if self.backend not in {"ia2", "client"} or after is None:
                 raise ValueError("Invalid IA2 backend")
-            if self.ia2.before_msaa_nodes != len(self.ia2.before_msaa.nodes) or self.ia2.after_msaa_nodes != len(self.msaa.nodes):
+            if self.ia2.before_msaa_nodes != len(self.ia2.before_msaa.nodes) or self.ia2.after_msaa_nodes != len(after.nodes):
                 raise ValueError("Invalid IA2 snapshot counts")
             msaa_sections.append(self.ia2.before_msaa.nodes)
+            if any(n.source_kind != "objid_client" or n.object_id != -4 for n in self.ia2.before_msaa.nodes):
+                raise ValueError("Invalid CLIENT baseline")
             checks = self.ia2.capability_checks
             if len({c.check_id for c in checks}) != len(checks): raise ValueError("Repeated IA2 check")
             if self.ia2.query_success_count != sum(c.capability.ia2_available for c in checks): raise ValueError("Invalid IA2 success count")
@@ -219,19 +288,47 @@ class DiscoveryReport(FrozenModel):
             complete = bool(checks) and all(c.comparison_complete for c in checks)
             if self.ia2.comparison_complete != complete:
                 raise ValueError("Incomplete IA2 check set")
+        if self.client_objects:
+            objects = self.client_objects
+            if self.backend != "client" or self.ia2 is None or after is None or self.msaa is not None:
+                raise ValueError("Invalid dual probe sections")
+            if objects.primary_root_hwnd != self.ia2.primary_root_hwnd or len(objects.checks) != len(self.ia2.capability_checks):
+                raise ValueError("Invalid dual probe scope")
+            for pair, check in zip(objects.checks, self.ia2.capability_checks):
+                if any(getattr(pair, f) != getattr(check, f) for f in ("source_hwnd", "root_hwnd", "source_process_id", "source_visible", "visible_root", "chromium_kind")):
+                    raise ValueError("Invalid dual probe pair")
+                if pair.objid_client.source_kind != "objid_client" or pair.objid_window.source_kind != "objid_window":
+                    raise ValueError("Mixed object sources")
+                for observation in (pair.objid_client, pair.objid_window):
+                    if observation.name is not None and (not self.names_included or observation.state is None or observation.state & 0x20000000):
+                        raise ValueError("Protected object name")
+            renderers = [p for p in objects.checks if p.root_hwnd == objects.primary_root_hwnd and p.visible_root and p.source_visible and p.chromium_kind == "render_widget"]
+            if objects.visible_renderer_client_available != any(p.objid_client.available for p in renderers):
+                raise ValueError("Invalid CLIENT availability")
+            if objects.visible_renderer_client_ia2_supported != any(p.objid_client.ia2_available is True for p in renderers):
+                raise ValueError("Invalid CLIENT IA2 summary")
+            if objects.visible_renderer_client_nodes != sum(n.source_hwnd in {p.source_hwnd for p in renderers} for n in after.nodes):
+                raise ValueError("Invalid CLIENT node count")
+            if any(n.source_kind != "objid_window" or n.object_id != 0 for n in objects.window_msaa.nodes):
+                raise ValueError("Invalid WINDOW tree")
+            msaa_sections.append(objects.window_msaa.nodes)
+        elif self.msaa_client is not None:
+            raise ValueError("Missing dual probe context")
         for section in (self.hwnd.windows, *msaa_sections):
             if any(n.name is not None and (not self.names_included or n.protected_content) for n in section):
                 raise ValueError("Protected names must be absent")
         for section in msaa_sections:
             seen = {}
             for node in section:
+                if node.object_id != (-4 if node.source_kind == "objid_client" else 0):
+                    raise ValueError("Invalid node source")
                 if (node.owner_kind == "simple_child") != (node.child_id is not None):
                     raise ValueError("Invalid MSAA child representation")
                 if node.node_id in seen:
                     raise ValueError("Repeated MSAA node id")
                 if node.parent_id is not None:
                     parent = seen.get(node.parent_id)
-                    if parent is None or parent.protected_content or parent.source_hwnd != node.source_hwnd:
+                    if parent is None or parent.protected_content or parent.source_hwnd != node.source_hwnd or parent.source_kind != node.source_kind:
                         raise ValueError("Invalid MSAA parent")
                 seen[node.node_id] = node
         if self.status == "discovered" and (not self.hwnd.windows or self.truncated or self.unreadable):
@@ -244,7 +341,7 @@ class DiscoveryReport(FrozenModel):
 def collect(*, backend, process_id, max_hwnd=256, max_nodes=500, max_depth=12,
             include_names=False, tree_view="control", timeout=20, runner=None, uia_probe=None):
     # Same native caps as CLI; validate before constructing an interpreter command.
-    if (backend not in {"hwnd", "msaa", "all", "ia2"} or type(process_id) is not int or not 1 <= process_id <= 2**31 - 1 or
+    if (backend not in {"hwnd", "msaa", "all", "ia2", "client"} or type(process_id) is not int or not 1 <= process_id <= 2**31 - 1 or
         type(max_hwnd) is not int or not 1 <= max_hwnd <= 2000 or type(max_nodes) is not int or not 1 <= max_nodes <= 2000 or
         type(max_depth) is not int or not 1 <= max_depth <= 20 or not 1 <= timeout <= 60 or tree_view not in {"control", "raw"}):
         raise ValueError("invalid_argument")
@@ -256,7 +353,7 @@ def collect(*, backend, process_id, max_hwnd=256, max_nodes=500, max_depth=12,
     try:
         if not os.environ.get("SystemRoot"): return failure("native_unavailable", "native_unavailable")
         executable = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-        sources = ",".join("'" + str(Path(__file__).with_name(name)).replace("'", "''") + "'" for name in ("NativeDiscovery.cs", "Ia2Discovery.cs"))
+        sources = ",".join("'" + str(Path(__file__).with_name(name)).replace("'", "''") + "'" for name in ("NativeDiscovery.cs", "Ia2Discovery.cs", "ClientDiscovery.cs"))
         # Path is our bundled source; all other substitutions are validated scalars.
         command = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); "
             "try { Add-Type -Path @(" + sources + ") -ReferencedAssemblies 'System.dll','Accessibility.dll'; "
@@ -274,6 +371,9 @@ def collect(*, backend, process_id, max_hwnd=256, max_nodes=500, max_depth=12,
         if report.backend != backend or report.process_id != process_id or report.names_included != include_names:
             return failure("native_unavailable", "worker_output_invalid")
         if backend == "ia2" and (report.ia2 is None or report.ia2.before_msaa_nodes + report.ia2.after_msaa_nodes > max_nodes):
+            return failure("native_unavailable", "worker_output_invalid")
+        if backend == "client" and (report.ia2 is None or report.client_objects is None or report.msaa_client is None or
+                report.ia2.before_msaa_nodes + report.ia2.after_msaa_nodes + len(report.client_objects.window_msaa.nodes) > max_nodes):
             return failure("native_unavailable", "worker_output_invalid")
         if backend == "all":
             remaining = deadline - monotonic()

@@ -1,4 +1,4 @@
-"""PC-SEND-1B..1E: production serializers/contracts, fully fake UI/COM boundaries."""
+"""PC-SEND-1B..1F: production serializers/contracts, fully fake UI/COM boundaries."""
 import base64
 import json
 import os
@@ -27,8 +27,8 @@ def worker_platform(monkeypatch):
 
 def fake_scenarios(system_directory="System32"):
     if sys.platform != "win32": pytest.skip("Stock .NET fake boundary harness requires Windows")
-    paths = [Path(p).absolute() for p in ("backend/app/windows/NativeDiscovery.cs", "backend/app/windows/Ia2Discovery.cs",
-        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs", "backend/tests/fixtures/windows/FakeNativeVariants.cs", "backend/tests/fixtures/windows/FakeIa2Probe.cs")]
+    paths = [Path(p).absolute() for p in ("backend/app/windows/NativeDiscovery.cs", "backend/app/windows/Ia2Discovery.cs", "backend/app/windows/ClientDiscovery.cs",
+        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs", "backend/tests/fixtures/windows/FakeNativeVariants.cs", "backend/tests/fixtures/windows/FakeIa2Probe.cs", "backend/tests/fixtures/windows/FakeClientProbe.cs")]
     literals = ",".join("'" + str(path).replace("'", "''") + "'" for path in paths)
     command = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); "
         "Add-Type -Path @(" + literals + ") -ReferencedAssemblies 'System.dll','Accessibility.dll'; "
@@ -69,7 +69,7 @@ def test_msaa_roles_parent_relations_and_state_are_metadata(scenarios):
     assert edit.owner_hwnd == 200 and edit.process_id == 11301
     simple = next(n for n in nodes if n.semantic_hint == "listitem")
     assert simple.owner_kind == "simple_child" and simple.child_id == 1
-    assert data.schema_version == 5 and data.backend == "msaa"
+    assert data.schema_version == 6 and data.backend == "msaa"
     assert data.studio_version == "1.36.6"
     assert scenarios["msaa"]["root_closes"] > 0
 
@@ -673,3 +673,193 @@ def test_ia2_primary_renderer_precedes_other_visible_widgets_and_their_success_d
     other = next(c for c in data.ia2.capability_checks if c.source_hwnd == 400)
     assert other.capability.ia2_available and other.visible_root
     assert data.ia2.tree_changed_after_ia2_query is None
+
+
+def client_renderer(data):
+    return next(p for p in data.client_objects.checks if p.source_hwnd == 200)
+
+
+def test_dual_probe_retains_separate_window_and_application_client_sources(scenarios):
+    data = report(scenarios, "dual_tree")
+    assert data.backend == "client" and data.msaa is None
+    renderer = client_renderer(data)
+    assert renderer.objid_window.available and renderer.objid_window.role == 9
+    assert renderer.objid_window.source_kind == "objid_window" and renderer.objid_window.object_id == 0
+    assert renderer.objid_window.child_count == 2 and renderer.objid_window.bounds == (0, 2, 30, 40)
+    assert renderer.objid_client.available and renderer.objid_client.role == 15
+    assert renderer.objid_client.source_kind == "objid_client" and renderer.objid_client.object_id == -4
+    assert renderer.objid_client.child_count == 4 and renderer.objid_client.metadata_phase == "before"
+    assert {n.semantic_hint for n in data.msaa_client.nodes} >= {"document", "pane", "edit", "button", "text"}
+    assert all(n.source_kind == "objid_client" and n.object_id == -4 for n in data.msaa_client.nodes)
+    window_nodes = data.client_objects.window_msaa.nodes
+    assert len(window_nodes) == 3
+    assert all(n.source_kind == "objid_window" and n.object_id == 0 and n.parent_id is None for n in window_nodes)
+    client_nodes = [n for n in data.msaa_client.nodes if n.source_hwnd == 200]
+    assert len(client_nodes) == data.client_objects.visible_renderer_client_nodes == 6
+    assert all(n.parent_id is not None for n in client_nodes[1:])
+    assert any(n.owner_kind == "simple_child" and n.child_id == 1 for n in client_nodes)
+    assert data.client_objects.visible_renderer_client_available
+    assert scenarios["dual_tree"]["acquired_count"] == scenarios["dual_tree"]["closes"] == 6
+
+
+def test_dual_probe_exact_native_acquisition_object_ids_iid_and_client_priority(scenarios):
+    trace = scenarios["dual_tree"]["trace"]
+    opens = [event for event in trace if ":open:" in event]
+    assert opens == [f"{hwnd}:client:open:4294967292:618736e0-3c3d-11cf-810c-00aa00389b71" for hwnd in (100, 200, 300)] + [
+        f"{hwnd}:window:open:0:618736e0-3c3d-11cf-810c-00aa00389b71" for hwnd in (100, 200, 300)]
+    # Injected IObjectApi is the exact boundary used by NativeObjectApi's P/Invoke.
+    source = Path("backend/app/windows/ClientDiscovery.cs").read_text(encoding="utf-8")
+    assert "api.FromWindow(hwnd, unchecked((uint)objectId), NativeDesktop.AccessibleId, out reads)" in source
+    assert "AccessibleObjectFromWindow(new IntPtr(hwnd), objectId, ref iid, out accessible)" in source
+    legacy = Path("backend/app/windows/NativeDiscovery.cs").read_text(encoding="utf-8")
+    assert "OpenAccessible(hwnd, ObjectIds.Client)" in legacy
+    assert "CreateStdAccessibleObject(" not in source + legacy
+    assert not re.search(r"\b(?:SendMessage|PostMessage)\s*\(", source + legacy)
+
+
+def test_dual_probe_queries_ia2_only_on_client_and_window_provider_failure_cannot_mask_support(scenarios):
+    data = report(scenarios, "dual_tree")
+    renderer = client_renderer(data)
+    assert renderer.objid_window.iserviceprovider_available is False
+    assert renderer.objid_window.provider_hresult_category == "no_interface"
+    assert renderer.objid_window.ia2_available is None and not renderer.objid_window.query_service_attempted
+    assert renderer.objid_window.ia2_query_status == "not_queried_window"
+    assert renderer.objid_client.iserviceprovider_available and renderer.objid_client.ia2_available
+    assert renderer.objid_client.query_hresult_category == "s_ok"
+    assert data.client_objects.visible_renderer_client_ia2_supported
+    for key, calls in scenarios["dual_tree"]["calls"].items():
+        assert len(calls) == (2 if key.endswith(":client") else 1)
+        if key.endswith(":window"): assert not any(c.startswith("service:") for c in calls)
+
+
+def test_window_service_provider_success_still_never_requests_ia2(scenarios):
+    data = report(scenarios, "dual_window_provider")
+    window = client_renderer(data).objid_window
+    assert window.iserviceprovider_available is True and window.provider_hresult_category == "s_ok"
+    assert window.ia2_available is None and window.ia2_query_status == "not_queried_window"
+    assert scenarios["dual_window_provider"]["calls"]["200:window"] == ["provider:6d5140c1-7436-11ce-8034-00aa006009fa"]
+
+
+@pytest.mark.parametrize("case,client_available,window_available,client_hr,window_hr", [
+    ("dual_client_no_interface", False, True, "no_interface", "s_ok"),
+    ("dual_client_error", False, True, "access_denied", "s_ok"),
+    ("dual_window_failure", True, False, "s_ok", "failed"),
+    ("dual_both_failure", False, False, "no_interface", "failed"),
+])
+def test_dual_acquisition_failures_are_sanitized_independent_and_release_failed_retvals(scenarios, case, client_available, window_available, client_hr, window_hr):
+    data = report(scenarios, case)
+    renderer = client_renderer(data)
+    assert renderer.objid_client.available is client_available
+    assert renderer.objid_window.available is window_available
+    assert renderer.objid_client.hresult_category == client_hr and renderer.objid_window.hresult_category == window_hr
+    assert data.client_objects.visible_renderer_client_available is client_available
+    assert bool(data.msaa_client.nodes) is client_available
+    assert bool(data.client_objects.window_msaa.nodes) is window_available
+    assert scenarios[case]["acquired_count"] == scenarios[case]["closes"]
+    for private in ("PRIVATE", "0x76543210", "COM ADDRESS", "EXCEPTION"):
+        assert private not in data.model_dump_json()
+
+
+def test_client_success_with_shell_roles_is_evidence_without_readiness(scenarios):
+    data = report(scenarios, "dual_shell")
+    renderer = client_renderer(data)
+    assert renderer.objid_client.available and renderer.objid_client.role == 9
+    assert renderer.objid_client.ia2_available is False and renderer.objid_client.query_hresult_category == "invalid_argument"
+    assert not data.client_objects.visible_renderer_client_ia2_supported
+    assert data.physical_action is False
+    assert data.ia2.tree_changed_after_ia2_query is False
+
+
+def test_dual_visible_renderer_client_precedes_hidden_roots_even_at_root_limit(scenarios):
+    data = report(scenarios, "dual_priority")
+    assert "target_root_limit" in data.errors and data.hwnd.root_statistics.target_roots_skipped == 7
+    assert [p.source_hwnd for p in data.client_objects.checks[:2]] == [100, 200]
+    opens = [event for event in scenarios["dual_priority"]["trace"] if ":open:" in event]
+    assert opens[1].startswith("200:client:open:")
+    assert data.client_objects.visible_renderer_client_available and data.client_objects.visible_renderer_client_ia2_supported
+
+
+def test_dual_visible_renderer_cannot_be_evicted_by_hidden_renderers_of_same_primary_root(scenarios):
+    data = report(scenarios, "dual_hidden_renderer")
+    assert len(data.client_objects.checks) == 32 and "ia2_check_limit" in data.errors
+    assert [p.source_hwnd for p in data.client_objects.checks[:2]] == [100, 200]
+    assert all(not p.source_visible for p in data.client_objects.checks[2:])
+    assert data.client_objects.visible_renderer_client_available and data.client_objects.visible_renderer_client_ia2_supported
+
+
+@pytest.mark.parametrize("case,code", [("dual_budget", "msaa_node_limit"), ("dual_depth", "msaa_depth_limit"), ("dual_deadline", "timeout")])
+def test_dual_client_tree_joint_limits_depth_and_deadline(scenarios, case, code):
+    data = report(scenarios, case)
+    assert data.truncated and code in data.errors and not data.ia2.comparison_complete
+    assert data.ia2.tree_changed_after_ia2_query is None
+    if case == "dual_budget":
+        assert sum(len(s.nodes) for s in (data.msaa_client, data.ia2.before_msaa, data.client_objects.window_msaa)) <= 4
+        assert data.client_objects.visible_renderer_client_ia2_supported
+    if case == "dual_depth": assert max(n.depth for n in data.msaa_client.nodes) <= 1
+    if case == "dual_deadline":
+        assert not data.msaa_client.nodes and not data.client_objects.window_msaa.nodes
+        assert not any(":window:open:" in t for t in scenarios[case]["trace"])
+
+
+@pytest.mark.parametrize("case", ["dual_protected_client", "dual_unknown_client", "dual_protected_window"])
+def test_dual_protection_precedes_names_children_and_provider(scenarios, case):
+    data = report(scenarios, case)
+    renderer = client_renderer(data)
+    trace = scenarios[case]["trace"]
+    kind = "window" if case == "dual_protected_window" else "client"
+    assert not any(t.startswith(f"200:{kind}:name:") or t.startswith(f"200:{kind}:count:") for t in trace)
+    assert not scenarios[case]["calls"][f"200:{kind}"]
+    if kind == "client":
+        assert renderer.objid_window.status == "protected"
+        assert not any(t.startswith("200:window:open:") for t in trace)
+    else:
+        assert renderer.objid_window.state == 0x20000000 and renderer.objid_window.name is None
+    assert scenarios[case]["acquired_count"] == scenarios[case]["closes"]
+
+
+def test_dual_names_opt_in_and_read_only_surfaces_have_no_actions_values_or_pointers(scenarios):
+    data = report(scenarios, "dual_names")
+    assert client_renderer(data).objid_client.name and client_renderer(data).objid_window.name
+    hidden = report(scenarios, "dual_tree")
+    assert all(p.objid_client.name is None and p.objid_window.name is None for p in hidden.client_objects.checks)
+    text = data.model_dump_json()
+    assert "PRIVATE COM ADDRESS" not in text and "pointer" not in text
+    combined = "\n".join(Path(f"backend/app/windows/{name}.cs").read_text(encoding="utf-8") for name in ("NativeDiscovery", "Ia2Discovery", "ClientDiscovery"))
+    assert not re.search(r"\b(?:doAction|scrollTo|scrollToPoint|accDoDefaultAction|accSelect|SetFocus|setValue|get_accValue|accValue|attributes|SendInput|SetClipboardData|WriteProcessMemory|CreateRemoteThread)\s*\(", combined)
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda d: d["client_objects"]["checks"][0]["objid_client"].update(object_id=0),
+    lambda d: d["client_objects"]["checks"][0]["objid_window"].update(ia2_available=True),
+    lambda d: d["client_objects"]["checks"][0]["objid_client"].update(name="PRIVATE"),
+    lambda d: d["client_objects"].update(visible_renderer_client_nodes=0),
+    lambda d: d["client_objects"]["window_msaa"]["nodes"][0].update(object_id=-4),
+    lambda d: d["msaa_client"]["nodes"][0].update(object_id=0, source_kind="objid_window"),
+])
+def test_dual_schema_rejects_mixed_sources_private_names_and_false_summary(scenarios, mutate):
+    data = report(scenarios, "dual_tree").model_dump()
+    mutate(data)
+    with pytest.raises(ValidationError): DiscoveryReport.model_validate(data)
+
+
+def test_dual_scope_changes_do_not_fall_back_to_window_source(scenarios):
+    data = report(scenarios, "dual_scope_after")
+    assert "ia2_scope_changed" in data.errors
+    assert client_renderer(data).objid_window.status == "out_of_scope"
+    assert not any(t.startswith("200:window:open:") for t in scenarios["dual_scope_after"]["trace"])
+
+
+def test_client_cli_saves_distinct_sources_and_worker_compiles_fixed_native_bridge(scenarios, tmp_path, monkeypatch, capsys, worker_platform):
+    data = report(scenarios, "dual_tree")
+    def runner(argv, **kwargs):
+        command = base64.b64decode(argv[-1]).decode("utf-16-le")
+        assert "ClientDiscovery.cs" in command and "'client',256,500,12,$false,20.0)" in command
+        return SimpleNamespace(returncode=0, stdout=data.model_dump_json().encode())
+    assert collect(backend="client", process_id=11300, runner=runner).client_objects is not None
+    monkeypatch.setattr("app.windows.native_discovery.collect", lambda **kwargs: data)
+    monkeypatch.setattr("app.windows.probe.save_report", lambda value, instance: save_report(value, instance, root=tmp_path))
+    assert cli(["--backend", "client", "--process-id", "11300"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["backend"] == "client" and output["msaa_nodes"] == len(data.msaa_client.nodes)
+    assert "objid_client" not in output and output["physical_action"] is False
+    assert DiscoveryReport.model_validate_json(Path(output["report"]).read_text(encoding="utf-8")).client_objects

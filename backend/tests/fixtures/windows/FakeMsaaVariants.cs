@@ -3,17 +3,19 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 namespace LiveStudioDiscovery {
-    sealed class FakeAccessibleReads : IAccessibleReads, IIa2Reads {
+    sealed class FakeAccessibleReads : IAccessibleReads, IIa2Reads, IIa2ProviderReads {
         public string identity = "parent";
         public object[] variants = new object[0];
         public readonly Dictionary<int, IAccessibleReads> objects = new Dictionary<int, IAccessibleReads>();
         public readonly List<string> calls = new List<string>();
         public bool protectedChild, protectedSelf, unknownState, unknownSelf, roleFailure, nameFailure, locationFailure, countFailure, objectFailure, childrenFailure;
         public int closes;
+        public int selfRole = 9;
         public string Identity { get { return identity; } }
         public Action<string, int> observe;
         public IIa2Com ia2;
         public Ia2Capability Capability() { return Ia2Contract.Check(ia2 ?? new FakeIa2Com { providerHr = unchecked((int)0x80004002) }); }
+        public Ia2Capability ProviderCapability() { return Ia2Contract.Check(ia2 ?? new FakeIa2Com { providerHr = unchecked((int)0x80004002) }, false); }
         void Read(string property, int child) { calls.Add(property + ":" + child); if (observe != null) observe(property, child); }
         static Exception Failure() { return new COMException("PRIVATE HRESULT EXCEPTION", unchecked((int)0x80004005)); }
         public int State(int child) {
@@ -21,7 +23,7 @@ namespace LiveStudioDiscovery {
             if ((child == 1 && unknownState) || (child == 0 && unknownSelf)) throw Failure();
             return (child == 1 && protectedChild) || (child == 0 && protectedSelf) ? 0x20000000 : child > 0 ? 0x100004 : 0;
         }
-        public int Role(int child) { Read("role", child); if (child == 1 && roleFailure) throw Failure(); return child == 0 ? 9 : child == 1 ? 42 : child == 2 ? 43 : 41; }
+        public int Role(int child) { Read("role", child); if (child == 1 && roleFailure) throw Failure(); return child == 0 ? selfRole : child == 1 ? 42 : child == 2 ? 43 : 41; }
         public string Name(int child) { Read("name", child); if (child == 1 && nameFailure) throw Failure(); return "Label " + child; }
         public int[] Location(int child) { Read("location", child); if (child == 1 && locationFailure) throw Failure(); return new int[] {child, 2, 30, 40}; }
         public int ChildCount() { Read("count", 0); if (countFailure) throw Failure(); return variants.Length; }

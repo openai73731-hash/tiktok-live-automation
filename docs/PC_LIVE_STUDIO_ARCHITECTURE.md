@@ -1,4 +1,4 @@
-# PC-first migration: architecture audit and PC-SEND-1E
+# PC-first migration: architecture audit and PC-SEND-1F
 
 Audited 2026-10-08 from the actual checkout, starting on clean `main` at
 `15e31f9d88688669b7bd430ebad2003f46ec53a7` (`Add TikTok You manual send release candidate`).
@@ -442,6 +442,89 @@ disabled. Stock x64/x86 PowerShell compiled the C# sources and exercised fake
 COM/UI boundaries only. `pip check` and the finite fake CLI passed. No real
 Studio discovery, LIVE, provider generation or physical action was performed.
 
+### PC-SEND-1F: explicit CLIENT / WINDOW acquisition evidence
+
+Review of pre-change HEAD `06b697c7b7ae93e78d3745ca3bc15f18e6ee62b8` establishes
+that NativeDesktop.Accessible already called AccessibleObjectFromWindow with
+`unchecked((uint)-4)` and IID_IAccessible. This is OBJID_CLIENT (0xFFFFFFFC), not
+OBJID_WINDOW (0). The repository neither called CreateStdAccessibleObject nor
+sent WM_GETOBJECT itself. Thus the operator's 1E system/window chrome and
+E_INVALIDARG IA2 result do not prove a wrong object ID in this code. The installed
+provider's exact reason remains unverified; 1F adds explicit measurements.
+
+Primary sources checked 2026-10-09:
+
+- Microsoft [object identifiers](https://learn.microsoft.com/en-us/windows/win32/winauto/object-identifiers)
+  distinguish the window itself from the application's client area.
+- Microsoft [AccessibleObjectFromWindow](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-accessibleobjectfromwindow)
+  specifies HWND, DWORD object ID, REFIID and void** output, with S_OK on success.
+- Chromium's current [legacy_render_widget_host_win.cc](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/content/browser/renderer_host/legacy_render_widget_host_win.cc),
+  blob `ec0f5c93d005f9ae2cbd77ef6d83220eb49e4ed4`, handles OBJID_CLIENT by returning
+  the web-content IAccessible through the standard MSAA mechanism. It separately
+  creates a system window accessible internally. This upstream code is not proof
+  of the installed Studio version/embedded Chromium implementation.
+- Chromium's historical [renderer client test](https://chromium.googlesource.com/chromium/src.git/+/8ced33be1ee63e589afff6f9229b36fe73cfd0f9/src/chrome/browser/accessibility_win_browsertest.cc)
+  obtains the renderer using AccessibleObjectFromWindow(OBJID_CLIENT, IID_IAccessible).
+  No private activation behavior from other historical tests is copied.
+
+The new explicit `--backend client` keeps old modes intact and reads both fixed
+object IDs for at most 32 previously scoped Chromium HWNDs. The shared acquisition
+boundary passes unchecked DWORD -4 or 0 and the stock IAccessible IID directly to
+oleacc. It records HRESULT categories even on a non-null unsuccessful retval,
+releasing that retval; a successful object has one owned NativeAccessible lifetime.
+Failure never substitutes WINDOW for CLIENT. Native calls remain in the owned
+hidden STA worker; no direct/custom messages, helper, flags or process changes exist.
+
+CLIENT acquisition and IA2 queries precede WINDOW acquisition. Ordering is primary
+visible main widget, its visible renderers, other visible Chromium HWNDs, then hidden
+HWNDs. Hidden renderers of the same root cannot consume the primary visible renderer's
+check priority. Root/desktop/check caps remain 8/512/32. Ownership, deadline and
+protection checks remain mandatory; protected/unknown-protection CLIENT objects
+suppress WINDOW probing as well. A failed acquisition is distinct from unknown
+protection on an acquired object.
+
+Schema 6 adds source_kind/object_id on each MSAA node and IA2 check. In dual mode,
+`msaa_client` holds the CLIENT after tree, `ia2.before_msaa` its baseline, and `msaa`
+is null. `client_objects.window_msaa` holds only independently serialized WINDOW
+root metadata, never WINDOW descendants. `client_objects.checks` pairs each source
+HWND/root/PID/visibility with objid_client/objid_window observations: available,
+acquisition category/status, role/state/count/bounds, optional name and capabilities.
+CLIENT pair metadata comes from the baseline and is labelled metadata_phase=before;
+WINDOW uses metadata_phase=window. Missing metadata from a limit is not unavailability.
+
+Only CLIENT executes the existing QI(IServiceProvider) then QueryService(IAccessible,
+IAccessible2) contract. WINDOW checks QI(IServiceProvider) only; its IA2 availability
+is null with not_queried_window, never a fabricated negative result. No IA2 metadata
+getters, full vtable, traversal or actions are introduced. No Value/password/attributes
+reads exist. Names require the same opt-in and protection policy in both trees and
+paired metadata; pointers/COM identities/raw exceptions never enter the report.
+
+The joint visit budget covers CLIENT before/after plus WINDOW roots. WINDOW reserves
+min(candidate count, max-nodes/4) visits, CLIENT gets the remainder (at least 75%).
+Client pairs retain the 1E exact-object comparison and renderer snapshot priority.
+Bounded acquisition/provider capability can still run when metadata budget is exhausted.
+Depth, shared deadline, owned-worker kill, output/storage bounds and joint 64 diagnostics
+remain enforced. Existing negative child-ID behavior is unchanged.
+
+`client_objects.visible_renderer_client_available`, visible_renderer_client_nodes
+(after tree only) and visible_renderer_client_ia2_supported refer only to visible
+renderers of primary_root_hwnd. They do not summarize other windows' success.
+Available CLIENT plus content roles/descendants is evidence for review; available
+CLIENT with only shell metadata is a shell-only observation, not a readiness grade.
+Unavailable requires an attempted failed acquisition/category; skipped protected,
+out-of-scope or timeout cases stay distinct. CLIENT IA2 true/s_ok proves capability
+for that returned object/context. Incomplete/null comparisons cannot establish an
+unchanged or shell-only tree. Standard reads can affect on-demand accessibility;
+dual captures do not prove WINDOW/CLIENT COM identity or causality. No real probe
+was run by the agent, and PC-SEND-2 remains outside this stage.
+
+PC-SEND-1F validation (2026-10-09): focused native discovery **136 passed**;
+Tier A **166 passed, 1 skipped**; Tier B **528 passed, 1 skipped**, with two
+existing SDK/websockets deprecation warnings. Real UI opt-in remained disabled.
+The stock x64/x86 PowerShell harness compiled the production C# sources and ran
+fake acquisition/COM/UI boundaries only. `pip check` and the finite fake CLI
+passed; no real Studio probe, LIVE, provider generation or input action was run.
+
 Microsoft documents [UIA tree scoping and changing trees](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-tree-overview)
 and [TreeWalker/property-based discovery](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/obtaining-ui-automation-elements).
 These support the diagnostic approach, not a claim about TikTok's actual accessibility.
@@ -470,8 +553,10 @@ not block safe standalone manual preparation.
    **PC-SEND-1D:** diagnose native VARIANT tags/QI/partial results,
    prioritize visible roots and report per-root completeness. Exact real child failure
    still requires operator capture; IA2 was deferred in that slice.
-   **PC-SEND-1E (current slice):** standard IServiceProvider/QueryService capability
+   **PC-SEND-1E:** standard IServiceProvider/QueryService capability
    and paired MSAA experiment; no IA2 vtable/actions or input implementation.
+   **PC-SEND-1F (current slice):** explicit dual OBJID_CLIENT/OBJID_WINDOW evidence,
+   separate CLIENT tree and CLIENT-only IA2 queries. Previous code already used CLIENT.
 2. **PC-SEND-2:** collect/redact real control/raw/HWND/MSAA trees and version/locale/account/LIVE
    evidence; review a backend profile. Implement an explicit approved-envelope
    preparation route that rechecks session/runtime/approval/expiry, uniquely locates

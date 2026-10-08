@@ -1,6 +1,6 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-1E
+## PC-first: Windows LIVE Studio, этап PC-SEND-1F
 
 Текущая PC-ветка добавляет выбор транспорта и **read-only discovery**. Это ещё не
 manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
@@ -78,7 +78,69 @@ Root cap остаётся 8, desktop cap 512. Среди roots выбранно�
 false. Это полнота данного snapshot, не доказательство доступности chat controls.
 Отдельный `--root-hwnd` не добавлен.
 
-PC-SEND-1E добавляет отдельный **read-only IA2 capability probe**. После 1D оператор
+PC-SEND-1F добавляет отдельный **read-only WINDOW/CLIENT comparison** через
+`--backend client`. Review HEAD `06b697c` установил: прежний `NativeDesktop.Accessible`
+уже вызывал `AccessibleObjectFromWindow(hwnd, unchecked((uint)-4), IID_IAccessible)`.
+Это **OBJID_CLIENT**, не OBJID_WINDOW; CreateStdAccessibleObject/custom WM_GETOBJECT
+в нашем пути отсутствовали. Поэтому window chrome в capture 1E нельзя объяснять
+ошибочно выбранным OBJID_WINDOW. Почему установленный provider возвращает только
+shell, пока не доказано; новый этап добавляет измерение, а не обещает исправленное UI.
+
+Schema 6 явно маркирует nodes/checks `source_kind` и `object_id` (-4 CLIENT / 0 WINDOW).
+Для каждого bounded Chromium HWND в `client_objects.checks` доступны отдельные
+`objid_client` и `objid_window`: acquisition available/status/HRESULT category,
+role/state/child_count/bounds, optional name, provider/QS capability. Неуспешный CLIENT
+не подменяется WINDOW. CLIENT queries идут первыми: visible main widget, его visible
+renderer, другие visible Chromium HWND, затем hidden. Root cap 8 и check cap 32
+сохранены; скрытые renderer не могут вытеснить основной видимый renderer.
+
+`msaa_client.nodes` содержит CLIENT tree **после** client-only IA2 query;
+`ia2.before_msaa` — CLIENT baseline на том же удержанном объекте, как в 1E.
+`client_objects.window_msaa` содержит только WINDOW root metadata, без его descendants.
+В dual режиме `msaa=null`: деревья разных OBJID не смешиваются. Metadata в паре
+CLIENT берётся из baseline (`metadata_phase=before`), WINDOW — из отдельного чтения
+(`metadata_phase=window`); при нехватке бюджета поля могут оставаться null.
+
+На CLIENT выполняется прежний проверенный `QI(IServiceProvider)` →
+`QueryService(IID_IAccessible, IID_IAccessible2)`. Для WINDOW проверяется только
+IServiceProvider: `query_service_attempted=false`, `ia2_available=null`,
+`ia2_query_status=not_queried_window`. Это отсутствие запроса, не вывод об отсутствии IA2.
+IA2 metadata getters/actions/traversal не добавлены. Names остаются только под
+`--include-names`; Value/password/attributes не читаются, input отсутствует.
+
+Общий max-nodes покрывает CLIENT before + after + WINDOW metadata: WINDOW получает
+не более min(32, max-nodes/4) visits, CLIENT — оставшийся бюджет. Даже если metadata
+budget исчерпан, bounded acquisition/capability сохраняется; missing metadata/null
+не означает unavailable. Depth/timeout/output/storage/privacy guards сохранены.
+Negative child IDs сохраняют прежний conservative malformed_variant diagnostic.
+
+Оператор может сделать **один idle capture без LIVE**, заменив пример PID текущим
+основным GUI PID Studio. Агент эту команду не выполняет:
+
+```powershell
+Set-Location C:\Users\user\Documents\tiktok-live-automation
+$studioProcessId = 4620 # Заменить актуальным основным GUI PID.
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend client --process-id $studioProcessId --instance-id vm1 --max-nodes 2000 --max-hwnd 256 --max-depth 20 --timeout 60
+```
+
+Смотрите `client_objects.primary_root_hwnd` и соответствующий check с
+`chromium_kind=render_widget`, `source_visible=true`, `visible_root=true`:
+
+- A: `objid_client.available=true`, CLIENT descendants в `msaa_client.nodes` показывают
+  document/pane/text/edit/button content. Это evidence для review, не selectors/readiness.
+- B: CLIENT available, но roles/descendants остаются window chrome: shell-only результат
+  данного snapshot. Один role или node count не доказывает содержание всего UI.
+- C: CLIENT `available=false`, `status=unavailable`, sanitized `hresult_category` —
+  acquisition отказал. Protected/out_of_scope/timeout — пропущенная проверка, не C.
+- D: CLIENT `ia2_available=true`, `query_hresult_category=s_ok` — IA2 доступен на CLIENT.
+
+Сводка только основного visible renderer: `visible_renderer_client_available`,
+`visible_renderer_client_nodes` (after tree), `visible_renderer_client_ia2_supported`.
+Неполные snapshots (`comparison_complete=false` / changed=null) не доказывают shell-only.
+UIA/default, HWND/MSAA/all и отдельный IA2 backend сохранены. PC-SEND-2 не начат.
+Источники и ограничения: [PC architecture](docs/PC_LIVE_STUDIO_ARCHITECTURE.md).
+
+PC-SEND-1E добавил отдельный **read-only IA2 capability probe**. После 1D оператор
 получил 52 MSAA nodes: Windows chrome/simple children доступны, но TikTok comment
 panel/composer/Send ещё не найдены. Ручное включение Narrator структуру не изменило.
 Четыре VT_I4 diagnostics не доказывают, что за ними находятся TikTok controls.
@@ -169,11 +231,11 @@ $captureArgs = @('--process-id', "$studioProcessId", '--instance-id', 'vm1', '--
 
 JSON tree сохраняется только в ignored `diagnostics/windows/vm1/<id>.json`, максимум
 20 отчётов суммарно для всех backends, без eviction; stdout показывает status/count/path.
-UIA сохраняет schema 1; native schema 5 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
+UIA сохраняет schema 1; native schema 6 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
 `uia`. HWND metadata содержит реальный owning PID, parent/depth/class/rectangle и
 Chromium hints. MSAA содержит role/state/relationships/location и diagnostic hints.
 Различение object/simple child с `child_id` сохранено из schema 3;
-старые schema 2/3/4 captures остаются историческими файлами и не переписываются.
+старые schema 2/3/4/5 captures остаются историческими файлами и не переписываются.
 Bounded process metadata содержит descendants, optional image path и HWND references;
 `has_windows` относится только к окнам в этом snapshot. `studio_version` читается из
 доступного executable основного PID; недоступный path/version — `null`, не ошибка.
