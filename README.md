@@ -1,6 +1,6 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-1
+## PC-first: Windows LIVE Studio, этап PC-SEND-1B
 
 Текущая PC-ветка добавляет выбор транспорта и **read-only discovery**. Это ещё не
 manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
@@ -9,7 +9,7 @@ PocketWin — внешняя программа, её internals и торгов�
 Подробный аудит, ограничения и этапы: [PC architecture](docs/PC_LIVE_STUDIO_ARCHITECTURE.md).
 
 Требования probe: Windows 10/11 с интерактивным desktop, Windows PowerShell 5.1 и
-встроенными .NET UI Automation assemblies, Python 3.12+, установленный LIVE Studio.
+встроенными .NET UI Automation / Accessibility assemblies, Python 3.12+, установленный LIVE Studio.
 Дополнительные Python UI-пакеты не нужны. Оператор сам запускает Studio, входит в
 свой аккаунт и открывает панель комментариев. Поддержка конкретной версии Studio
 ещё не подтверждена. Probe никогда не фокусирует поле, не вводит и не отправляет.
@@ -31,24 +31,50 @@ DISABLED; Android startup flag не включает Windows-действия. �
 и существующий LM Studio/fake pipeline сохранены. Real CONNECT выполняет оператор.
 Для возврата к Android задайте `TIKTOK_TRANSPORT=android` и перезапустите backend.
 
-В отдельном PowerShell выполните read-only probe (LIVE для самого discovery не нужен):
+PC-SEND-1B добавляет HWND и MSAA/IAccessible discovery для Chromium shell. По отчёту
+оператора, на Studio 1.36.6 UIA control/raw показывают только `Chrome_WidgetWin_1`
+и `Chrome_RenderWidgetHostHWND`, без patterns/кандидатов. Это не найденные chat controls.
+Default остаётся UIA; HWND/MSAA/all запускаются только явно и требуют основной PID.
+
+В отдельном PowerShell оператор вручную выполняет read-only capture (LIVE для самого
+discovery не нужен). PID 11300 — пример из исследования, замените текущим основным
+GUI PID своего Studio из Task Manager. `--include-names` включает приватные labels;
+уберите его для capture без имён. Backend/FastAPI запускать для probe не требуется.
 
 ```powershell
-& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1
-# Для review доступных labels: содержит private UI text, просмотрите перед передачей.
-& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1 --include-names
-# Если embedded WebView почти пуст в control view:
-& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1 --include-names --tree-view raw
-# Если имя процесса не распознано, укажите PID своего Studio из Task Manager:
-# & ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1 --process-id <PID>
+Set-Location C:\Users\user\Documents\tiktok-live-automation
+$studioProcessId = 11300 # Заменить актуальным основным GUI PID.
+$captureArgs = @('--process-id', "$studioProcessId", '--instance-id', 'vm1', '--include-names', '--max-nodes', '2000', '--max-hwnd', '256', '--max-depth', '20', '--timeout', '60')
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend uia --tree-view raw @captureArgs
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend hwnd @captureArgs
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend msaa @captureArgs
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend all --tree-view raw @captureArgs
+# Для отдельного control snapshot замените --tree-view raw на --tree-view control.
+# Прежний минимальный вызов по-прежнему использует UIA без имён:
+# & ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1
 ```
 
 JSON tree сохраняется только в ignored `diagnostics/windows/vm1/<id>.json`, максимум
-20 отчётов; stdout показывает status/count/path. Password names/subtrees и значения
-Value/Text patterns не читаются. Exit 0 означает полный snapshot кандидатов;
-exit 2 — window_not_found/timeout/unknown_ui_state/uia_unavailable либо отказ записи.
+20 отчётов суммарно для всех backends, без eviction; stdout показывает status/count/path.
+UIA сохраняет schema 1; schema 2 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
+`uia`. HWND metadata содержит реальный owning PID, parent/depth/class/rectangle и
+Chromium hints. MSAA содержит role/state/relationships/location и diagnostic hints.
+Bounded process metadata содержит descendants, optional image path и HWND references;
+`has_windows` относится только к окнам в этом snapshot. `studio_version` читается из
+доступного executable основного PID; недоступный path/version — `null`, не ошибка.
+Никакие command lines/values/passwords/session storage не читаются. Protected nodes
+не раскрывают имя/поддерево; unknown protection прекращает чтение узла.
+
+Defaults: 256 HWND, 500 MSAA nodes и 500 UIA nodes, depth 12, timeout 20 секунд.
+Caps: 2000 HWND, 2000 nodes **на каждый accessibility backend**, depth 20, timeout 60.
+`all` делит один timeout между native worker и UIA. Ограниченный desktop/process
+snapshot нужен только для поиска выбранных roots/descendants; чужие деревья не обходятся.
+Некорректный `--max-nodes 3000` и другие limits дают явный argparse `invalid_argument`.
+Exit 0 означает полный snapshot discovery;
+exit 2 — window_not_found/timeout/unknown_ui_state/uia_unavailable/native_unavailable либо отказ записи.
 Кандидат Edit/Button не доказывает input/Send, аккаунт или LIVE. Никакие selectors
-не угаданы. Локальный запуск в этой сессии дал `window_not_found`, 0 windows/0 nodes.
+не угаданы. Результат прежнего PC-SEND-1 probe был `window_not_found`; в PC-SEND-1B
+реальный probe агентом не запускался. Fake tests не подтверждают MSAA на Studio 1.36.6.
 
 Ручная последовательность: запустите Studio, откройте comments, выполните discovery,
 проверьте unique input/ancestry/patterns в локальном отчёте. Для последующего review

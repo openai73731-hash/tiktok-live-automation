@@ -29,7 +29,7 @@ where = ["backend"]
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["static/admin/*", "windows/*.ps1"]
+app = ["static/admin/*", "windows/*.ps1", "windows/*.cs"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]

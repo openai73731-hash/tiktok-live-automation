@@ -1,5 +1,5 @@
 # Tier A: pass the files/selectors covering your edit. Default = offline PC contracts.
-param([string[]]$TestPaths = @('backend/tests/test_windows_live_studio.py'))
+param([string[]]$TestPaths = @('backend/tests/test_windows_live_studio.py', 'backend/tests/test_windows_native_discovery.py'))
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $repoRoot

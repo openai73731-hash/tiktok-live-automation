@@ -1,4 +1,4 @@
-# PC-first migration: architecture audit and PC-SEND-1
+# PC-first migration: architecture audit and PC-SEND-1B
 
 Audited 2026-10-08 from the actual checkout, starting on clean `main` at
 `15e31f9d88688669b7bd430ebad2003f46ec53a7` (`Add TikTok You manual send release candidate`).
@@ -77,7 +77,7 @@ Existing SDK source -> shared Comment/AI/policy/approval/queue
          | AndroidTikTokReplySender (legacy, preserved)
          | WindowsLiveStudioReplySender (PC-SEND-1, refuses prepare/submit)
 
-Explicit developer CLI -> isolated Windows UIA read-only worker -> private report
+Explicit developer CLI -> isolated UIA / HWND / MSAA read-only worker -> private report
 ```
 
 PocketWin is a video source only. There is no dependency on its trading logic,
@@ -127,6 +127,73 @@ with native bindings and does not change system/process execution policy.
 
 ## Platform evidence and limitations
 
+### PC-SEND-1B: Chromium discovery extension (2026-10-08)
+
+The operator reports Windows 11, PowerShell 5.1, Python 3.12.10 and Studio 1.36.6
+under `C:\Program Files\TikTok LIVE Studio`. Their observed main GUI PID was 11300;
+this is transient evidence, never a hardcoded process selector. Their control/raw
+UIA captures expose only `Chrome_WidgetWin_1` and `Chrome_RenderWidgetHostHWND`, no
+patterns or edit/button/chat candidates. This supersedes the earlier no-window
+observation above for their running installation. No new real probe was run by the
+agent for PC-SEND-1B; real MSAA availability remains unverified.
+
+`--backend uia` preserves the existing default and schema 1. Explicit `hwnd`, `msaa`
+and `all` require a positive selected main PID. `native_discovery.py` launches stock
+Windows PowerShell in STA with fixed encoded code; `Add-Type` compiles the packaged
+`NativeDiscovery.cs` locally against built-in .NET `Accessibility.IAccessible`.
+There is no new Python/Node dependency, downloaded helper or injection. Its narrow
+read interface has no actions, values, focus, input, clipboard or browser-debug APIs.
+The fake harness implements this same interface and executes the actual collectors
+without constructing the native adapter or inspecting real windows.
+
+The native adapter uses bounded `EnumWindows` to find the selected PID's roots,
+then cycle-guarded child/sibling HWND traversal. Each HWND records its actual owner
+from `GetWindowThreadProcessId`, independently of root ownership. Class hints mark
+the observed Chromium shell classes but establish no selectors. Names are opt-in;
+password-style edit HWNDs suppress names and descendants. Windows documents that
+[`GetWindowText`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowtextw)
+cannot retrieve another application's edit-control contents. No `WM_GETTEXT` or
+other content-reading fallback is used.
+
+MSAA roots come from
+[`AccessibleObjectFromWindow` with OBJID_CLIENT](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-accessibleobjectfromwindow).
+The walker uses state/role/name/count/location reads and
+[`AccessibleChildren`](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-accessiblechildren),
+handling both integer simple-child IDs and accessible COM objects. It releases
+owned COM references, bounds visits (including repeats/errors), and suppresses
+protected names/children. Unreadable state prevents name/child access.
+`WindowFromAccessibleObject` supplies an optional owner HWND; simple children report
+the container owner explicitly. Unknown owners stay null. Role/state semantic hints
+are evidence only. No `accValue`, default action or setter is called.
+
+Schema 2 separates `hwnd.windows`, `msaa.nodes` and optional `uia` (schema 1 in
+`all`). It includes backend, selected PID, optional executable ProductVersion,
+bounded related-process metadata, truncation/unreadable counts, up to 16 static
+error codes and `physical_action=false`. Toolhelp snapshot filtering retains only
+the main PID and descendants (up to 64, ancestry depth 20); optional image path
+uses limited-information access. A denied/empty image path is null and nonfatal.
+Version is null if unavailable/non-numeric; it is never inferred from a path or
+process name. `has_windows`/HWND references describe only the captured tree, not a
+complete inventory of the desktop. The referenced HWND records contain classes.
+Reports never include process command lines or private exception text.
+
+Native enumeration caps desktop roots examined at 512, matching roots at eight,
+process snapshot at 4096, child traversal at 2000, and output at 2 MB. CLI defaults
+are 256 HWND, 500 nodes per accessibility backend, depth 12 and 20 seconds; hard
+caps are 2000 HWND, 2000 nodes per backend, depth 20 and 60 seconds. `all` shares a
+single deadline between native compilation/discovery and UIA; timeout kills only
+its owned worker. Partial/cyclic/malformed results remain `unknown_ui_state`.
+Bad CLI limits (including `--max-nodes 3000`) fail before any inspection with a
+clear argparse `invalid_argument`. Existing ignored storage, 20 reports per
+instance across backends, link rejection and private stdout rules are preserved.
+
+The exact four manual capture commands are in README. PC-SEND-2 still requires
+redacted real HWND/MSAA/UIA snapshots with panel state, version/locale, account/LIVE
+markers, unique composer/submit ancestry and stable identity across reopening the
+panel. Report all unknown/blocked states too. If native discovery still exposes
+only a shell, there is no basis for input or SEND selectors. Accessibility
+snapshots alone do not verify Unicode entry, keyboard behavior or publication.
+
 Microsoft documents [UIA tree scoping and changing trees](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-tree-overview)
 and [TreeWalker/property-based discovery](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/obtaining-ui-automation-elements).
 These support the diagnostic approach, not a claim about TikTok's actual accessibility.
@@ -145,10 +212,12 @@ not block safe standalone manual preparation.
 
 ## Migration stages and release gates
 
-1. **PC-SEND-1 (this commit):** audit, transport selection, cached unavailable Windows
+1. **PC-SEND-1:** audit, transport selection, cached unavailable Windows
    sender, native read-only probe, offline tests and tiered commands. This is a
    discovery milestone, **not the first manual-prepare release candidate**.
-2. **PC-SEND-2:** collect/redact real control/raw trees and version/locale/account/LIVE
+   **PC-SEND-1B (current slice):** add bounded HWND and MSAA discovery to investigate
+   the observed Chromium shell. No production controls or actions.
+2. **PC-SEND-2:** collect/redact real control/raw/HWND/MSAA trees and version/locale/account/LIVE
    evidence; review a backend profile. Implement an explicit approved-envelope
    preparation route that rechecks session/runtime/approval/expiry, uniquely locates
    input, verifies blank/exact text and prepares Unicode without submitting. No
@@ -223,6 +292,14 @@ so the initial `--no-build-isolation` packaging attempt could not import the bac
 standard isolated wheel build succeeded without changing runtime dependencies.
 Full pytest was not run: this is an isolated discovery milestone, not a merge,
 production release candidate or a major replacement of the core pipeline.
+
+PC-SEND-1B validation: focused Windows/Tier A **67 passed, 1 skipped**; Tier B
+**429 passed, 1 skipped**, with the same two existing SDK deprecation warnings.
+The skip is the opt-in real UIA test; `RUN_LIVE_STUDIO_E2E=0` was explicit.
+`pip check` found no broken requirements. The isolated wheel includes the C#,
+native Python and original UIA workers and excludes runtime reports/logs. The real
+native adapter was not executed: the C# collectors ran only against fake boundaries.
+Full pytest and unrelated `test_unknown_events.py` fixes remain outside this slice.
 
 For real-machine collection, follow the exact commands in README's PC section.
 Start Studio/login/open the comment panel yourself. Collect both idle and appropriate
