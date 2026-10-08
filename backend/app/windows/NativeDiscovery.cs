@@ -30,18 +30,43 @@ namespace LiveStudioDiscovery {
         public bool focusable, focused, disabled, invisible, offscreen, protected_content;
         public int[] bounds;
     }
+    // Only these scalar metadata fields cross the worker boundary. Never a VARIANT payload.
+    public sealed class ChildDiagnostic {
+        public long source_hwnd;
+        public int? parent_id, child_index, vt, requested, obtained;
+        public string category, reason, hresult_category;
+    }
+    public sealed class ChildRead {
+        public object Value;
+        public int? Index, Vt, Requested, Obtained;
+        public string Category, Reason, Hresult;
+        public static ChildRead Managed(object value, int index) {
+            return new ChildRead { Value = value, Index = index, Vt = value is int ? 3 : value is IAccessibleReads || value is IMsaaNode ? 9 : (int?)null,
+                Category = value is int ? "i4" : value is IAccessibleReads || value is IMsaaNode ? "dispatch" : "unavailable" };
+        }
+    }
+    public sealed class RootScanStats {
+        public int target_roots_total, target_roots_selected, target_roots_skipped;
+        public bool enumeration_complete = true;
+    }
+    public sealed class RootTraversal {
+        public long hwnd;
+        public bool? visible, msaa_traversal_complete;
+        public bool hwnd_traversal_complete;
+    }
     public interface IMsaaNode : IDisposable {
         string Identity { get; }
         bool SimpleChild { get; }
         int? ChildId { get; }
         int State(); int Role(); int ChildCount();
         string Name(); int[] Location(); long? OwnerWindow();
-        IEnumerable<IMsaaNode> Children(int count);
+        IEnumerable<ChildRead> Children(int count);
         IMsaaNode ChildObject();
     }
     [Flags] public enum ScanLimits { None = 0, Desktop = 1, TargetRoots = 2, TargetChildren = 4, Processes = 8 }
     public interface IReadOnlyDesktop {
         ScanLimits Limits { get; }
+        RootScanStats RootStats { get; }
         IEnumerable<long> TopWindows(int processId);
         IEnumerable<long> ChildWindows(long hwnd);
         WindowRow Window(long hwnd, bool includeNames);
@@ -54,11 +79,13 @@ namespace LiveStudioDiscovery {
         readonly IReadOnlyDesktop api;
         readonly int maxHwnd, maxNodes, maxDepth;
         readonly bool names;
-        int hwndAttempts, msaaAttempts, unreadable;
+        int hwndAttempts, msaaAttempts, unreadable, omissions, diagnosticsDropped;
         bool truncated;
         readonly List<string> errors = new List<string>();
         readonly List<WindowRow> windows = new List<WindowRow>();
         readonly List<MsaaRow> nodes = new List<MsaaRow>();
+        readonly List<ChildDiagnostic> diagnostics = new List<ChildDiagnostic>();
+        readonly List<RootTraversal> roots = new List<RootTraversal>();
         readonly HashSet<long> hwndSeen = new HashSet<long>();
         public Collector(IReadOnlyDesktop desktop, int hwndLimit, int nodeLimit, int depthLimit, bool includeNames) {
             if (hwndLimit < 1 || hwndLimit > 2000 || nodeLimit < 1 || nodeLimit > 2000 || depthLimit < 1 || depthLimit > 20)
@@ -72,9 +99,18 @@ namespace LiveStudioDiscovery {
             return result.ToString();
         }
         void Note(string code, bool bad = true, bool cut = false) {
+            omissions++;
             if (bad) unreadable++;
             if (cut) truncated = true;
             if (errors.Count < 16 && !errors.Contains(code)) errors.Add(code);
+        }
+        void Diagnostic(long source, int? parent, ChildRead read, string reason = null, Exception failure = null) {
+            if (diagnostics.Count >= 64) { diagnosticsDropped++; return; }
+            diagnostics.Add(new ChildDiagnostic { source_hwnd = source, parent_id = parent,
+                child_index = read == null ? null : read.Index, vt = read == null ? null : read.Vt,
+                category = read == null ? "unavailable" : read.Category, reason = reason ?? read.Reason,
+                hresult_category = failure == null ? (read == null ? null : read.Hresult) : VariantReader.Hresult(failure.HResult),
+                requested = read == null ? null : read.Requested, obtained = read == null ? null : read.Obtained });
         }
         void Hwnd(long handle, long root, int depth) {
             if (hwndAttempts >= maxHwnd) { Note("hwnd_limit", false, true); return; }
@@ -106,7 +142,7 @@ namespace LiveStudioDiscovery {
                 case 16: return "pane"; default: return "other";
             }
         }
-        void Msaa(IMsaaNode node, int? parent, int depth, long source, HashSet<string> seen) {
+        void Msaa(IMsaaNode node, int? parent, int depth, long source, HashSet<string> seen, ChildRead origin = null) {
             using (node) {
                 if (msaaAttempts >= maxNodes) { Note("msaa_node_limit", false, true); return; }
                 msaaAttempts++;
@@ -115,7 +151,7 @@ namespace LiveStudioDiscovery {
                     // State is mandatory before Name/child access: unknown protection fails closed.
                     int state;
                     try { state = node.State(); if (state < 0) throw new InvalidOperationException(); }
-                    catch { Note("msaa_state_unavailable"); return; }
+                    catch (Exception e) { Diagnostic(source, parent, origin, "child_property_failed", e); Note("msaa_state_unavailable"); return; }
                     bool secret = (state & 0x20000000) != 0;
                     var row = new MsaaRow { node_id = msaaAttempts, parent_id = parent, depth = depth,
                         source_hwnd = source, state = state, child_id = node.ChildId, protected_content = secret,
@@ -123,7 +159,7 @@ namespace LiveStudioDiscovery {
                         disabled = (state & 1) != 0, invisible = (state & 0x8000) != 0, offscreen = (state & 0x10000) != 0,
                         owner_kind = node.SimpleChild ? "simple_child" : "accessible_object" };
                     try { int role = node.Role(); if (role < 0) throw new InvalidOperationException(); row.role = role; }
-                    catch { Note("msaa_role_unavailable"); }
+                    catch (Exception e) { Diagnostic(source, parent ?? row.node_id, origin, "child_property_failed", e); Note("msaa_role_unavailable"); }
                     row.semantic_hint = secret ? "protected" : Hint(row.role);
                     try {
                         row.owner_hwnd = node.OwnerWindow();
@@ -131,44 +167,54 @@ namespace LiveStudioDiscovery {
                             int owner = api.WindowProcess(row.owner_hwnd.Value);
                             if (owner > 0) row.process_id = owner;
                         }
-                    } catch { Note("msaa_owner_unavailable"); }
-                    try { row.bounds = node.Location(); } catch { Note("msaa_location_unavailable"); }
+                    } catch (Exception e) { Diagnostic(source, parent ?? row.node_id, origin, "child_property_failed", e); Note("msaa_owner_unavailable"); }
+                    try { row.bounds = node.Location(); } catch (Exception e) { Diagnostic(source, parent ?? row.node_id, origin, "child_property_failed", e); Note("msaa_location_unavailable"); }
                     if (!secret) {
-                        if (names) { try { row.name = Short(node.Name()); } catch { Note("msaa_name_unavailable"); } }
+                        if (names) { try { row.name = Short(node.Name()); } catch (Exception e) { Diagnostic(source, parent ?? row.node_id, origin, "child_property_failed", e); Note("msaa_name_unavailable"); } }
                         try {
                             int count = node.ChildCount(); if (count < 0) throw new InvalidOperationException(); row.child_count = count;
-                        } catch { Note("msaa_child_count_unavailable"); }
+                        } catch (Exception e) { Diagnostic(source, parent ?? row.node_id, origin, "child_property_failed", e); Note("msaa_child_count_unavailable"); }
                     } else {
                         row.child_count = 0;
                     }
                     nodes.Add(row);
-                    if (secret) return;
+                    if (secret) { omissions++; return; }
                     if (node.SimpleChild) {
                         // S_FALSE/null is an ordinary leaf. Preserve the child-ID node first.
                         IMsaaNode expanded;
-                        try { expanded = node.ChildObject(); } catch { Note("msaa_child_object_unavailable"); return; }
+                        try { expanded = node.ChildObject(); } catch (Exception e) { Diagnostic(source, parent, origin, "child_resolution_failed", e); Note("msaa_child_object_unavailable"); return; }
                         if (expanded == null) return;
                         if (depth >= maxDepth) { expanded.Dispose(); Note("msaa_depth_limit", false, true); return; }
-                        Msaa(expanded, row.node_id, depth + 1, source, seen);
+                        Msaa(expanded, row.node_id, depth + 1, source, seen, origin);
                         return;
                     }
                     if (!row.child_count.HasValue || row.child_count == 0) return;
                     if (depth >= maxDepth) { Note("msaa_depth_limit", false, true); return; }
                     int budget = maxNodes - msaaAttempts;
                     if (budget <= 0) { Note("msaa_node_limit", false, true); return; }
-                    int requested = Math.Min(row.child_count.Value, budget), obtained = 0;
+                    int requested = Math.Min(row.child_count.Value, budget), obtained = 0; bool partial = false;
                     if (requested < row.child_count.Value) Note("msaa_node_limit", false, true);
                     try {
-                        foreach (IMsaaNode child in node.Children(requested)) {
+                        foreach (ChildRead read in node.Children(requested)) {
+                            if (read.Reason == "partial_accessible_children") {
+                                Diagnostic(source, row.node_id, read); Note("msaa_children_incomplete"); partial = true; continue;
+                            }
                             obtained++;
                             if (obtained > requested || msaaAttempts >= maxNodes) {
-                                child.Dispose(); Note("msaa_node_limit", false, true); break;
+                                if (read.Value is IMsaaNode) ((IMsaaNode)read.Value).Dispose();
+                                Note("msaa_node_limit", false, true); break;
                             }
-                            Msaa(child, row.node_id, depth + 1, source, seen);
+                            if (read.Reason != null) {
+                                // Failed populated slots consume the same visit budget as nodes.
+                                msaaAttempts++;
+                                Diagnostic(source, row.node_id, read); Note(read.Index.HasValue ? "msaa_child_unsupported" : "msaa_children_unavailable"); continue;
+                            }
+                            IMsaaNode child = (IMsaaNode)read.Value;
+                            Msaa(child, row.node_id, depth + 1, source, seen, read);
                         }
                     } catch (UnsupportedChildException) { Note("msaa_child_unsupported"); return; }
-                    catch { Note("msaa_children_unavailable"); return; }
-                    if (obtained < requested) Note("msaa_children_incomplete");
+                    catch (Exception e) { Diagnostic(source, row.node_id, null, "child_resolution_failed", e); Note("msaa_children_unavailable"); return; }
+                    if (obtained < requested && !partial) Note("msaa_children_incomplete");
                 } catch (UnsupportedChildException) { Note("msaa_child_unsupported"); }
                 catch { Note("msaa_unreadable"); }
             }
@@ -180,11 +226,18 @@ namespace LiveStudioDiscovery {
             try { foreach (var p in api.Processes()) { if (snapshot.Count >= 4096) { Note("process_limit", false, true); break; } snapshot[p.process_id] = p; } }
             catch { Note("process_metadata_unavailable"); }
             try {
-                int roots = 0;
+                int rootCount = 0;
                 foreach (long root in api.TopWindows(processId)) {
-                    if (roots++ >= 8) { Note("window_limit", false, true); break; }
-                    if (hwndAttempts >= maxHwnd) { Note("hwnd_limit", false, true); break; }
+                    if (rootCount++ >= 8) { Note("window_limit", false, true); break; }
+                    var summary = new RootTraversal { hwnd = root, msaa_traversal_complete = backend == "hwnd" ? (bool?)null : false };
+                    roots.Add(summary);
+                    if (hwndAttempts >= maxHwnd) { Note("hwnd_limit", false, true); continue; }
+                    int before = omissions, first = windows.Count;
                     Hwnd(root, root, 0);
+                    summary.hwnd_traversal_complete = omissions == before && windows.Count > first;
+                    if (windows.Count > first) summary.visible = windows[first].visible;
+                    for (int i = first; i < windows.Count; i++) if (windows[i].protected_content) summary.hwnd_traversal_complete = false;
+                    if (backend != "hwnd") summary.msaa_traversal_complete = summary.hwnd_traversal_complete;
                 }
             } catch { Note("hwnd_unreadable"); }
             if ((api.Limits & ScanLimits.Desktop) != 0) Note("desktop_scan_limit", false, true);
@@ -218,16 +271,19 @@ namespace LiveStudioDiscovery {
                 if (version != null && !System.Text.RegularExpressions.Regex.IsMatch(version, @"^[0-9]+(\.[0-9]+){1,3}$")) version = null;
             }
             if (backend != "hwnd") foreach (var w in windows) {
-                if (msaaAttempts >= maxNodes) { Note("msaa_node_limit", false, true); break; }
-                if (w.protected_content) continue;
+                RootTraversal root = roots.Find(delegate(RootTraversal r) { return r.hwnd == w.root_hwnd; });
+                if (msaaAttempts >= maxNodes) { Note("msaa_node_limit", false, true); if (root != null) root.msaa_traversal_complete = false; continue; }
+                if (w.protected_content) { if (root != null) root.msaa_traversal_complete = false; continue; }
+                int before = omissions;
                 try { Msaa(api.Accessible(w.hwnd), null, 0, w.hwnd, new HashSet<string>()); } catch { Note("msaa_unavailable"); }
+                if (root != null && omissions != before) root.msaa_traversal_complete = false;
             }
             string status = truncated || unreadable > 0 ? "unknown_ui_state" : windows.Count == 0 ? "window_not_found" : "discovered";
             return new Dictionary<string, object> {
-                {"schema_version", 3}, {"backend", backend}, {"status", status}, {"names_included", names},
+                {"schema_version", 4}, {"backend", backend}, {"status", status}, {"names_included", names},
                 {"process_id", processId}, {"studio_version", version}, {"processes", processes},
-                {"hwnd", new Dictionary<string, object> {{"windows", windows}}},
-                {"msaa", backend == "hwnd" ? null : new Dictionary<string, object> {{"nodes", nodes}}},
+                {"hwnd", new Dictionary<string, object> {{"windows", windows}, {"root_statistics", api.RootStats}, {"selected_roots", roots}}},
+                {"msaa", backend == "hwnd" ? null : new Dictionary<string, object> {{"nodes", nodes}, {"child_diagnostics", diagnostics}, {"diagnostics_dropped", diagnosticsDropped}}},
                 {"truncated", truncated}, {"unreadable", unreadable}, {"errors", errors}, {"physical_action", false}
             };
         }
@@ -236,20 +292,33 @@ namespace LiveStudioDiscovery {
     // A separate bounded scan distinguishes desktop exhaustion from target roots.
     public sealed class TopWindowScan {
         readonly int target; int visited;
-        public readonly List<long> Roots = new List<long>();
+        readonly List<KeyValuePair<long, bool>> candidates = new List<KeyValuePair<long, bool>>();
+        public List<long> Roots { get {
+            var ordered = new List<KeyValuePair<long, bool>>(candidates);
+            ordered.Sort(delegate(KeyValuePair<long, bool> a, KeyValuePair<long, bool> b) {
+                int visibility = b.Value.CompareTo(a.Value); return visibility != 0 ? visibility : a.Key.CompareTo(b.Key);
+            });
+            var result = new List<long>(); foreach (var item in ordered) { if (result.Count == 8) break; result.Add(item.Key); } return result;
+        } }
+        public RootScanStats Statistics { get { return new RootScanStats { target_roots_total = candidates.Count,
+            target_roots_selected = Math.Min(8, candidates.Count), target_roots_skipped = Math.Max(0, candidates.Count - 8),
+            enumeration_complete = (Limits & ScanLimits.Desktop) == 0 }; } }
         public ScanLimits Limits { get; private set; }
         public bool CanReadOwner { get { return visited < 512; } }
         public TopWindowScan(int processId) { target = processId; }
-        public bool Observe(long hwnd, int owner) {
+        public bool Observe(long hwnd, int owner, bool visible = true) {
             if (++visited > 512) { Limits |= ScanLimits.Desktop; return false; }
             if (owner != target) return true;
-            if (Roots.Count >= 8) { Limits |= ScanLimits.TargetRoots; return false; }
-            Roots.Add(hwnd); return true;
+            candidates.Add(new KeyValuePair<long, bool>(hwnd, visible));
+            if (candidates.Count > 8) Limits |= ScanLimits.TargetRoots;
+            return true;
         }
     }
     // Narrow native read adapter. No generic COM dispatch or action wrapper.
     public sealed class NativeDesktop : IReadOnlyDesktop {
         public ScanLimits Limits { get; private set; }
+        public RootScanStats RootStats { get; private set; }
+        public NativeDesktop() { RootStats = new RootScanStats { enumeration_complete = false }; }
         delegate bool EnumProc(IntPtr hwnd, IntPtr state);
         [StructLayout(LayoutKind.Sequential)] struct Rect { public int left, top, right, bottom; }
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct ProcessEntry {
@@ -279,10 +348,12 @@ namespace LiveStudioDiscovery {
         public IEnumerable<long> TopWindows(int processId) {
             var scan = new TopWindowScan(processId);
             bool completed = EnumWindows(delegate(IntPtr h, IntPtr unused) {
-                return scan.Observe(h.ToInt64(), scan.CanReadOwner ? WindowProcess(h.ToInt64()) : 0);
+                int owner = scan.CanReadOwner ? WindowProcess(h.ToInt64()) : 0;
+                return scan.Observe(h.ToInt64(), owner, owner == processId && IsWindowVisible(h));
             }, IntPtr.Zero);
-            if (!completed && scan.Limits == ScanLimits.None) throw new InvalidOperationException();
+            if (!completed && (scan.Limits & ScanLimits.Desktop) == 0) throw new InvalidOperationException();
             Limits |= scan.Limits;
+            RootStats = scan.Statistics;
             return scan.Roots;
         }
         public IEnumerable<long> ChildWindows(long hwnd) {
@@ -337,14 +408,129 @@ namespace LiveStudioDiscovery {
         string Identity { get; }
         int State(int child); int Role(int child); string Name(int child);
         int ChildCount(); int[] Location(int child); long? OwnerWindow();
-        IEnumerable<object> Children(int count);
+        IEnumerable<ChildRead> Children(int count);
         IAccessibleReads ChildObject(int child);
+    }
+    // VARIANT = 8-byte tag/reserved header + union including a two-pointer BRECORD;
+    // DECIMAL overlays the whole structure. Default Windows packing is 8.
+    [StructLayout(LayoutKind.Sequential, Pack = 8)] struct VariantRecord { public IntPtr value, info; }
+    [StructLayout(LayoutKind.Explicit, Pack = 8)] struct VariantPayload {
+        [FieldOffset(0)] public long integer;
+        [FieldOffset(0)] public VariantRecord record;
+    }
+    [StructLayout(LayoutKind.Explicit, Pack = 8)] struct NativeVariant {
+        [FieldOffset(0)] public decimal decimalValue;
+        [FieldOffset(0)] public ushort vt;
+        [FieldOffset(8)] public VariantPayload payload;
+    }
+    interface IVariantApi {
+        void Init(IntPtr slot); int Clear(IntPtr slot);
+        int Fetch(IntPtr buffer, int count, out int obtained);
+        IAccessibleReads Dispatch(IntPtr borrowed, out int hr);
+    }
+    static class VariantReader {
+        public static int Size { get { return Marshal.SizeOf(typeof(NativeVariant)); } }
+        public static string Hresult(int hr) {
+            switch (hr) {
+                case 0: return "s_ok"; case 1: return "s_false";
+                case unchecked((int)0x80004002): return "no_interface";
+                case unchecked((int)0x80070057): return "invalid_argument";
+                case unchecked((int)0x80070005): return "access_denied";
+                case unchecked((int)0x80010108): return "disconnected";
+                default: return hr < 0 ? "failed" : "unexpected_success";
+            }
+        }
+        public static IEnumerable<ChildRead> Read(IVariantApi api, int count) {
+            if (count < 1 || count > 2000 || Size != (IntPtr.Size == 8 ? 24 : 16)) throw new InvalidOperationException();
+            IntPtr buffer = Marshal.AllocCoTaskMem(checked(count * Size)); int initialized = 0;
+            try {
+                // VariantInit only sets vt; zeroing also avoids uninitialized padding in diagnostics.
+                Marshal.Copy(new byte[count * Size], 0, buffer, count * Size);
+                for (; initialized < count; initialized++) api.Init(IntPtr.Add(buffer, initialized * Size));
+                int obtained = 0, hr;
+                try { hr = api.Fetch(buffer, count, out obtained); }
+                catch (Exception e) { hr = e.HResult; }
+                if (hr < 0 || (hr != 0 && hr != 1) || obtained < 0 || obtained > count) {
+                    yield return new ChildRead { Category = "unavailable", Reason = obtained < 0 || obtained > count ? "malformed_variant" : "child_resolution_failed", Hresult = Hresult(hr), Requested = count };
+                    yield break;
+                }
+                if (obtained < count || hr == 1) yield return new ChildRead { Category = "unavailable",
+                    Reason = "partial_accessible_children", Hresult = Hresult(hr), Requested = count, Obtained = obtained };
+                // Outside pcObtained all initialized slots are cleanup only, never children.
+                for (int index = 0; index < obtained; index++) {
+                    IntPtr slot = IntPtr.Add(buffer, index * Size);
+                    int vt = (ushort)Marshal.ReadInt16(slot);
+                    var read = new ChildRead { Index = index, Vt = vt, Hresult = Hresult(hr),
+                        Category = (vt & 0x8000) != 0 ? "other" : vt == 0 ? "empty" : vt == 3 ? "i4" : vt == 9 ? "dispatch" :
+                            (vt & 0x4000) != 0 ? "byref" : (vt & 0x2000) != 0 ? "array" : "other" };
+                    if ((vt & 0x8000) != 0) read.Reason = "malformed_variant";
+                    else if (vt == 0) read.Reason = "empty_slot";
+                    else if (vt == 3) {
+                        int id = Marshal.ReadInt32(slot, 8);
+                        if (id > 0) read.Value = id; else read.Reason = "malformed_variant";
+                    } else if (vt == 9) {
+                        IntPtr pointer = Marshal.ReadIntPtr(slot, 8);
+                        if (pointer == IntPtr.Zero) read.Reason = "malformed_variant";
+                        else {
+                            int qi = 0;
+                            try { read.Value = api.Dispatch(pointer, out qi); }
+                            catch (Exception e) { qi = e.HResult; }
+                            read.Hresult = Hresult(qi);
+                            if (qi != 0 || read.Value == null) {
+                                if (read.Value is IAccessibleReads) ((IAccessibleReads)read.Value).Dispose();
+                                read.Value = null; read.Reason = "dispatch_qi_failed";
+                            }
+                        }
+                    } else read.Reason = "unsupported_variant_type";
+                    yield return read;
+                }
+            } finally {
+                // Clear every initialized slot, including outside pcObtained and early disposal.
+                // Clear owns the original dispatch/BSTR/array; it never owns our separate QI/RCW.
+                try {
+                    int clearFailure = 0;
+                    for (int i = 0; i < initialized; i++) {
+                        int result;
+                        try { result = api.Clear(IntPtr.Add(buffer, i * Size)); } catch (Exception e) { result = e.HResult; }
+                        if (result < 0) clearFailure = result;
+                    }
+                    if (clearFailure < 0) throw new COMException("", clearFailure);
+                }
+                finally { Marshal.FreeCoTaskMem(buffer); }
+            }
+        }
+    }
+    sealed class NativeVariantApi : IVariantApi {
+        readonly IAccessible accessible;
+        [DllImport("oleacc.dll")] static extern int AccessibleChildren(IAccessible value, int start, int count, IntPtr children, out int obtained);
+        [DllImport("oleaut32.dll")] static extern void VariantInit(IntPtr slot);
+        [DllImport("oleaut32.dll")] static extern int VariantClear(IntPtr slot);
+        public NativeVariantApi(IAccessible value) { accessible = value; }
+        public void Init(IntPtr slot) { VariantInit(slot); }
+        public int Clear(IntPtr slot) { return VariantClear(slot); }
+        public int Fetch(IntPtr buffer, int count, out int obtained) { return AccessibleChildren(accessible, 0, count, buffer, out obtained); }
+        public IAccessibleReads Dispatch(IntPtr borrowed, out int hr) { return Query(borrowed, out hr); }
+        internal static IAccessibleReads Query(IntPtr borrowed, out int hr) {
+            IntPtr queried = IntPtr.Zero; object rcw = null;
+            Guid iid = NativeDesktop.AccessibleId;
+            try {
+                hr = Marshal.QueryInterface(borrowed, ref iid, out queried);
+                if (hr != 0 || queried == IntPtr.Zero) return null;
+                // GetObjectForIUnknown holds an independent RCW reference. Query's AddRef
+                // is released below; the RCW is owned by NativeComReads until Dispose.
+                rcw = Marshal.GetObjectForIUnknown(queried);
+                var value = rcw as IAccessible;
+                if (value == null) { hr = unchecked((int)0x80004002); return null; }
+                rcw = null; return new NativeComReads(value);
+            } finally {
+                if (rcw != null && Marshal.IsComObject(rcw)) Marshal.ReleaseComObject(rcw);
+                if (queried != IntPtr.Zero) Marshal.Release(queried);
+            }
+        }
     }
     sealed class NativeComReads : IAccessibleReads {
         IAccessible accessible;
         [DllImport("oleacc.dll")] static extern int WindowFromAccessibleObject(IAccessible value, out IntPtr hwnd);
-        [DllImport("oleacc.dll")] static extern int AccessibleChildren(IAccessible value, int start, int count,
-            [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.Struct, SizeParamIndex = 2)] object[] children, out int obtained);
         public NativeComReads(IAccessible value) { accessible = value; }
         public string Identity { get {
             IntPtr identity = Marshal.GetIUnknownForObject(accessible);
@@ -358,28 +544,20 @@ namespace LiveStudioDiscovery {
         public long? OwnerWindow() { IntPtr h; return WindowFromAccessibleObject(accessible, out h) >= 0 && h != IntPtr.Zero ? (long?)h.ToInt64() : null; }
         static IAccessibleReads Object(object value) {
             if (value == null) return null; // S_FALSE is nonnegative and marshals a null retval.
-            if (value is IAccessible) return new NativeComReads((IAccessible)value);
-            if (Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
-            throw new UnsupportedChildException();
-        }
-        public IAccessibleReads ChildObject(int child) { return Object(accessible.get_accChild(child)); }
-        public IEnumerable<object> Children(int count) {
-            var values = new object[count]; int obtained; int index = 0;
+            if (!Marshal.IsComObject(value)) throw new UnsupportedChildException();
+            IntPtr unknown = IntPtr.Zero;
             try {
-                if (AccessibleChildren(accessible, 0, count, values, out obtained) < 0 || obtained < 0 || obtained > count) throw new InvalidOperationException();
-                for (; index < obtained; index++) {
-                    object value = values[index]; values[index] = null;
-                    if (value is int && (int)value > 0) yield return value;
-                    else {
-                        var child = Object(value);
-                        if (child == null) throw new UnsupportedChildException();
-                        yield return child;
-                    }
-                }
+                unknown = Marshal.GetIUnknownForObject(value); int hr;
+                IAccessibleReads result = NativeVariantApi.Query(unknown, out hr);
+                if (hr != 0 || result == null) throw new COMException("", hr < 0 ? hr : unchecked((int)0x80004002));
+                return result;
             } finally {
-                foreach (object value in values) if (value != null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+                if (unknown != IntPtr.Zero) Marshal.Release(unknown);
+                Marshal.ReleaseComObject(value);
             }
         }
+        public IAccessibleReads ChildObject(int child) { return Object(accessible.get_accChild(child)); }
+        public IEnumerable<ChildRead> Children(int count) { return VariantReader.Read(new NativeVariantApi(accessible), count); }
         public void Dispose() {
             if (accessible != null && Marshal.IsComObject(accessible)) Marshal.ReleaseComObject(accessible);
             accessible = null;
@@ -388,7 +566,7 @@ namespace LiveStudioDiscovery {
     sealed class NativeAccessible : IMsaaNode {
         IAccessibleReads accessible, resolved;
         readonly int childId; readonly bool owned;
-        bool resolutionChecked, resolutionFailure, resolvedMetadata;
+        bool resolutionChecked, resolutionFailure, resolvedMetadata; int resolutionHr;
         public NativeAccessible(IAccessibleReads value, int child, bool owns) { accessible = value; childId = child; owned = owns; }
         public bool SimpleChild { get { return childId != 0; } }
         public int? ChildId { get { return SimpleChild ? (int?)childId : null; } }
@@ -396,9 +574,9 @@ namespace LiveStudioDiscovery {
         IAccessibleReads Resolve() {
             if (!resolutionChecked) {
                 resolutionChecked = true;
-                try { resolved = accessible.ChildObject(childId); } catch { resolutionFailure = true; throw; }
+                try { resolved = accessible.ChildObject(childId); } catch (Exception e) { resolutionFailure = true; resolutionHr = e.HResult; throw; }
             }
-            if (resolutionFailure) throw new InvalidOperationException();
+            if (resolutionFailure) throw new COMException("", resolutionHr);
             return resolved;
         }
         IAccessibleReads Metadata { get { return resolvedMetadata ? resolved : accessible; } }
@@ -428,11 +606,15 @@ namespace LiveStudioDiscovery {
             if (!SimpleChild || Resolve() == null) return null;
             var result = new NativeAccessible(resolved, 0, true); resolved = null; return result;
         }
-        public IEnumerable<IMsaaNode> Children(int count) {
-            foreach (object value in accessible.Children(count)) {
-                if (value is int && (int)value > 0) yield return new NativeAccessible(accessible, (int)value, false);
-                else if (value is IAccessibleReads) yield return new NativeAccessible((IAccessibleReads)value, 0, true);
-                else throw new UnsupportedChildException();
+        public IEnumerable<ChildRead> Children(int count) {
+            foreach (ChildRead read in accessible.Children(count)) {
+                object value = read.Value;
+                if (read.Reason == null) {
+                    if (value is int && (int)value > 0) read.Value = new NativeAccessible(accessible, (int)value, false);
+                    else if (value is IAccessibleReads) read.Value = new NativeAccessible((IAccessibleReads)value, 0, true);
+                    else { read.Value = null; read.Reason = "unsupported_variant_type"; }
+                }
+                yield return read;
             }
         }
         public void Dispose() {

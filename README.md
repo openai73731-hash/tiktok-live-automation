@@ -1,6 +1,6 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-1C
+## PC-first: Windows LIVE Studio, этап PC-SEND-1D
 
 Текущая PC-ветка добавляет выбор транспорта и **read-only discovery**. Это ещё не
 manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
@@ -45,6 +45,39 @@ children теперь имеют `owner_kind=simple_child` и exact `child_id`; 
 state проверяется до имени; недоступные optional properties остаются `null`.
 Агент не запускал real probe; результат исправления на Studio ещё должен измерить оператор.
 
+PC-SEND-1D добавляет диагностику следующего operator capture: 18 MSAA nodes,
+`child_count=7`, но без simple children, с `msaa_child_unsupported` и root limit.
+Причина этого реального unsupported пока **не доказана**: прежний `object[]` терял
+native vt и объединял null/неподдерживаемый тип/отказ IAccessible в одну ошибку.
+Цикл уже использовал `pcObtained`; ошибка x64 marshaler по одному capture не доказана.
+Теперь читается исходный VARIANT buffer (Pack 8, size x64=24/x86=16, payload offset 8),
+только actual obtained slots. VT_I4 сохраняет exact ID; VT_DISPATCH проходит explicit
+QI IAccessible. Init/Clear, QI pointer и отдельный RCW имеют раздельное владение.
+S_FALSE/partial сохраняет requested/obtained, пустые slots за obtained не обходятся.
+Плохой populated slot диагностируется и не мешает чтению следующих siblings;
+он также расходует общий node budget. IA2 не добавлен: сначала нужен новый capture.
+
+В schema 4 `msaa.child_diagnostics` содержит максимум 64 записи, далее увеличивается
+`diagnostics_dropped`. Exact fields: `source_hwnd`, `parent_id`, `child_index` (с нуля),
+`vt` (число), `category`, `reason`, `hresult_category`, `requested`, `obtained`.
+Неизвестные/неприменимые поля — null; у ошибок root property parent_id может быть null.
+Причины: `unsupported_variant_type`, `dispatch_qi_failed`, `child_property_failed`,
+`child_resolution_failed`, `empty_slot`, `partial_accessible_children`, `malformed_variant`.
+Эти записи не содержат names, values, BSTR, COM pointers/addresses или exception text,
+даже с `--include-names`; opt-in labels остаются только в обычных nodes.
+
+Root cap остаётся 8, desktop cap 512. Среди roots выбранного PID сначала идут видимые,
+при равной visibility — HWND по возрастанию. Каждый root обходится вместе со своими
+дочерними HWND/render-widget ancestry до следующего root; hidden roots идут позже.
+`hwnd.root_statistics` содержит `target_roots_total`, `target_roots_selected`,
+`target_roots_skipped`, `enumeration_complete`. При desktop cap total — число
+наблюдавшихся matching roots, а не доказанный итог всего desktop.
+`hwnd.selected_roots` показывает `hwnd`, `visible`, `hwnd_traversal_complete` и
+`msaa_traversal_complete` (null для HWND backend). Локальная полнота видимого root
+видна отдельно от общего `target_root_limit`; protection, ошибки и caps делают её
+false. Это полнота данного snapshot, не доказательство доступности chat controls.
+Отдельный `--root-hwnd` не добавлен.
+
 В отдельном PowerShell оператор вручную выполняет read-only capture (LIVE для самого
 discovery не нужен). PID 4620 — пример из последнего capture, замените текущим основным
 GUI PID своего Studio из Task Manager. `--include-names` включает приватные labels;
@@ -65,11 +98,11 @@ $captureArgs = @('--process-id', "$studioProcessId", '--instance-id', 'vm1', '--
 
 JSON tree сохраняется только в ignored `diagnostics/windows/vm1/<id>.json`, максимум
 20 отчётов суммарно для всех backends, без eviction; stdout показывает status/count/path.
-UIA сохраняет schema 1; schema 3 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
+UIA сохраняет schema 1; native schema 4 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
 `uia`. HWND metadata содержит реальный owning PID, parent/depth/class/rectangle и
 Chromium hints. MSAA содержит role/state/relationships/location и diagnostic hints.
-Schema 3 добавляет обязательное различение object/simple child с `child_id`;
-старые schema 2 captures остаются историческими файлами и не переписываются.
+Различение object/simple child с `child_id` сохранено из schema 3;
+старые schema 2/3 captures остаются историческими файлами и не переписываются.
 Bounded process metadata содержит descendants, optional image path и HWND references;
 `has_windows` относится только к окнам в этом snapshot. `studio_version` читается из
 доступного executable основного PID; недоступный path/version — `null`, не ошибка.

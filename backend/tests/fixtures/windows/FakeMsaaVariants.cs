@@ -23,7 +23,11 @@ namespace LiveStudioDiscovery {
         public int[] Location(int child) { Read("location", child); if (child == 1 && locationFailure) throw Failure(); return new int[] {child, 2, 30, 40}; }
         public int ChildCount() { Read("count", 0); if (countFailure) throw Failure(); return variants.Length; }
         public long? OwnerWindow() { return 200; }
-        public IEnumerable<object> Children(int count) { if (childrenFailure) throw Failure(); for (int i = 0; i < Math.Min(count, variants.Length); i++) yield return variants[i]; }
+        public IVariantApi nativeVariants;
+        public IEnumerable<ChildRead> Children(int count) {
+            if (nativeVariants != null) { foreach (var read in VariantReader.Read(nativeVariants, count)) yield return read; yield break; }
+            if (childrenFailure) throw Failure(); for (int i = 0; i < Math.Min(count, variants.Length); i++) yield return ChildRead.Managed(variants[i], i);
+        }
         public IAccessibleReads ChildObject(int child) {
             Read("child", child);
             if (objectFailure) throw Failure();
@@ -65,7 +69,7 @@ namespace LiveStudioDiscovery {
                     int targets = mode == "desktop_limit" ? 1 : mode == "nine_roots" ? 9 : 8;
                     for (int i = 0; i < targets; i++) if (!scan.Observe(100 + i, 11300)) break;
                     if (mode != "nine_roots") for (int i = 0; i < (mode == "desktop_limit" ? 512 : 14); i++) if (!scan.Observe(1000 + i, 999)) break;
-                    api.limits = scan.Limits;
+                    api.limits = scan.Limits; api.stats = scan.Statistics;
                     api.topFactory = delegate(int pid) { return scan.Roots; };
                 }
                 if (mode == "target_limit") api.limits = ScanLimits.TargetChildren;

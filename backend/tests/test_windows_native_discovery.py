@@ -25,21 +25,25 @@ def worker_platform(monkeypatch):
     monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
 
 
-@pytest.fixture(scope="module")
-def scenarios():
+def fake_scenarios(system_directory="System32"):
     if sys.platform != "win32": pytest.skip("Stock .NET fake boundary harness requires Windows")
     paths = [Path(p).absolute() for p in ("backend/app/windows/NativeDiscovery.cs",
-        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs")]
+        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs", "backend/tests/fixtures/windows/FakeNativeVariants.cs")]
     literals = ",".join("'" + str(path).replace("'", "''") + "'" for path in paths)
     command = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); "
         "Add-Type -Path @(" + literals + ") -ReferencedAssemblies 'System.dll','Accessibility.dll'; "
         "[LiveStudioDiscovery.Harness]::All() | ConvertTo-Json -Depth 14 -Compress")
-    executable = str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+    executable = str(Path(os.environ["SystemRoot"]) / system_directory / "WindowsPowerShell/v1.0/powershell.exe")
+    if not Path(executable).is_file(): pytest.skip("Stock .NET architecture unavailable")
     result = subprocess.run([executable, "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand",
         base64.b64encode(command.encode("utf-16-le")).decode("ascii")],
         capture_output=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     return json.loads(result.stdout.decode("utf-8-sig"))
+
+
+@pytest.fixture(scope="module")
+def scenarios(): return fake_scenarios()
 
 
 def report(scenarios, mode): return DiscoveryReport.model_validate(scenarios[mode]["report"])
@@ -65,7 +69,7 @@ def test_msaa_roles_parent_relations_and_state_are_metadata(scenarios):
     assert edit.owner_hwnd == 200 and edit.process_id == 11301
     simple = next(n for n in nodes if n.semantic_hint == "listitem")
     assert simple.owner_kind == "simple_child" and simple.child_id == 1
-    assert data.schema_version == 3 and data.backend == "msaa"
+    assert data.schema_version == 4 and data.backend == "msaa"
     assert data.studio_version == "1.36.6"
     assert scenarios["msaa"]["root_closes"] > 0
 
@@ -329,3 +333,131 @@ def test_schema_requires_child_id_only_for_simple_representation(scenarios):
     data = report(scenarios, "seven_ids").model_dump()
     data["msaa"]["nodes"][1]["child_id"] = None
     with pytest.raises(ValidationError): DiscoveryReport.model_validate(data)
+
+
+@pytest.mark.parametrize("case,tags", [("native_i4", [3] * 7), ("native_dispatch", [9] * 7),
+    ("native_mixed", [3, 9, 3, 9, 3, 9, 3])])
+def test_native_buffer_seven_children_and_owned_dispatch_lifetimes(scenarios, case, tags):
+    data = report(scenarios, case)
+    assert data.status == "discovered" and not data.msaa.child_diagnostics
+    nodes = [n for n in data.msaa.nodes if n.source_hwnd == 100]
+    root, *children = nodes
+    assert len(children) == 7
+    for index, (node, vt) in enumerate(zip(children, tags, strict=True)):
+        assert node.parent_id == root.node_id and node.depth == 1
+        assert node.child_id == (index + 1 if vt == 3 else None)
+        assert node.owner_kind == ("simple_child" if vt == 3 else "accessible_object")
+    counts = scenarios[case]
+    assert counts["queries"] == counts["closes"] == tags.count(9) * 3
+    assert counts["inits"] == counts["clears"] == 21
+    assert counts["payload_offset"] == 8
+    assert counts["slot_size"] == (24 if counts["pointer_size"] == 8 else 16)
+
+
+def test_partial_s_false_uses_only_obtained_and_ignores_empty_tail(scenarios):
+    data = report(scenarios, "native_partial")
+    assert len(data.msaa.nodes) == 9  # Three HWNDs, each root plus two children, not seven empty slots.
+    assert len(data.msaa.child_diagnostics) == 3
+    for diagnostic in data.msaa.child_diagnostics:
+        assert diagnostic.reason == "partial_accessible_children"
+        assert diagnostic.requested == 7 and diagnostic.obtained == 2
+        assert diagnostic.hresult_category == "s_false" and diagnostic.vt is None
+    assert "msaa_child_unsupported" not in data.errors
+    assert data.errors == ("msaa_children_incomplete",)
+    assert scenarios["native_partial"]["inits"] == scenarios["native_partial"]["clears"] == 21
+
+
+@pytest.mark.parametrize("case,vt,category,reason,hr", [
+    ("native_empty", 0, "empty", "empty_slot", "s_ok"),
+    ("native_qi", 9, "dispatch", "dispatch_qi_failed", "no_interface"),
+    ("native_malformed", 65535, "other", "malformed_variant", "s_ok"),
+    ("native_bad_id", 3, "i4", "malformed_variant", "s_ok"),
+    ("native_null_dispatch", 9, "dispatch", "malformed_variant", "s_ok"),
+])
+def test_bad_native_child_has_scalar_diagnostics_and_does_not_abort_siblings(scenarios, case, vt, category, reason, hr):
+    data = report(scenarios, case)
+    diagnostic = data.msaa.child_diagnostics[0]
+    assert diagnostic.vt == vt and diagnostic.category == category
+    assert diagnostic.reason == reason and diagnostic.hresult_category == hr
+    assert diagnostic.source_hwnd == 100 and diagnostic.parent_id == 1
+    assert diagnostic.child_index == (1 if case == "native_empty" else 0)
+    assert "msaa_child_unsupported" in data.errors and data.status == "unknown_ui_state"
+    if case != "native_qi": assert len([n for n in data.msaa.nodes if n.source_hwnd == 100]) == 7
+    assert scenarios[case]["inits"] == scenarios[case]["clears"] == 21
+
+
+def test_unsupported_native_payloads_are_never_dereferenced_or_serialized(scenarios):
+    data = report(scenarios, "native_unsupported")
+    diagnostics = data.msaa.child_diagnostics
+    assert [(d.vt, d.category, d.reason) for d in diagnostics[:3]] == [
+        (8, "other", "unsupported_variant_type"), (0x4003, "byref", "unsupported_variant_type"),
+        (0x2003, "array", "unsupported_variant_type")]
+    assert all(set(d.model_dump()) == {"source_hwnd", "parent_id", "child_index", "vt", "category",
+        "reason", "hresult_category", "requested", "obtained"} for d in diagnostics)
+    output = data.model_dump_json()
+    for private in ("PRIVATE", "305419896", "1985229328", "12345678", "76543210", "object-"):
+        assert private not in output
+    assert len(data.msaa.nodes) == 15  # Valid siblings after unsupported slots are still visited.
+
+
+@pytest.mark.parametrize("case,reason,hr", [("native_bad_obtained", "malformed_variant", "s_ok"),
+    ("native_fetch_failure", "child_resolution_failed", "access_denied")])
+def test_invalid_obtained_or_failed_fetch_never_reads_children(scenarios, case, reason, hr):
+    data = report(scenarios, case)
+    assert len(data.msaa.nodes) == 3 and scenarios[case]["queries"] == 0
+    assert all(d.reason == reason and d.hresult_category == hr and d.vt is None for d in data.msaa.child_diagnostics)
+    assert scenarios[case]["inits"] == scenarios[case]["clears"] == 21
+
+
+def test_property_resolution_and_bounded_diagnostics_remain_distinct(scenarios):
+    assert all(d.reason == "child_property_failed" for d in report(scenarios, "role_failure").msaa.child_diagnostics)
+    assert all(d.reason == "child_resolution_failed" for d in report(scenarios, "object_failure").msaa.child_diagnostics)
+    bounded = report(scenarios, "native_diag_cap")
+    assert len(bounded.msaa.child_diagnostics) == 64 and bounded.msaa.diagnostics_dropped == 236
+    assert bounded.unreadable == 300 and len(bounded.errors) <= 16
+    assert scenarios["early_disposal"] == {"inits": 7, "clears": 7}
+
+
+def test_failed_slots_consume_node_budget_and_clear_failure_still_cleans_all_slots(scenarios):
+    budget = report(scenarios, "native_diag_budget")
+    assert len(budget.msaa.nodes) == len(budget.msaa.child_diagnostics) == 1
+    assert budget.truncated and "msaa_node_limit" in budget.errors
+    assert scenarios["native_diag_budget"]["inits"] == scenarios["native_diag_budget"]["clears"] == 1
+    failed = report(scenarios, "native_clear_failure")
+    assert failed.status == "unknown_ui_state" and "msaa_children_unavailable" in failed.errors
+    assert all(d.hresult_category == "invalid_argument" for d in failed.msaa.child_diagnostics)
+    assert scenarios["native_clear_failure"]["inits"] == scenarios["native_clear_failure"]["clears"] == 21
+
+
+def test_visible_root_priority_and_observed_totals_without_raising_caps(scenarios):
+    data = report(scenarios, "root_priority")
+    stats = data.hwnd.root_statistics
+    assert (stats.target_roots_total, stats.target_roots_selected, stats.target_roots_skipped) == (13, 8, 5)
+    assert stats.enumeration_complete and data.errors == ("target_root_limit",)
+    assert [n.hwnd for n in data.hwnd.windows[:3]] == [100, 200, 300]
+    roots = data.hwnd.selected_roots
+    assert [r.hwnd for r in roots] == list(range(100, 108))
+    assert roots[0].visible and all(not r.visible for r in roots[1:])
+    assert all(r.hwnd_traversal_complete and r.msaa_traversal_complete is None for r in roots)
+    desktop = report(scenarios, "desktop_limit")
+    assert not desktop.hwnd.root_statistics.enumeration_complete
+    assert desktop.hwnd.selected_roots[0].hwnd_traversal_complete
+    incomplete = report(scenarios, "nodes").hwnd.selected_roots[0]
+    assert incomplete.hwnd_traversal_complete and incomplete.msaa_traversal_complete is False
+
+
+@pytest.mark.parametrize("field,value", [("vt", 65536), ("child_index", -1), ("category", "PRIVATE"),
+    ("reason", "PRIVATE"), ("hresult_category", "PRIVATE"), ("pointer", 0x12345678)])
+def test_diagnostic_schema_rejects_unbounded_or_private_metadata(scenarios, field, value):
+    data = report(scenarios, "native_empty").model_dump()
+    data["msaa"]["child_diagnostics"][0][field] = value
+    with pytest.raises(ValidationError): DiscoveryReport.model_validate(data)
+
+
+def test_x86_variant_layout_and_seven_slots_use_same_production_reader():
+    cases = fake_scenarios("SysWOW64")
+    for mode in ("native_i4", "native_dispatch", "native_mixed"):
+        assert cases[mode]["pointer_size"] == 4 and cases[mode]["slot_size"] == 16
+        assert cases[mode]["payload_offset"] == 8
+        assert report(cases, mode).status == "discovered"
+        assert cases[mode]["inits"] == cases[mode]["clears"] == 21

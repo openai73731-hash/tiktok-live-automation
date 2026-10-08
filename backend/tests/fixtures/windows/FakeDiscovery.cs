@@ -17,7 +17,7 @@ namespace LiveStudioDiscovery {
         public string Name() { nameReads++; if ((state & 0x20000000) != 0) { protectedReads++; throw new Exception("PRIVATE PASSWORD"); } return label; }
         public int[] Location() { return new int[] {1, 2, 30, 40}; }
         public long? OwnerWindow() { return id == "unknown_owner" ? (long?)null : 200; }
-        public IEnumerable<IMsaaNode> Children(int count) { for (int i = 0; i < Math.Min(count, children.Length); i++) yield return children[i]; }
+        public IEnumerable<ChildRead> Children(int count) { for (int i = 0; i < Math.Min(count, children.Length); i++) yield return ChildRead.Managed(children[i], i); }
         public IMsaaNode ChildObject() { return null; }
         public void Dispose() { closes++; }
         // Traps exist on the fake but are absent from the production read interface.
@@ -27,12 +27,14 @@ namespace LiveStudioDiscovery {
     public sealed class FakeDesktop : IReadOnlyDesktop {
         public ScanLimits limits;
         public ScanLimits Limits { get { return limits; } }
+        public RootScanStats stats = new RootScanStats { target_roots_total = 1, target_roots_selected = 1 };
+        public RootScanStats RootStats { get { return stats; } }
         public bool noPath, badWindow, noMsaa, pathThrows, protectedWindow, longPath;
         public int accessibleCalls;
         public FakeNode root;
         public Func<IMsaaNode> accessibleFactory;
         public Func<int, IEnumerable<long>> topFactory;
-        public bool hwndCycle;
+        public bool hwndCycle, hiddenRoots;
         public IEnumerable<long> TopWindows(int pid) {
             if (topFactory != null) { foreach (long hwnd in topFactory(pid)) yield return hwnd; }
             else if (pid == 11300) yield return 100;
@@ -41,13 +43,13 @@ namespace LiveStudioDiscovery {
             if (hwnd == 100) yield return 200;
             if (hwnd == 200) yield return hwndCycle ? 100 : 300;
         }
-        public int WindowProcess(long hwnd) { return hwnd >= 100 && hwnd < 108 ? 11300 : hwnd == 200 ? 11301 : 11302; }
+        public int WindowProcess(long hwnd) { return hwnd >= 100 && hwnd < 113 ? 11300 : hwnd == 200 ? 11301 : 11302; }
         public WindowRow Window(long hwnd, bool names) {
             if (badWindow) throw new Exception("PRIVATE WINDOW");
-            return new WindowRow { hwnd = hwnd, parent_hwnd = hwnd >= 100 && hwnd < 108 ? (long?)null : hwnd == 200 ? 100 : 200,
+            return new WindowRow { hwnd = hwnd, parent_hwnd = hwnd >= 100 && hwnd < 113 ? (long?)null : hwnd == 200 ? 100 : 200,
                 process_id = WindowProcess(hwnd), class_name = hwnd == 100 ? "Chrome_WidgetWin_1" : hwnd == 200 ? "Chrome_RenderWidgetHostHWND" : "Chrome_Other",
                 name = names ? "PRIVATE WINDOW NAME" : null, protected_content = protectedWindow,
-                enabled = true, visible = true, bounds = new int[] {0, 0, 10, 20} };
+                enabled = true, visible = !hiddenRoots || hwnd == 100 || hwnd >= 200, bounds = new int[] {0, 0, 10, 20} };
         }
         public IEnumerable<ProcessRow> Processes() {
             yield return new ProcessRow {process_id = 11300, parent_process_id = 50, filename = "SyntheticStudio.exe"};
@@ -90,6 +92,7 @@ namespace LiveStudioDiscovery {
                     {"root_name_reads", root.nameReads}, {"physical_action", false}};
             }
             foreach (var item in VariantHarness.All()) result[item.Key] = item.Value;
+            foreach (var item in NativeVariantHarness.All()) result[item.Key] = item.Value;
             return result;
         }
     }

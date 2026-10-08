@@ -1,4 +1,4 @@
-# PC-first migration: architecture audit and PC-SEND-1C
+# PC-first migration: architecture audit and PC-SEND-1D
 
 Audited 2026-10-08 from the actual checkout, starting on clean `main` at
 `15e31f9d88688669b7bd430ebad2003f46ec53a7` (`Add TikTok You manual send release candidate`).
@@ -256,6 +256,82 @@ budgets. A fake bounded top-window scan tests exact-eight/ninth-root/desktop lim
 Compilation and tests call no native desktop APIs or real UI. The original UIA
 worker, HWND metadata, report storage, sender and disabled preparation are preserved.
 
+### PC-SEND-1D: native VARIANT evidence before IA2
+
+The next operator capture of Studio 1.36.6.0 reports 18 nodes, no simple children,
+role 9 / child_count 7, `msaa_child_unsupported` and `target_root_limit`. This proves
+neither a broken x64 ABI nor a need for IA2. The 1C P/Invoke used an LPArray of
+managed objects: original VARTYPE was unavailable after CLR conversion, null,
+unsupported managed types and unsuccessful IAccessible casts shared one exception,
+and the first bad element aborted later siblings. The loop already honored
+pcObtained; iterating all requested slots was not the audited defect. The exact
+real VARIANT/QI failure remains unproven until a new operator capture.
+
+The diagnostic interop now follows the native
+[AccessibleChildren contract](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-accessiblechildren):
+an explicitly owned VARIANT buffer and LONG count/obtained, without object[]
+conversion. The documented
+[VARIANT union](https://learn.microsoft.com/en-us/windows/win32/api/oaidl/ns-oaidl-variant)
+includes a two-pointer BRECORD and an overlapping DECIMAL. Pack 8 yields size 24
+on x64 and 16 on x86, tag offset 0 and payload offset 8. Runtime size assertions
+and offline fake harnesses in both stock PowerShell architectures verify these
+layouts. They do not verify a real Chromium COM provider.
+
+All bounded slots are zeroed and
+[VariantInit](https://learn.microsoft.com/en-us/windows/win32/api/oleauto/nf-oleauto-variantinit)
+initialized. Only 0..pcObtained-1 are classified. S_FALSE or a short obtained count
+produces partial metadata; slots outside obtained are cleanup only. Inside obtained,
+VT_EMPTY is a failure, VT_I4 must contain an exact positive int32 child ID, and
+VT_DISPATCH must contain a non-null dispatch pointer. Other types are diagnosed
+without reading BSTR/array/byref payloads or converting arbitrary values to IDs.
+A bad child consumes the shared visit budget and does not abort valid siblings.
+
+Dispatch pointers receive explicit QueryInterface(IID_IAccessible). The temporary
+QI reference is released in finally. The returned
+[GetObjectForIUnknown RCW](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.marshal.getobjectforiunknown?view=netframework-4.8.1)
+is owned by the node adapter until Dispose; get_accChild's separate managed return
+is also balanced. Finally,
+[VariantClear](https://learn.microsoft.com/en-us/windows/win32/api/oleauto/nf-oleauto-variantclear)
+releases each original initialized slot, including unvisited tail slots on early
+termination, then the buffer is freed. Cleanup continues across individual clear
+failures and reports a static failure. S_FALSE/null get_accChild remains a normal
+simple-child leaf. Required protection state, per-root dedup, depth/node limits,
+optional metadata semantics and UIA behavior remain unchanged.
+
+Native schema 4 adds `msaa.child_diagnostics` (64 records) and
+`msaa.diagnostics_dropped`. Records contain only `source_hwnd`, `parent_id`,
+`child_index` (zero-based), numeric `vt`, normalized `category`, `reason`,
+`hresult_category`, `requested` and `obtained`. A parent is the enumerating node
+(or the current root for an optional root property); unavailable context is null.
+Categories are i4/dispatch/empty/byref/array/other/unavailable. Reasons distinguish
+unsupported_variant_type, dispatch_qi_failed, child_property_failed,
+child_resolution_failed, empty_slot, partial_accessible_children and
+malformed_variant. HRESULTs map to s_ok/s_false/no_interface/invalid_argument/
+access_denied/disconnected/failed/unexpected_success, never raw exception text.
+No diagnostic record includes names, values, BSTR contents or COM addresses.
+Names opt-in applies only to the existing node label fields. The Python schema
+forbids extra fields and bounds all numeric fields and collections.
+
+Root selection now completes the bounded desktop scan before selecting at most
+eight matching roots. Visible selected-PID roots precede hidden roots; numeric
+HWND breaks ties independently of EnumWindows order. Depth-first traversal keeps
+each root's render-widget descendants ahead of the next root. No HWND is hardcoded.
+`hwnd.root_statistics` reports target_roots_total/selected/skipped and
+`enumeration_complete`. With a desktop cap, total means observed matching roots,
+not a complete desktop total. `hwnd.selected_roots` reports hwnd, observed visible,
+hwnd_traversal_complete and msaa_traversal_complete (null for HWND-only). Failures,
+protection omissions and budgets prevent local completeness, while a root cap can
+leave a selected visible root complete and the overall report unknown/truncated.
+No cap was raised and no arbitrary --root-hwnd filter was added.
+
+The fake buffer harness covers seven I4/dispatch/mixed slots, partial S_FALSE,
+empty tail versus populated empty slot, failed QI, malformed counts/IDs/tags,
+unsupported BSTR/array/byref tags without payload access, sanitized metadata,
+cleanup, diagnostic/visit budgets and visible-root priority/statistics. It never
+instantiates NativeDesktop or invokes native accessibility/UI APIs. IA2 remains
+deferred: review actual vt/category/HRESULT evidence first. There is no new helper,
+binary dependency, selector, input, SEND or LIVE action.
+
 Microsoft documents [UIA tree scoping and changing trees](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-tree-overview)
 and [TreeWalker/property-based discovery](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/obtaining-ui-automation-elements).
 These support the diagnostic approach, not a claim about TikTok's actual accessibility.
@@ -279,8 +355,11 @@ not block safe standalone manual preparation.
    discovery milestone, **not the first manual-prepare release candidate**.
    **PC-SEND-1B:** add bounded HWND and MSAA discovery to investigate
    the observed Chromium shell. No production controls or actions.
-   **PC-SEND-1C (current slice):** fix child-ID/object traversal, per-root dedup,
+   **PC-SEND-1C:** fix child-ID/object traversal, per-root dedup,
    optional properties and precise scan limits. Still read-only evidence collection.
+   **PC-SEND-1D (current slice):** diagnose native VARIANT tags/QI/partial results,
+   prioritize visible roots and report per-root completeness. Exact real child failure
+   still requires operator capture; IA2 is deferred.
 2. **PC-SEND-2:** collect/redact real control/raw/HWND/MSAA trees and version/locale/account/LIVE
    evidence; review a backend profile. Implement an explicit approved-envelope
    preparation route that rechecks session/runtime/approval/expiry, uniquely locates
@@ -371,6 +450,14 @@ warnings. The skip is the opt-in real UIA test (`RUN_LIVE_STUDIO_E2E=0`). `pip c
 passed; Windows-selected fake CLI processed three synthetic comments and exited 0.
 No real UI probe, real LIVE, paid provider or physical action was executed. The
 full suite and unrelated listener changes remain outside this discovery fix.
+
+PC-SEND-1D validation: focused native contracts **84 passed**; Tier A **114 passed,
+1 skipped**; Tier B **476 passed, 1 skipped**, with the same two existing SDK
+deprecation warnings. Fake buffer harnesses ran in x64 and x86 stock PowerShell;
+the real UI test remained disabled (`RUN_LIVE_STUDIO_E2E=0`). `pip check` passed,
+and Windows-selected fake CLI processed three synthetic comments and exited 0.
+No real probe, LIVE, paid API or physical action was executed. Full-suite and
+unrelated listener changes remain outside this read-only diagnostic slice.
 
 For real-machine collection, follow the exact commands in README's PC section.
 Start Studio/login/open the comment panel yourself. Collect both idle and appropriate

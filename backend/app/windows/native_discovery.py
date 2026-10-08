@@ -71,16 +71,54 @@ class ProcessMetadata(FrozenModel):
     hwnds: tuple[int, ...] = Field(max_length=2000)
 
 
+class RootStatistics(FrozenModel):
+    target_roots_total: int = Field(default=0, ge=0, le=512)
+    target_roots_selected: int = Field(default=0, ge=0, le=8)
+    target_roots_skipped: int = Field(default=0, ge=0, le=512)
+    enumeration_complete: bool = True
+
+    @model_validator(mode="after")
+    def counts(self):
+        if self.target_roots_total != self.target_roots_selected + self.target_roots_skipped:
+            raise ValueError("Invalid root counts")
+        return self
+
+
+class RootTraversal(FrozenModel):
+    hwnd: int = Field(gt=0)
+    visible: bool | None
+    hwnd_traversal_complete: bool
+    msaa_traversal_complete: bool | None
+
+
 class HwndSection(FrozenModel):
     windows: tuple[HwndNode, ...] = Field(default=(), max_length=2000)
+    root_statistics: RootStatistics = Field(default_factory=RootStatistics)
+    selected_roots: tuple[RootTraversal, ...] = Field(default=(), max_length=8)
+
+
+class ChildDiagnostic(FrozenModel):
+    source_hwnd: int = Field(gt=0)
+    parent_id: int | None = Field(ge=1, le=2000)
+    child_index: int | None = Field(ge=0, le=1999)
+    vt: int | None = Field(ge=0, le=65535)
+    category: Literal["i4", "dispatch", "empty", "byref", "array", "other", "unavailable"]
+    reason: Literal["unsupported_variant_type", "dispatch_qi_failed", "child_property_failed",
+        "child_resolution_failed", "empty_slot", "partial_accessible_children", "malformed_variant"]
+    hresult_category: Literal["s_ok", "s_false", "no_interface", "invalid_argument",
+        "access_denied", "disconnected", "failed", "unexpected_success"] | None
+    requested: int | None = Field(ge=1, le=2000)
+    obtained: int | None = Field(ge=0, le=2000)
 
 
 class MsaaSection(FrozenModel):
     nodes: tuple[MsaaNode, ...] = Field(default=(), max_length=2000)
+    child_diagnostics: tuple[ChildDiagnostic, ...] = Field(default=(), max_length=64)
+    diagnostics_dropped: int = Field(default=0, ge=0)
 
 
 class DiscoveryReport(FrozenModel):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     backend: Literal["hwnd", "msaa", "all"]
     process_id: int = Field(gt=0)
