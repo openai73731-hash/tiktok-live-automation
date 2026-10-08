@@ -141,12 +141,10 @@ class AdminService:
             connected=not invalid and live.connection_owned and live.state == "connected" and live.terminal_state is None,
             active=live.activity == "active")
         if self.delivery is not None:
-            controller = self.delivery.controller
-            device_ready = controller.ready_for(context.live_session_id, context.target_account) if hasattr(controller, "ready_for") else controller.last.ready
             context = context.model_copy(update={
                 "operator_paused": self.delivery.paused or self.delivery.closed,
-                "delivery_available": self.settings.enable_physical_tiktok_send,
-                "device_available": device_ready})
+                "delivery_available": self.delivery.delivery_available,
+                "device_available": self.delivery.device_ready(context)})
         return context
 
     def register_record(self, record, comment, processor, *, session_id=None, target_account=None):
@@ -160,9 +158,8 @@ class AdminService:
 
     def review_view(self, suggestion_id):
         review = self.suggestions.view(suggestion_id, self.delivery_context())
-        actions = getattr(self.delivery.controller, "actions", None) if self.delivery else None
         return review.model_copy(update={"physical_send_allowed": bool(self.delivery and self.delivery.can_send(review)),
-            "text_entry_supported": bool(actions and actions.supports(review.envelope.suggested_reply))})
+            "text_entry_supported": bool(self.delivery and self.delivery.text_supported(review.envelope.suggested_reply))})
 
     def begin_live_session(self, session_id):
         self.live_archive.extend(self.live_history)

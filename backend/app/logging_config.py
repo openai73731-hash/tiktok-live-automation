@@ -27,6 +27,16 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(result, ensure_ascii=False, default=str)
 
 
+class InstanceFilter(logging.Filter):
+    def __init__(self, instance_id):
+        super().__init__()
+        self.instance_id = instance_id
+
+    def filter(self, record):
+        record.fields = {**getattr(record, "fields", {}), "instance_id": self.instance_id}
+        return True
+
+
 class ConsoleFormatter(logging.Formatter):
     def __init__(self, diagnostic: bool = False, replay: bool = False):
         super().__init__()
@@ -126,9 +136,11 @@ def configure_logging(settings: Settings) -> logging.Logger:
         backupCount=settings.log_backup_count, encoding="utf-8",
     )
     file_handler.setLevel(settings.log_level)
+    file_handler.addFilter(InstanceFilter(settings.instance_id))
     file_handler.setFormatter(JsonFormatter())
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
+    console.addFilter(InstanceFilter(settings.instance_id))
     console.setFormatter(ConsoleFormatter(
         settings.diagnostic or settings.live_mode == "replay", replay=settings.live_mode == "replay",
     ))

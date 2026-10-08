@@ -1,5 +1,83 @@
 # tiktok-live-automation
 
+## PC-first: Windows LIVE Studio, этап PC-SEND-1
+
+Текущая PC-ветка добавляет выбор транспорта и **read-only discovery**. Это ещё не
+manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
+Android RC ниже сохранён; default transport остаётся `android` для совместимости.
+PocketWin — внешняя программа, её internals и торговля здесь не управляются.
+Подробный аудит, ограничения и этапы: [PC architecture](docs/PC_LIVE_STUDIO_ARCHITECTURE.md).
+
+Требования probe: Windows 10/11 с интерактивным desktop, Windows PowerShell 5.1 и
+встроенными .NET UI Automation assemblies, Python 3.12+, установленный LIVE Studio.
+Дополнительные Python UI-пакеты не нужны. Оператор сам запускает Studio, входит в
+свой аккаунт и открывает панель комментариев. Поддержка конкретной версии Studio
+ещё не подтверждена. Probe никогда не фокусирует поле, не вводит и не отправляет.
+
+```powershell
+$env:TIKTOK_TRANSPORT = 'windows_live_studio'
+$env:INSTANCE_ID = 'vm1'
+$env:ACCOUNT_LABEL = 'own-live'
+$env:STATE_DIR = 'work/vm1/data'
+$env:LOG_DIR = 'work/vm1/logs'
+$env:ADMIN_LIVE_ENABLED = 'false'
+$env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'
+& ./.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Windows-режим запускается без Android/ADB. GET/SSE/startup не сканируют desktop и
+не вызывают AI. Dashboard показывает `PC-SEND-1 / probe_required`, Prepare/Submit
+DISABLED; Android startup flag не включает Windows-действия. Источник комментариев
+и существующий LM Studio/fake pipeline сохранены. Real CONNECT выполняет оператор.
+Для возврата к Android задайте `TIKTOK_TRANSPORT=android` и перезапустите backend.
+
+В отдельном PowerShell выполните read-only probe (LIVE для самого discovery не нужен):
+
+```powershell
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1
+# Для review доступных labels: содержит private UI text, просмотрите перед передачей.
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1 --include-names
+# Если embedded WebView почти пуст в control view:
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1 --include-names --tree-view raw
+# Если имя процесса не распознано, укажите PID своего Studio из Task Manager:
+# & ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1 --process-id <PID>
+```
+
+JSON tree сохраняется только в ignored `diagnostics/windows/vm1/<id>.json`, максимум
+20 отчётов; stdout показывает status/count/path. Password names/subtrees и значения
+Value/Text patterns не читаются. Exit 0 означает полный snapshot кандидатов;
+exit 2 — window_not_found/timeout/unknown_ui_state/uia_unavailable либо отказ записи.
+Кандидат Edit/Button не доказывает input/Send, аккаунт или LIVE. Никакие selectors
+не угаданы. Локальный запуск в этой сессии дал `window_not_found`, 0 windows/0 nodes.
+
+Ручная последовательность: запустите Studio, откройте comments, выполните discovery,
+проверьте unique input/ancestry/patterns в локальном отчёте. Для последующего review
+соберите также version/locale и snapshots idle и собственного practice/LIVE, если
+он доступен; это делает оператор. **Следующий этап PC-SEND-2** добавит подготовку
+approved reply без Submit и exact readback. После его реальной проверки можно
+проектировать отдельный guarded PC-SEND-3. Сейчас не включайте и не тестируйте Submit:
+его реализации/флага нет. MANUAL сохранён; ASSISTED/AUTO остаются последующими этапами.
+
+LM Studio настройки остаются в project YAML (`lmstudio_base_url`, model, timeout,
+max tokens). Текущий endpoint guard разрешает только loopback `/v1`; host/LAN LLM
+для нескольких VM требует отдельного network configuration этапа. Каждый экземпляр
+использует свои STATE_DIR/LOG_DIR, project directory/overlay и localhost port.
+INSTANCE_ID маркирует JSONL logs; ACCOUNT_LABEL — подпись, не проверка аккаунта.
+
+Тесты выполняются по уровням, без полного прогона после каждого изменения:
+
+```powershell
+& ./scripts/test-fast.ps1 # Tier A: новые offline PC contracts
+& ./scripts/test-pc.ps1   # Tier B: затронутые компоненты перед commit
+# Tier C: только merge/release/major change или признаки общей регрессии:
+# & ./scripts/test-full.ps1
+```
+
+Если локальная политика запрещает `.ps1`, используйте прямой `python -m pytest -q`
+с соответствующими файлами из скрипта; probe не изменяет execution policy.
+Real UI test требует отдельного `RUN_LIVE_STUDIO_E2E=1` и только читает tree;
+обычные тесты не требуют аккаунта/Studio и не отправляют сообщения.
+
 ## Stage 4B.3: MANUAL SEND release candidate
 
 Этот раздел описывает текущую поставку; ограничения более ранних stages ниже —

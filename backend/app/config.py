@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     admin_live_enabled: bool = False
     # Trusted startup only. Neither flag/path can be supplied through Admin UI.
     enable_physical_tiktok_send: bool = False
+    # Startup-only platform selection; Android remains the compatibility default.
+    tiktok_transport: Literal["android", "windows_live_studio"] = "android"
+    instance_id: str = Field(default="default", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
+    account_label: str = Field(default="", max_length=80, pattern=r"^[^\x00-\x1f\x7f]*$")
+    state_dir: Path = Path("data")
     adb_executable: Path | None = None
     manual_delivery_min_interval_seconds: float = Field(default=3, ge=2, le=60, allow_inf_nan=False)
     openai_api_key: SecretStr = Field(default=SecretStr(""), repr=False, exclude=True)

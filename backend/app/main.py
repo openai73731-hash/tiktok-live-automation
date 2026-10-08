@@ -25,7 +25,7 @@ from app.admin.service import AdminService, PlaygroundService
 from app.admin.runtime import OperatorRuntime
 from app.quality.router import router as quality_router
 from app.quality.service import QualityService
-from app.delivery.service import ManualDeliveryService
+from app.delivery.factory import create_delivery_service
 from app.lifecycle import finish_owned
 
 
@@ -57,7 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 available=True if ai.provider == "fake" else None)
         quality = QualityService(playground, live_enabled=config.admin_live_enabled)
         application.state.quality = quality
-        delivery = ManualDeliveryService(config, admin.suggestions, admin.delivery_context, serial=runtime.android_serial)
+        delivery = create_delivery_service(config, admin.suggestions, admin.delivery_context, serial=runtime.android_serial)
         application.state.delivery = admin.delivery = delivery
         delivery.on_idle = runtime.publish
         runtime.live._sync()

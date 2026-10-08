@@ -19,13 +19,17 @@ from app.lifecycle import finish_owned
 
 
 class DeliveryView(FrozenModel):
-    inspection: DeviceInspection
+    transport: Literal["android", "windows_live_studio"] = "android"
+    instance_id: str = "default"
+    account_label: str = ""
+    windows_status: Literal["probe_required"] | None = None
+    inspection: DeviceInspection | None = None
     physical_delivery_enabled: bool
     physical_ready: bool
     delivery: Literal["NOT READY", "DRY RUN READY"]
     paused: bool
     busy: bool
-    reason: Literal["physical_delivery_disabled", "device_unavailable", "ready", "delivery_paused", "cooldown"]
+    reason: Literal["physical_delivery_disabled", "device_unavailable", "ready", "delivery_paused", "cooldown", "not_configured"]
 
 
 class DeliveryHistoryEntry(FrozenModel):
@@ -44,7 +48,7 @@ class ManualDeliveryService:
         self.settings, self.suggestions, self.context = settings, suggestions, context
         self.controller = controller or ADBAndroidController(AdbTransport(settings.adb_executable),
             serial=serial, physical_enabled=settings.enable_physical_tiktok_send)
-        self.journal_factory = journal_factory or (lambda: SQLiteDeliveryOperationStore(JOURNAL_PATH.resolve()))
+        self.journal_factory = journal_factory or (lambda: SQLiteDeliveryOperationStore((settings.state_dir / JOURNAL_PATH.name).resolve()))
         self.journal = self.coordinator = None
         self.tasks = set()
         self.lock = asyncio.Lock()
@@ -57,6 +61,18 @@ class ManualDeliveryService:
     def busy(self): return self.lock.locked() or self.controller.lock.locked()
 
     @property
+    def delivery_available(self): return self.settings.enable_physical_tiktok_send
+
+    def device_ready(self, context):
+        controller = self.controller
+        return (controller.ready_for(context.live_session_id, context.target_account)
+                if hasattr(controller, "ready_for") else controller.last.ready)
+
+    def text_supported(self, text):
+        actions = getattr(self.controller, "actions", None)
+        return bool(text and actions and actions.supports(text))
+
+    @property
     def cooldown(self):
         return monotonic() - self.last_attempt < self.settings.manual_delivery_min_interval_seconds
 
@@ -66,7 +82,8 @@ class ManualDeliveryService:
                  self.context().device_available and self.settings.enable_physical_tiktok_send)
         reason = "delivery_paused" if self.closed or self.paused else "cooldown" if self.cooldown else (
             "physical_delivery_disabled" if not self.settings.enable_physical_tiktok_send else "ready" if ready else "device_unavailable")
-        return DeliveryView(inspection=inspected, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
+        return DeliveryView(instance_id=self.settings.instance_id, account_label=self.settings.account_label,
+            inspection=inspected, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
             physical_ready=ready, delivery="DRY RUN READY" if inspected.ready else "NOT READY",
             paused=self.paused, busy=self.busy, reason=reason)
 

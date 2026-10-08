@@ -5,8 +5,22 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
   const keys = new Map();
   function render(next) {
     view = next;
+    const windows = next.transport === "windows_live_studio";
+    $("device-panel-title").textContent = windows ? "Windows LIVE Studio" : "Android / TikTok UI";
+    $("device-panel-note").textContent = windows
+      ? "Discovery: запустите scripts/probe_live_studio.py локально. Подготовка текста и отправка пока недоступны."
+      : "Явная проверка и capture не запускают LIVE/AI, не вводят текст и не отправляют сообщения.";
+    $("android-settings").hidden = windows;
+    $("android-capture-note").hidden = windows;
+    ["inspect-device", "capture-device", "verify-account", "confirm-send"].forEach((id) => {
+      $(id).hidden = windows;
+      $(id).disabled = windows || busy || !state.connected;
+    });
     const d = next.inspection;
-    const items = [["ADB", d.adb], ["Device", d.device], ["Serial", d.serial],
+    const items = windows ? [["Transport", "windows_live_studio"], ["Instance", next.instance_id],
+      ["Account label", next.account_label],
+      ["Stage", "PC-SEND-1"], ["Discovery", next.windows_status], ["Prepare / Submit", "DISABLED"],
+      ["Delivery", next.delivery]] : [["ADB", d.adb], ["Device", d.device], ["Serial", d.serial],
       ["Client", ({TIKTOK_YOU: "TikTok You · observed hint", OFFICIAL: "Official profile · локально reviewed", UNKNOWN: "UNKNOWN"}[d.client_variant] || "UNKNOWN")],
       ["TikTok package", d.package], ["Version", d.version], ["Version code", d.version_code],
       ["Foreground", d.foreground_activity], ["Screen", d.screen], ["Profile", d.profile_verified ? "VERIFIED" : "UNVERIFIED"],
@@ -19,6 +33,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("device-status").replaceChildren(...items.map(([label, value]) => {
       const row = node("div"); row.append(node("dt", "", label), node("dd", "mono", String(value ?? "—"))); return row;
     }));
+    if (windows) { refreshCards(); return; }
     const select = $("operator-device"), selected = select.value;
     const wanted = selected;
     const devices = d.devices.map((device) => {
@@ -77,7 +92,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     finally { busy = false; await refresh(); }
   });
   $("confirm-send").addEventListener("click", async () => {
-    const token = view?.inspection.send_confirmation_token;
+    const token = view?.inspection?.send_confirmation_token;
     if (busy || !token || !state.connected) return;
     if (!window.confirm("Подтверждаю, что vp8/vpl в открытом composer — кнопка отправки. Привязка действует только для проверенного Xiaomi / TikTok You 46.8.3 и аккаунта. Сейчас ничего не отправляется.")) return;
     busy = true;
@@ -95,7 +110,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     if (!send.disabled) setTimeout(() => { send.disabled = true; send.title = "Истёк срок предложения. Обновите проверку."; }, Math.max(0, Math.min(Date.parse(e.expires_at) - Date.now(), 90000)));
     send.title = !allowed ? "Нужен актуальный approval реального LIVE" : !review?.text_entry_supported ? "unicode_entry_unavailable · доступен COPY" : !review?.eligibility?.eligible ? review?.eligibility?.reason || "Обновите проверку" : view?.reason || "Устройство не проверено";
     const dry = node("button", "button secondary-button", "DRY RUN SEND");
-    dry.type = "button"; dry.disabled = !allowed || busy || !state.connected;
+    dry.type = "button"; dry.disabled = !allowed || busy || !state.connected || view?.transport === "windows_live_studio";
     actions.append(dry);
     if (!keys.has(e?.suggestion_id) && e) {
       if (keys.size >= 150) keys.delete(keys.keys().next().value);
