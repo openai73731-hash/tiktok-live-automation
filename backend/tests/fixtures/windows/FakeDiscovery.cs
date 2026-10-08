@@ -10,6 +10,7 @@ namespace LiveStudioDiscovery {
         public FakeNode[] children = new FakeNode[0];
         public string Identity { get { return id; } }
         public bool SimpleChild { get { return simple; } }
+        public int? ChildId { get { return simple ? (int?)1 : null; } }
         public int State() { if (broken) throw new Exception("PRIVATE EXCEPTION"); return state; }
         public int Role() { return role; }
         public int ChildCount() { return badCount != 0 ? badCount : children.Length; }
@@ -17,26 +18,33 @@ namespace LiveStudioDiscovery {
         public int[] Location() { return new int[] {1, 2, 30, 40}; }
         public long? OwnerWindow() { return id == "unknown_owner" ? (long?)null : 200; }
         public IEnumerable<IMsaaNode> Children(int count) { for (int i = 0; i < Math.Min(count, children.Length); i++) yield return children[i]; }
+        public IMsaaNode ChildObject() { return null; }
         public void Dispose() { closes++; }
         // Traps exist on the fake but are absent from the production read interface.
         public void Invoke() { throw new Exception("ACTION FORBIDDEN"); }
         public void SetValue() { throw new Exception("ACTION FORBIDDEN"); }
     }
     public sealed class FakeDesktop : IReadOnlyDesktop {
-        public bool LimitReached { get { return false; } }
+        public ScanLimits limits;
+        public ScanLimits Limits { get { return limits; } }
         public bool noPath, badWindow, noMsaa, pathThrows, protectedWindow, longPath;
         public int accessibleCalls;
         public FakeNode root;
+        public Func<IMsaaNode> accessibleFactory;
+        public Func<int, IEnumerable<long>> topFactory;
         public bool hwndCycle;
-        public IEnumerable<long> TopWindows(int pid) { if (pid == 11300) yield return 100; }
+        public IEnumerable<long> TopWindows(int pid) {
+            if (topFactory != null) { foreach (long hwnd in topFactory(pid)) yield return hwnd; }
+            else if (pid == 11300) yield return 100;
+        }
         public IEnumerable<long> ChildWindows(long hwnd) {
             if (hwnd == 100) yield return 200;
             if (hwnd == 200) yield return hwndCycle ? 100 : 300;
         }
-        public int WindowProcess(long hwnd) { return hwnd == 100 ? 11300 : hwnd == 200 ? 11301 : 11302; }
+        public int WindowProcess(long hwnd) { return hwnd >= 100 && hwnd < 108 ? 11300 : hwnd == 200 ? 11301 : 11302; }
         public WindowRow Window(long hwnd, bool names) {
             if (badWindow) throw new Exception("PRIVATE WINDOW");
-            return new WindowRow { hwnd = hwnd, parent_hwnd = hwnd == 100 ? (long?)null : hwnd == 200 ? 100 : 200,
+            return new WindowRow { hwnd = hwnd, parent_hwnd = hwnd >= 100 && hwnd < 108 ? (long?)null : hwnd == 200 ? 100 : 200,
                 process_id = WindowProcess(hwnd), class_name = hwnd == 100 ? "Chrome_WidgetWin_1" : hwnd == 200 ? "Chrome_RenderWidgetHostHWND" : "Chrome_Other",
                 name = names ? "PRIVATE WINDOW NAME" : null, protected_content = protectedWindow,
                 enabled = true, visible = true, bounds = new int[] {0, 0, 10, 20} };
@@ -49,7 +57,7 @@ namespace LiveStudioDiscovery {
         }
         public string ImagePath(int pid) { if (pathThrows) throw new Exception("PRIVATE PATH"); return noPath ? null : longPath ? "X:/" + new string('a', 1100) + "/studio.exe" : "X:/synthetic/studio.exe"; }
         public string ProductVersion(string path) { if (!path.EndsWith("/studio.exe")) throw new Exception("Shortened path"); return "1.36.6"; }
-        public IMsaaNode Accessible(long hwnd) { accessibleCalls++; if (noMsaa) throw new Exception("PRIVATE COM"); return root; }
+        public IMsaaNode Accessible(long hwnd) { accessibleCalls++; if (noMsaa) throw new Exception("PRIVATE COM"); return accessibleFactory != null ? accessibleFactory() : root; }
     }
     public static class Harness {
         public static object All() {
@@ -81,6 +89,7 @@ namespace LiveStudioDiscovery {
                     {"protected_reads", edit.protectedReads}, {"accessible_calls", api.accessibleCalls}, {"root_closes", root.closes},
                     {"root_name_reads", root.nameReads}, {"physical_action", false}};
             }
+            foreach (var item in VariantHarness.All()) result[item.Key] = item.Value;
             return result;
         }
     }

@@ -1,4 +1,4 @@
-"""PC-SEND-1B: compile the real walkers against fully fake in-memory boundaries."""
+"""PC-SEND-1B/1C: real walkers and variant wrappers, fully fake boundaries."""
 import base64
 import json
 import os
@@ -28,7 +28,8 @@ def worker_platform(monkeypatch):
 @pytest.fixture(scope="module")
 def scenarios():
     if sys.platform != "win32": pytest.skip("Stock .NET fake boundary harness requires Windows")
-    paths = [Path("backend/app/windows/NativeDiscovery.cs").absolute(), Path("backend/tests/fixtures/windows/FakeDiscovery.cs").absolute()]
+    paths = [Path(p).absolute() for p in ("backend/app/windows/NativeDiscovery.cs",
+        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs")]
     literals = ",".join("'" + str(path).replace("'", "''") + "'" for path in paths)
     command = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); "
         "Add-Type -Path @(" + literals + ") -ReferencedAssemblies 'System.dll','Accessibility.dll'; "
@@ -63,8 +64,8 @@ def test_msaa_roles_parent_relations_and_state_are_metadata(scenarios):
     assert edit.parent_id == 1 and edit.depth == 1 and edit.focusable and edit.focused
     assert edit.owner_hwnd == 200 and edit.process_id == 11301
     simple = next(n for n in nodes if n.semantic_hint == "listitem")
-    assert simple.owner_kind == "container"
-    assert data.schema_version == 2 and data.backend == "msaa"
+    assert simple.owner_kind == "simple_child" and simple.child_id == 1
+    assert data.schema_version == 3 and data.backend == "msaa"
     assert data.studio_version == "1.36.6"
     assert scenarios["msaa"]["root_closes"] > 0
 
@@ -100,7 +101,7 @@ def test_cycles_and_limits_stop_traversal(scenarios, case, code):
         assert max(n.depth for n in data.hwnd.windows) <= 1 and "hwnd_depth_limit" in data.errors
 
 
-@pytest.mark.parametrize("case,code", [("malformed", "msaa_unreadable"), ("bad_count", "msaa_unreadable"),
+@pytest.mark.parametrize("case,code", [("malformed", "msaa_state_unavailable"), ("bad_count", "msaa_child_count_unavailable"),
     ("bad_window", "hwnd_unreadable"), ("no_msaa", "msaa_unavailable")])
 def test_unreadable_nodes_never_expose_exception_text(scenarios, case, code):
     data = report(scenarios, case)
@@ -131,8 +132,9 @@ def test_version_uses_actual_image_path_before_report_shortening(scenarios):
 
 def test_native_wrapper_has_no_actions_or_value_reads():
     source = Path("backend/app/windows/NativeDiscovery.cs").read_text(encoding="utf-8")
-    members = set(re.findall(r"accessible\.([A-Za-z_]+)", source))
-    assert members == {"get_accState", "get_accRole", "get_accName", "accChildCount", "accLocation"}
+    com_wrapper = source.split("sealed class NativeComReads", 1)[1].split("sealed class NativeAccessible", 1)[0]
+    members = set(re.findall(r"accessible\.([A-Za-z_]+)", com_wrapper))
+    assert members == {"get_accState", "get_accRole", "get_accName", "get_accChild", "accChildCount", "accLocation"}
     assert not re.search(r"SendMessage|SendInput|SetFocus|accDoDefaultAction|accSelect|Clipboard|WriteProcessMemory|CreateRemoteThread", source)
 
 
@@ -215,3 +217,115 @@ def test_versioned_report_storage_remains_ignored_and_bounded(scenarios, tmp_pat
     bad = data.model_dump()
     bad["msaa"]["nodes"][0]["protected_content"] = True
     with pytest.raises(ValidationError): DiscoveryReport.model_validate(bad)
+
+
+@pytest.mark.parametrize("case,names", [("seven_ids", False), ("seven_names", True)])
+def test_raw_vt_i4_seven_children_keep_exact_ids_and_parent_metadata(scenarios, case, names):
+    data = report(scenarios, case)
+    assert data.status == "discovered" and not data.errors and data.unreadable == 0
+    # Independent HWND roots can expose the same COM object without a false cycle.
+    assert len(data.msaa.nodes) == 3 * 8
+    for source in (100, 200, 300):
+        nodes = [n for n in data.msaa.nodes if n.source_hwnd == source]
+        root, *children = nodes
+        assert root.owner_kind == "accessible_object" and root.child_id is None
+        assert [n.child_id for n in children] == list(range(1, 8))
+        assert len({n.node_id for n in children}) == 7
+        assert all(n.parent_id == root.node_id and n.depth == 1 and n.owner_kind == "simple_child" for n in children)
+        assert all(n.owner_hwnd == 200 and n.process_id == 11301 and n.child_count == 0 for n in children)
+        assert all(n.name == (f"Label {n.child_id}" if names else None) for n in children)
+    calls = scenarios[case]["calls"]
+    for child_id in range(1, 8):
+        for prop in ("state", "role", "location", "child_S_FALSE"):
+            assert f"{prop}:{child_id}" in calls
+        assert (f"name:{child_id}" in calls) is names
+
+
+@pytest.mark.parametrize("case", ["child_object", "object_properties"])
+def test_child_object_expands_after_preserved_child_id_and_can_supply_own_properties(scenarios, case):
+    data = report(scenarios, case)
+    assert data.status == "discovered" and not data.errors
+    nodes = [n for n in data.msaa.nodes if n.source_hwnd == 100]
+    root, simple, expanded, leaf = nodes
+    assert simple.child_id == 1 and simple.parent_id == root.node_id
+    assert expanded.owner_kind == "accessible_object" and expanded.child_id is None
+    assert expanded.parent_id == simple.node_id and expanded.depth == 2
+    assert leaf.child_id == 1 and leaf.parent_id == expanded.node_id
+    assert "child:1" in scenarios[case]["calls"] and "state:0" in scenarios[case]["object_calls"]
+    assert scenarios[case]["object_closes"] == 3
+
+
+def test_vt_dispatch_is_an_object_node_not_a_simple_child(scenarios):
+    data = report(scenarios, "dispatch")
+    root, child, leaf = [n for n in data.msaa.nodes if n.source_hwnd == 100]
+    assert child.owner_kind == "accessible_object" and child.parent_id == root.node_id
+    assert child.child_id is None and leaf.parent_id == child.node_id and leaf.child_id == 1
+
+
+@pytest.mark.parametrize("case,code", [("object_cycle", "msaa_repeated"), ("simple_repeat", "msaa_repeated"),
+    ("variant_nodes", "msaa_node_limit"), ("variant_depth", "msaa_depth_limit")])
+def test_raw_variant_cycles_and_budgets_remain_bounded(scenarios, case, code):
+    data = report(scenarios, case)
+    assert data.status == "unknown_ui_state" and data.truncated and code in data.errors
+    if case == "variant_nodes": assert len(data.msaa.nodes) == 2
+    if case == "variant_depth": assert max(n.depth for n in data.msaa.nodes) == 1
+
+
+@pytest.mark.parametrize("case,code,field", [("role_failure", "msaa_role_unavailable", "role"),
+    ("name_failure", "msaa_name_unavailable", "name"), ("location_failure", "msaa_location_unavailable", "bounds"),
+    ("count_failure", "msaa_child_count_unavailable", "child_count")])
+def test_optional_property_hresult_preserves_node_with_null(scenarios, case, code, field):
+    data = report(scenarios, case)
+    nodes = [n for n in data.msaa.nodes if n.source_hwnd == 100]
+    node = nodes[0] if case == "count_failure" else next(n for n in nodes if n.child_id == 1)
+    assert getattr(node, field) is None and code in data.errors and data.unreadable > 0
+    assert "PRIVATE HRESULT" not in data.model_dump_json()
+
+
+@pytest.mark.parametrize("case", ["simple_protected", "simple_unknown", "protected_object", "object_protected_parent_clear", "object_unknown_state"])
+def test_raw_variant_protected_or_unknown_state_never_reads_name_or_descendants(scenarios, case):
+    data = report(scenarios, case)
+    assert "name:1" not in scenarios[case]["calls"]
+    if case in {"simple_unknown", "object_unknown_state"}:
+        assert "msaa_state_unavailable" in data.errors
+        assert not any(n.child_id == 1 for n in data.msaa.nodes)
+    else:
+        node = next(n for n in data.msaa.nodes if n.child_id == 1)
+        assert node.protected_content and node.name is None
+        assert not any(n.parent_id == node.node_id for n in data.msaa.nodes)
+    if case in {"protected_object", "object_protected_parent_clear", "object_unknown_state"}:
+        assert "name:0" not in scenarios[case]["object_calls"]
+        assert scenarios[case]["object_closes"] == 3
+
+
+def test_child_object_failure_and_unsupported_variant_are_distinct(scenarios):
+    failed = report(scenarios, "object_failure")
+    assert "msaa_child_object_unavailable" in failed.errors
+    assert any(n.child_id == 1 for n in failed.msaa.nodes)
+    unsupported = report(scenarios, "unsupported_variant")
+    assert "msaa_child_unsupported" in unsupported.errors and "msaa_unreadable" not in unsupported.errors
+    enumeration = report(scenarios, "children_failure")
+    assert enumeration.errors == ("msaa_children_unavailable",)
+    assert len(enumeration.msaa.nodes) == 3 and "PRIVATE HRESULT" not in enumeration.model_dump_json()
+
+
+def test_eight_target_roots_followed_by_unrelated_windows_are_not_truncated(scenarios):
+    data = report(scenarios, "eight_roots")
+    assert data.status == "discovered" and not data.truncated and not data.errors
+    assert sum(n.depth == 0 for n in data.hwnd.windows) == 8
+
+
+@pytest.mark.parametrize("case,code", [("desktop_limit", "desktop_scan_limit"), ("nine_roots", "target_root_limit"),
+    ("target_limit", "target_hwnd_scan_limit"), ("process_scan_limit", "process_scan_limit")])
+def test_scan_limits_identify_source_and_preserve_conservative_completeness(scenarios, case, code):
+    data = report(scenarios, case)
+    assert data.truncated and data.status == "unknown_ui_state" and data.errors == (code,)
+    assert data.hwnd.windows
+    if case == "desktop_limit":
+        assert len(data.hwnd.windows) == 3  # Found root's children complete; other roots remain unproven.
+
+
+def test_schema_requires_child_id_only_for_simple_representation(scenarios):
+    data = report(scenarios, "seven_ids").model_dump()
+    data["msaa"]["nodes"][1]["child_id"] = None
+    with pytest.raises(ValidationError): DiscoveryReport.model_validate(data)

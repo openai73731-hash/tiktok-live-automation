@@ -1,4 +1,4 @@
-# PC-first migration: architecture audit and PC-SEND-1B
+# PC-first migration: architecture audit and PC-SEND-1C
 
 Audited 2026-10-08 from the actual checkout, starting on clean `main` at
 `15e31f9d88688669b7bd430ebad2003f46ec53a7` (`Add TikTok You manual send release candidate`).
@@ -166,7 +166,7 @@ protected names/children. Unreadable state prevents name/child access.
 the container owner explicitly. Unknown owners stay null. Role/state semantic hints
 are evidence only. No `accValue`, default action or setter is called.
 
-Schema 2 separates `hwnd.windows`, `msaa.nodes` and optional `uia` (schema 1 in
+PC-SEND-1B schema 2 separates `hwnd.windows`, `msaa.nodes` and optional `uia` (schema 1 in
 `all`). It includes backend, selected PID, optional executable ProductVersion,
 bounded related-process metadata, truncation/unreadable counts, up to 16 static
 error codes and `physical_action=false`. Toolhelp snapshot filtering retains only
@@ -194,6 +194,68 @@ panel. Report all unknown/blocked states too. If native discovery still exposes
 only a shell, there is no basis for input or SEND selectors. Accessibility
 snapshots alone do not verify Unicode entry, keyboard behavior or publication.
 
+### PC-SEND-1C: child variants, optional properties and scan reasons
+
+The latest operator capture reports Studio 1.36.6.0, transient GUI PID 4620, 14 HWNDs
+and a visible widget/render-widget pair. Other surfaces are hidden; geometry and
+visibility alone do not establish a chat panel. MSAA exposed role 9 / Chrome Legacy
+Window with child_count 7 but omitted its children, with the old aggregate codes
+`msaa_unreadable`, `msaa_repeated`, `native_enumeration_limit`. The agent has not run
+a real probe for this fix or claimed that the installed Studio tree is now complete.
+
+Code audit found that VT_I4 was already wrapped as a simple child with identity
+`parent COM identity + child ID`; this was not a missing VT_I4 branch. However,
+`get_accChild` was never called, so an ID resolving to a full accessible object was
+always treated as a leaf. A parent need not supply that object's properties; a
+fake regression reproduces the previous loss on the mandatory state read. As
+[Microsoft documents](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-iaccessible-get_accchild),
+S_FALSE means no separate object and the parent supplies child metadata. This is
+now a normal null/leaf outcome. Integer IDs and dispatch objects remain distinct.
+
+Schema 3 is necessary for the new `child_id` field and explicit `simple_child` vs
+`accessible_object` representation. Simple metadata uses the exact parent + child
+ID. If that ID resolves to a full object, its own mandatory state is checked before
+any name, and its metadata supplies the child-ID row. The row is preserved first,
+then the full object is recorded beneath it with a proper local parent ID. Unknown
+state fails closed; protected parent/child/object prevents names and descendants.
+There are no value or action calls. Both rows count against the unchanged total
+MSAA node budget and depth; the budget is shared across all HWND roots.
+
+Previously a role, name, owner or count exception entered one broad catch and could
+drop the whole row. Those optional reads now retain the node with null fields and
+static `msaa_role_unavailable`, `msaa_name_unavailable`, `msaa_owner_unavailable`,
+`msaa_child_count_unavailable` or `msaa_location_unavailable`. Required state failure
+is `msaa_state_unavailable`; child-object, children-enumeration failure and unsupported
+variants have separate codes. `msaa_unreadable` remains a sanitized fallback for
+unexpected identity/walker failures. Old reports did not retain a property/HRESULT source,
+so their exact real COM failure cannot be reconstructed from the excerpt alone.
+
+The previous `msaa_repeated` set spanned every HWND root, so a legitimate object
+exposed through another HWND was flagged as a cycle and skipped. The set is now
+scoped to one root traversal. Within that root, full-object identity remains
+cycle-safe, and simple-child identity still includes its exact child ID. Seven
+different IDs sharing one parent no longer risk being confused with a cross-root
+repeat; genuine repeated IDs and full-object cycles still stop traversal.
+
+`native_enumeration_limit` formerly merged four distinct sources: desktop scan
+(512), matching roots (8), sibling HWND scan/repetition (2000), and process snapshot
+(4096). The root check also stopped as soon as eight had been collected, even if
+the next window was unrelated. The bounded scan now continues past unrelated windows
+and flags a root cap only upon a ninth match. Reports identify `desktop_scan_limit`,
+`target_root_limit`, `target_hwnd_scan_limit` and `process_scan_limit` separately.
+No cap was raised. A desktop cap cannot prove that later target roots do not exist,
+even if the captured root's children are complete, so that case remains conservative
+unknown/truncated with a desktop reason. Exactly eight roots followed by unrelated
+windows and a complete desktop scan is no longer truncated. The old aggregate code
+does not reveal which cap triggered in the operator's 14-HWND report.
+
+New fake tests inject raw integer/dispatch-like variants into the actual node
+wrapper and verify parent property arguments, S_FALSE/null, object expansion,
+protected/unknown states, optional HRESULT errors, per-root identity, cycles and
+budgets. A fake bounded top-window scan tests exact-eight/ninth-root/desktop limits.
+Compilation and tests call no native desktop APIs or real UI. The original UIA
+worker, HWND metadata, report storage, sender and disabled preparation are preserved.
+
 Microsoft documents [UIA tree scoping and changing trees](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-tree-overview)
 and [TreeWalker/property-based discovery](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/obtaining-ui-automation-elements).
 These support the diagnostic approach, not a claim about TikTok's actual accessibility.
@@ -215,8 +277,10 @@ not block safe standalone manual preparation.
 1. **PC-SEND-1:** audit, transport selection, cached unavailable Windows
    sender, native read-only probe, offline tests and tiered commands. This is a
    discovery milestone, **not the first manual-prepare release candidate**.
-   **PC-SEND-1B (current slice):** add bounded HWND and MSAA discovery to investigate
+   **PC-SEND-1B:** add bounded HWND and MSAA discovery to investigate
    the observed Chromium shell. No production controls or actions.
+   **PC-SEND-1C (current slice):** fix child-ID/object traversal, per-root dedup,
+   optional properties and precise scan limits. Still read-only evidence collection.
 2. **PC-SEND-2:** collect/redact real control/raw/HWND/MSAA trees and version/locale/account/LIVE
    evidence; review a backend profile. Implement an explicit approved-envelope
    preparation route that rechecks session/runtime/approval/expiry, uniquely locates
@@ -300,6 +364,13 @@ The skip is the opt-in real UIA test; `RUN_LIVE_STUDIO_E2E=0` was explicit.
 native Python and original UIA workers and excludes runtime reports/logs. The real
 native adapter was not executed: the C# collectors ran only against fake boundaries.
 Full pytest and unrelated `test_unknown_events.py` fixes remain outside this slice.
+
+PC-SEND-1C validation: focused native contracts **62 passed**; Tier A **92 passed,
+1 skipped**; Tier B **454 passed, 1 skipped**, with the two existing SDK deprecation
+warnings. The skip is the opt-in real UIA test (`RUN_LIVE_STUDIO_E2E=0`). `pip check`
+passed; Windows-selected fake CLI processed three synthetic comments and exited 0.
+No real UI probe, real LIVE, paid provider or physical action was executed. The
+full suite and unrelated listener changes remain outside this discovery fix.
 
 For real-machine collection, follow the exact commands in README's PC section.
 Start Studio/login/open the comment panel yourself. Collect both idle and appropriate

@@ -1,6 +1,6 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-1B
+## PC-first: Windows LIVE Studio, этап PC-SEND-1C
 
 Текущая PC-ветка добавляет выбор транспорта и **read-only discovery**. Это ещё не
 manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
@@ -36,14 +36,23 @@ PC-SEND-1B добавляет HWND и MSAA/IAccessible discovery для Chromium
 и `Chrome_RenderWidgetHostHWND`, без patterns/кандидатов. Это не найденные chat controls.
 Default остаётся UIA; HWND/MSAA/all запускаются только явно и требуют основной PID.
 
+PC-SEND-1C исправляет traversal после operator capture Studio 1.36.6.0: HWND нашёл
+14 окон, MSAA сообщил `Chrome Legacy Window` / role 9 / child_count 7, но потерял
+детей. VT_I4 уже поддерживался; исправлены resolution через `get_accChild`, потеря
+node при optional property error и общий dedup между независимыми roots. Simple
+children теперь имеют `owner_kind=simple_child` и exact `child_id`; S_FALSE/null —
+обычный leaf. Full object из child ID сохраняется отдельным descendant. Protection
+state проверяется до имени; недоступные optional properties остаются `null`.
+Агент не запускал real probe; результат исправления на Studio ещё должен измерить оператор.
+
 В отдельном PowerShell оператор вручную выполняет read-only capture (LIVE для самого
-discovery не нужен). PID 11300 — пример из исследования, замените текущим основным
+discovery не нужен). PID 4620 — пример из последнего capture, замените текущим основным
 GUI PID своего Studio из Task Manager. `--include-names` включает приватные labels;
 уберите его для capture без имён. Backend/FastAPI запускать для probe не требуется.
 
 ```powershell
 Set-Location C:\Users\user\Documents\tiktok-live-automation
-$studioProcessId = 11300 # Заменить актуальным основным GUI PID.
+$studioProcessId = 4620 # Заменить актуальным основным GUI PID.
 $captureArgs = @('--process-id', "$studioProcessId", '--instance-id', 'vm1', '--include-names', '--max-nodes', '2000', '--max-hwnd', '256', '--max-depth', '20', '--timeout', '60')
 & ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend uia --tree-view raw @captureArgs
 & ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend hwnd @captureArgs
@@ -56,9 +65,11 @@ $captureArgs = @('--process-id', "$studioProcessId", '--instance-id', 'vm1', '--
 
 JSON tree сохраняется только в ignored `diagnostics/windows/vm1/<id>.json`, максимум
 20 отчётов суммарно для всех backends, без eviction; stdout показывает status/count/path.
-UIA сохраняет schema 1; schema 2 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
+UIA сохраняет schema 1; schema 3 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
 `uia`. HWND metadata содержит реальный owning PID, parent/depth/class/rectangle и
 Chromium hints. MSAA содержит role/state/relationships/location и diagnostic hints.
+Schema 3 добавляет обязательное различение object/simple child с `child_id`;
+старые schema 2 captures остаются историческими файлами и не переписываются.
 Bounded process metadata содержит descendants, optional image path и HWND references;
 `has_windows` относится только к окнам в этом snapshot. `studio_version` читается из
 доступного executable основного PID; недоступный path/version — `null`, не ошибка.
@@ -70,6 +81,11 @@ Caps: 2000 HWND, 2000 nodes **на каждый accessibility backend**, depth 2
 `all` делит один timeout между native worker и UIA. Ограниченный desktop/process
 snapshot нужен только для поиска выбранных roots/descendants; чужие деревья не обходятся.
 Некорректный `--max-nodes 3000` и другие limits дают явный argparse `invalid_argument`.
+Scan limits теперь разделены: `desktop_scan_limit`, `target_root_limit`,
+`target_hwnd_scan_limit`, `process_scan_limit`. Ровно восемь matching roots больше
+не создают ложный limit из-за следующего чужого окна. При исчерпании desktop cap 512
+полнота списка target roots не доказана: сохраняется conservative unknown/truncated,
+даже если children уже найденного root перечислены полностью. Caps не увеличены.
 Exit 0 означает полный snapshot discovery;
 exit 2 — window_not_found/timeout/unknown_ui_state/uia_unavailable/native_unavailable либо отказ записи.
 Кандидат Edit/Button не доказывает input/Send, аккаунт или LIVE. Никакие selectors

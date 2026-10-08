@@ -16,8 +16,11 @@ from app.windows.probe import MAX_REPORT_BYTES, ProbeReport
 
 ErrorCode = Literal["hwnd_limit", "hwnd_repeated", "hwnd_depth_limit", "hwnd_unreadable",
     "msaa_node_limit", "msaa_repeated", "msaa_depth_limit", "msaa_children_incomplete",
-    "msaa_unreadable", "msaa_unavailable", "msaa_location_unavailable", "process_limit",
-    "process_metadata_unavailable", "process_not_found", "window_limit", "native_enumeration_limit",
+    "msaa_unreadable", "msaa_state_unavailable", "msaa_unavailable", "msaa_location_unavailable", "msaa_role_unavailable",
+    "msaa_owner_unavailable", "msaa_name_unavailable", "msaa_child_count_unavailable",
+    "msaa_child_object_unavailable", "msaa_children_unavailable", "msaa_child_unsupported", "process_limit",
+    "process_metadata_unavailable", "process_not_found", "window_limit", "desktop_scan_limit",
+    "target_root_limit", "target_hwnd_scan_limit", "process_scan_limit",
     "native_unavailable", "worker_output_invalid", "timeout", "uia_incomplete"]
 
 
@@ -42,13 +45,14 @@ class MsaaNode(FrozenModel):
     depth: int = Field(ge=0, le=20)
     source_hwnd: int = Field(gt=0)
     owner_hwnd: int | None
-    owner_kind: Literal["container", "accessible_object"]
+    owner_kind: Literal["simple_child", "accessible_object"]
+    child_id: int | None = Field(gt=0, le=2**31 - 1)
     process_id: int | None = Field(gt=0)
-    role: int = Field(ge=0)
+    role: int | None = Field(ge=0)
     state: int = Field(ge=0)
-    child_count: int = Field(ge=0, le=2**31 - 1)
+    child_count: int | None = Field(ge=0, le=2**31 - 1)
     name: str | None = Field(max_length=160)
-    semantic_hint: Literal["edit", "text", "button", "document", "list", "listitem", "pane", "other", "protected"]
+    semantic_hint: Literal["edit", "text", "button", "document", "list", "listitem", "pane", "other", "protected", "unknown"]
     focusable: bool
     focused: bool
     disabled: bool
@@ -76,7 +80,7 @@ class MsaaSection(FrozenModel):
 
 
 class DiscoveryReport(FrozenModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     backend: Literal["hwnd", "msaa", "all"]
     process_id: int = Field(gt=0)
@@ -99,6 +103,8 @@ class DiscoveryReport(FrozenModel):
                 raise ValueError("Protected names must be absent")
         seen = {}
         for node in self.msaa.nodes if self.msaa else ():
+            if (node.owner_kind == "simple_child") != (node.child_id is not None):
+                raise ValueError("Invalid MSAA child representation")
             if node.node_id in seen:
                 raise ValueError("Repeated MSAA node id")
             if node.parent_id is not None:
