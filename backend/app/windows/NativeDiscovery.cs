@@ -34,15 +34,16 @@ namespace LiveStudioDiscovery {
     public sealed class ChildDiagnostic {
         public long source_hwnd;
         public int? parent_id, child_index, vt, requested, obtained;
-        public string category, reason, hresult_category;
+        public string category, reason, hresult_category, child_id_kind;
     }
     public sealed class ChildRead {
         public object Value;
         public int? Index, Vt, Requested, Obtained;
-        public string Category, Reason, Hresult;
+        public string Category, Reason, Hresult, ChildIdKind;
         public static ChildRead Managed(object value, int index) {
             return new ChildRead { Value = value, Index = index, Vt = value is int ? 3 : value is IAccessibleReads || value is IMsaaNode ? 9 : (int?)null,
-                Category = value is int ? "i4" : value is IAccessibleReads || value is IMsaaNode ? "dispatch" : "unavailable" };
+                Category = value is int ? "i4" : value is IAccessibleReads || value is IMsaaNode ? "dispatch" : "unavailable",
+                ChildIdKind = value is int ? ((int)value == 0 ? "zero" : (int)value > 0 ? "positive" : "negative") : null };
         }
     }
     public sealed class RootScanStats {
@@ -79,6 +80,7 @@ namespace LiveStudioDiscovery {
         readonly IReadOnlyDesktop api;
         readonly int maxHwnd, maxNodes, maxDepth;
         readonly bool names;
+        readonly Func<bool> expired;
         int hwndAttempts, msaaAttempts, unreadable, omissions, diagnosticsDropped;
         bool truncated;
         readonly List<string> errors = new List<string>();
@@ -87,10 +89,11 @@ namespace LiveStudioDiscovery {
         readonly List<ChildDiagnostic> diagnostics = new List<ChildDiagnostic>();
         readonly List<RootTraversal> roots = new List<RootTraversal>();
         readonly HashSet<long> hwndSeen = new HashSet<long>();
-        public Collector(IReadOnlyDesktop desktop, int hwndLimit, int nodeLimit, int depthLimit, bool includeNames) {
+        public Collector(IReadOnlyDesktop desktop, int hwndLimit, int nodeLimit, int depthLimit, bool includeNames, Func<bool> deadlineExpired = null) {
             if (hwndLimit < 1 || hwndLimit > 2000 || nodeLimit < 1 || nodeLimit > 2000 || depthLimit < 1 || depthLimit > 20)
                 throw new ArgumentException("invalid_argument");
             api = desktop; maxHwnd = hwndLimit; maxNodes = nodeLimit; maxDepth = depthLimit; names = includeNames;
+            expired = deadlineExpired ?? delegate { return false; };
         }
         public static string Short(string text, int limit = 160) {
             if (text == null) return null;
@@ -108,11 +111,13 @@ namespace LiveStudioDiscovery {
             if (diagnostics.Count >= 64) { diagnosticsDropped++; return; }
             diagnostics.Add(new ChildDiagnostic { source_hwnd = source, parent_id = parent,
                 child_index = read == null ? null : read.Index, vt = read == null ? null : read.Vt,
+                child_id_kind = read == null ? null : read.ChildIdKind,
                 category = read == null ? "unavailable" : read.Category, reason = reason ?? read.Reason,
                 hresult_category = failure == null ? (read == null ? null : read.Hresult) : VariantReader.Hresult(failure.HResult),
                 requested = read == null ? null : read.Requested, obtained = read == null ? null : read.Obtained });
         }
         void Hwnd(long handle, long root, int depth) {
+            if (expired()) { Note("timeout", false, true); return; }
             if (hwndAttempts >= maxHwnd) { Note("hwnd_limit", false, true); return; }
             hwndAttempts++;
             if (!hwndSeen.Add(handle)) { Note("hwnd_repeated", false, true); return; }
@@ -144,6 +149,7 @@ namespace LiveStudioDiscovery {
         }
         void Msaa(IMsaaNode node, int? parent, int depth, long source, HashSet<string> seen, ChildRead origin = null) {
             using (node) {
+                if (expired()) { Note("timeout", false, true); return; }
                 if (msaaAttempts >= maxNodes) { Note("msaa_node_limit", false, true); return; }
                 msaaAttempts++;
                 try {
@@ -207,6 +213,7 @@ namespace LiveStudioDiscovery {
                             if (read.Reason != null) {
                                 // Failed populated slots consume the same visit budget as nodes.
                                 msaaAttempts++;
+                                if (read.Reason == "childid_self_reference") { Diagnostic(source, row.node_id, read); continue; }
                                 Diagnostic(source, row.node_id, read); Note(read.Index.HasValue ? "msaa_child_unsupported" : "msaa_children_unavailable"); continue;
                             }
                             IMsaaNode child = (IMsaaNode)read.Value;
@@ -219,8 +226,14 @@ namespace LiveStudioDiscovery {
                 catch { Note("msaa_unreadable"); }
             }
         }
+        internal MsaaSnapshot Snapshot(IMsaaNode borrowed, long source) {
+            try { Msaa(new BorrowedMsaaNode(borrowed), null, 0, source, new HashSet<string>()); }
+            catch { Note("msaa_unavailable"); }
+            return new MsaaSnapshot { Nodes = nodes, Diagnostics = diagnostics, Dropped = diagnosticsDropped,
+                Attempts = msaaAttempts, Unreadable = unreadable, Truncated = truncated, Complete = omissions == 0 && nodes.Count > 0, Errors = errors };
+        }
         public Dictionary<string, object> Run(int processId, string backend) {
-            if (processId <= 0 || (backend != "hwnd" && backend != "msaa" && backend != "all"))
+            if (processId <= 0 || (backend != "hwnd" && backend != "msaa" && backend != "all" && backend != "ia2"))
                 throw new ArgumentException("invalid_argument");
             var snapshot = new Dictionary<int, ProcessRow>();
             try { foreach (var p in api.Processes()) { if (snapshot.Count >= 4096) { Note("process_limit", false, true); break; } snapshot[p.process_id] = p; } }
@@ -270,7 +283,14 @@ namespace LiveStudioDiscovery {
                 try { version = api.ProductVersion(rootImagePath); } catch { }
                 if (version != null && !System.Text.RegularExpressions.Regex.IsMatch(version, @"^[0-9]+(\.[0-9]+){1,3}$")) version = null;
             }
-            if (backend != "hwnd") foreach (var w in windows) {
+            Ia2Evidence ia2 = null;
+            if (backend == "ia2") {
+                ia2 = Ia2Experiment.Run(api, windows, processId, maxNodes, maxDepth, names, expired);
+                truncated |= ia2.Truncated; unreadable += ia2.Unreadable;
+                foreach (string code in ia2.Errors) Note(code, false);
+                foreach (var root in roots) root.msaa_traversal_complete = null; // Paired subset snapshots have their own completeness.
+            }
+            if (backend != "hwnd" && backend != "ia2") foreach (var w in windows) {
                 RootTraversal root = roots.Find(delegate(RootTraversal r) { return r.hwnd == w.root_hwnd; });
                 if (msaaAttempts >= maxNodes) { Note("msaa_node_limit", false, true); if (root != null) root.msaa_traversal_complete = false; continue; }
                 if (w.protected_content) { if (root != null) root.msaa_traversal_complete = false; continue; }
@@ -280,10 +300,11 @@ namespace LiveStudioDiscovery {
             }
             string status = truncated || unreadable > 0 ? "unknown_ui_state" : windows.Count == 0 ? "window_not_found" : "discovered";
             return new Dictionary<string, object> {
-                {"schema_version", 4}, {"backend", backend}, {"status", status}, {"names_included", names},
+                {"schema_version", 5}, {"backend", backend}, {"status", status}, {"names_included", names},
                 {"process_id", processId}, {"studio_version", version}, {"processes", processes},
                 {"hwnd", new Dictionary<string, object> {{"windows", windows}, {"root_statistics", api.RootStats}, {"selected_roots", roots}}},
-                {"msaa", backend == "hwnd" ? null : new Dictionary<string, object> {{"nodes", nodes}, {"child_diagnostics", diagnostics}, {"diagnostics_dropped", diagnosticsDropped}}},
+                {"msaa", backend == "hwnd" ? null : ia2 == null ? new Dictionary<string, object> {{"nodes", nodes}, {"child_diagnostics", diagnostics}, {"diagnostics_dropped", diagnosticsDropped}} : ia2.After.Section()},
+                {"ia2", ia2 == null ? null : ia2.Section()},
                 {"truncated", truncated}, {"unreadable", unreadable}, {"errors", errors}, {"physical_action", false}
             };
         }
@@ -467,7 +488,9 @@ namespace LiveStudioDiscovery {
                     else if (vt == 0) read.Reason = "empty_slot";
                     else if (vt == 3) {
                         int id = Marshal.ReadInt32(slot, 8);
-                        if (id > 0) read.Value = id; else read.Reason = "malformed_variant";
+                        read.ChildIdKind = id == 0 ? "zero" : id > 0 ? "positive" : "negative";
+                        if (id > 0) read.Value = id;
+                        else read.Reason = id == 0 ? "childid_self_reference" : "malformed_variant";
                     } else if (vt == 9) {
                         IntPtr pointer = Marshal.ReadIntPtr(slot, 8);
                         if (pointer == IntPtr.Zero) read.Reason = "malformed_variant";
@@ -528,10 +551,11 @@ namespace LiveStudioDiscovery {
             }
         }
     }
-    sealed class NativeComReads : IAccessibleReads {
+    sealed class NativeComReads : IAccessibleReads, IIa2Reads {
         IAccessible accessible;
         [DllImport("oleacc.dll")] static extern int WindowFromAccessibleObject(IAccessible value, out IntPtr hwnd);
         public NativeComReads(IAccessible value) { accessible = value; }
+        public Ia2Capability Capability() { return Ia2Contract.Check(new NativeIa2Com(accessible)); }
         public string Identity { get {
             IntPtr identity = Marshal.GetIUnknownForObject(accessible);
             try { return identity.ToInt64().ToString("x"); } finally { Marshal.Release(identity); }
@@ -563,7 +587,7 @@ namespace LiveStudioDiscovery {
             accessible = null;
         }
     }
-    sealed class NativeAccessible : IMsaaNode {
+    sealed class NativeAccessible : IMsaaNode, IIa2CapabilityNode {
         IAccessibleReads accessible, resolved;
         readonly int childId; readonly bool owned;
         bool resolutionChecked, resolutionFailure, resolvedMetadata; int resolutionHr;
@@ -571,6 +595,10 @@ namespace LiveStudioDiscovery {
         public bool SimpleChild { get { return childId != 0; } }
         public int? ChildId { get { return SimpleChild ? (int?)childId : null; } }
         public string Identity { get { return accessible.Identity + ":" + childId; } }
+        public Ia2Capability Capability() {
+            var reader = accessible as IIa2Reads;
+            return !SimpleChild && reader != null ? reader.Capability() : new Ia2Capability { status = "adapter_unavailable" };
+        }
         IAccessibleReads Resolve() {
             if (!resolutionChecked) {
                 resolutionChecked = true;
@@ -611,6 +639,7 @@ namespace LiveStudioDiscovery {
                 object value = read.Value;
                 if (read.Reason == null) {
                     if (value is int && (int)value > 0) read.Value = new NativeAccessible(accessible, (int)value, false);
+                    else if (value is int && (int)value == 0) { read.Value = null; read.Reason = "childid_self_reference"; }
                     else if (value is IAccessibleReads) read.Value = new NativeAccessible((IAccessibleReads)value, 0, true);
                     else { read.Value = null; read.Reason = "unsupported_variant_type"; }
                 }
@@ -624,8 +653,9 @@ namespace LiveStudioDiscovery {
         }
     }
     public static class Entry {
-        public static object Run(int pid, string backend, int maxHwnd, int maxNodes, int maxDepth, bool names) {
-            return new Collector(new NativeDesktop(), maxHwnd, maxNodes, maxDepth, names).Run(pid, backend);
+        public static object Run(int pid, string backend, int maxHwnd, int maxNodes, int maxDepth, bool names, double timeout = 20) {
+            var timer = Stopwatch.StartNew();
+            return new Collector(new NativeDesktop(), maxHwnd, maxNodes, maxDepth, names, delegate { return timer.Elapsed.TotalSeconds >= timeout; }).Run(pid, backend);
         }
     }
 }

@@ -1,4 +1,4 @@
-# PC-first migration: architecture audit and PC-SEND-1D
+# PC-first migration: architecture audit and PC-SEND-1E
 
 Audited 2026-10-08 from the actual checkout, starting on clean `main` at
 `15e31f9d88688669b7bd430ebad2003f46ec53a7` (`Add TikTok You manual send release candidate`).
@@ -332,6 +332,116 @@ instantiates NativeDesktop or invokes native accessibility/UI APIs. IA2 remains
 deferred: review actual vt/category/HRESULT evidence first. There is no new helper,
 binary dependency, selector, input, SEND or LIVE action.
 
+### PC-SEND-1E: bounded IServiceProvider / IA2 capability experiment
+
+The operator's Windows 11 / Studio 1.36.6.0 capture after 1D has 52 MSAA nodes.
+Classic MSAA exposes Windows chrome/simple children, with no observed TikTok
+composer, comments or Send. Manually enabling Narrator did not change the tree.
+Four I4 diagnostics do not establish hidden TikTok controls. The 15 observed roots
+(8 selected, 7 skipped) already include the visible widget/renderer; the root cap
+does not explain the missing UI in that included renderer.
+
+Sources checked 2026-10-09:
+
+- Chromium's [ia2_api_all.idl](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/iaccessible2/ia2_api_all.idl),
+  blob `c8b3f354d96d8e5317428ed6dab2b8fd3082aee9`: _changingInterfaces requires
+  QI(IServiceProvider) then QueryService(IID_IAccessible, IID_IAccessible2).
+  IA2 IID is `E89F726E-C4F4-4C19-BB19-B647D7FA8478`.
+- Microsoft's [IServiceProvider declaration](https://learn.microsoft.com/en-us/dotnet/api/microsoft.visualstudio.ole.interop.iserviceprovider?view=visualstudiosdk-2022)
+  verifies IID `6D5140C1-7436-11CE-8034-00AA006009FA` and InterfaceIsIUnknown.
+  The [managed signature](https://learn.microsoft.com/en-us/dotnet/api/microsoft.visualstudio.ole.interop.iserviceprovider.queryservice?view=visualstudiosdk-2022)
+  and [native contract](https://learn.microsoft.com/en-us/windows/win32/api/servprov/nf-servprov-iserviceprovider-queryservice(refguid_refiid_void))
+  specify REFGUID service, REFIID interface, void** result, HRESULT return.
+  Local declaration: PreserveSig int, ref Guid/ref Guid/out IntPtr.
+- Service IID_IAccessible is `618736E0-3C3D-11CF-810C-00AA00389B71`, matching the
+  stock Accessibility.IAccessible contract. No alternate service is tried.
+- Microsoft's [simple elements](https://learn.microsoft.com/en-us/windows/win32/winauto/simple-elements)
+  distinguish positive child identifiers from CHILDID_SELF, the object itself.
+  The I4 reader records sign classification, skips zero as informational
+  childid_self_reference, and fails closed on negative IDs. Negative IDs are
+  not reinterpreted as IA2 uniqueID or action targets.
+
+`Ia2Discovery.cs` declares only IServiceProvider's single COM method. It omits
+the IAccessible2 vtable, IA2 metadata getters and IA2 traversal in this capability
+slice. Allowed role/states/uniqueID/windowHandle/indexInParent can be reviewed later
+if measured evidence warrants it. There is no new binary helper or SDK dependency,
+inspector, debug port, process manipulation or Studio restart/accessibility flag.
+IA2 is obtained only by QueryService, never ordinary QI(IA2).
+
+The source IAccessible is borrowed and retained by the experiment. The native
+bridge owns GetIUnknownForObject's ref, temporary QI IServiceProvider ref and a
+separate service RCW, balancing each in finally/Dispose. QueryService's returned
+pointer is released even on unsuccessful HRESULT, never converted to an IA2 RCW
+or used to call a method. Each retained source root is disposed once at settlement.
+Fake lifetime tests model these boundaries; they do not prove a real COM provider
+or installed Studio compatibility.
+
+Only Chromium hints in the existing bounded selected-PID HWND tree are candidates.
+At most 32 checks are selected: visible top-level main widget, its renderer HWNDs,
+then other in-scope Chromium HWNDs, with numeric HWND tie ordering. Hidden roots
+cannot consume the visible renderer's priority. Root/desktop caps remain 8/512.
+`primary_root_hwnd` identifies the first selected visible top-level main widget.
+Its renderer checks precede other visible widgets and their renderer checks.
+Source PID and optional accessible owner HWND/PID are reported separately, together
+with visible-root relation; they establish no account or control selectors.
+Source/root ownership is checked before acquisition, query and repeated snapshots.
+Unknown protection prevents QueryService/name/children reads; protected objects
+are skipped. State is reread before each query and inside each serializer.
+
+All baseline MSAA snapshots precede the first QueryService, retaining exact source
+COM objects. Each source is then queried once in capability priority order and
+immediately reread once on that same object. There is no wait/retry or UI action.
+Other root queries and Chromium asynchrony can affect later reads: a changed tree
+is temporal evidence, not proof of one query's causal effect. Unchanged immediate
+trees do not exclude later changes or a different context exposing more UI.
+Names can themselves affect on-demand accessibility; the default command omits them.
+
+The existing MSAA serializer handles new descendants with its normal protection,
+optional properties, cycles and child-ID rules. The joint visit budget for both
+phases never exceeds --max-nodes: half is baseline, the rest after, shared among
+pairs. Visible renderer gets the first reserved pair when budgets are scarce.
+Capability checks remain independently bounded even when snapshot budget runs out.
+Depth and owned-worker timeout are preserved; the same deadline also stops C#
+enumeration between reads. Python terminates only its owned worker if native calls
+block. Combined diagnostics stay capped at 64 and output at 2 MB.
+
+Schema 5 keeps `msaa` for after, adding `ia2.before_msaa` with the same safe section
+shape. `capability_checks` contains source/root/owner handles, source/owner PID,
+visibility/Chromium hint, nested provider/query capability and static HRESULT
+categories, phase node/child counts, comparison completeness and changed bool/null.
+Capability rows contain no names, values, BSTR, COM addresses or exception bodies.
+`query_success_count`/`query_failure_count` count attempted QueryService calls;
+missing IServiceProvider is separately visible, not a fictitious service call.
+`visible_renderer_supported` and `visible_renderer_checked` distinguish support
+from whether that primary root's visible renderer was checked; another visible
+root's support cannot mask a primary renderer failure. Before/after parent IDs belong to separate
+snapshot sections. Shared node and diagnostic bounds cover both phases.
+
+Comparisons use relationships, owner kind, role, state and child count, not names
+or COM identity, and run before aggregate ID remapping. Protection omissions,
+limits, deadline or property errors make comparison incomplete and changed=null.
+The aggregate comparison requires complete pairs for every selected check;
+otherwise aggregate changed is null, while individual complete pairs remain usable.
+General target_root_limit can coexist with a complete visible-renderer pair.
+In ia2 mode, selected_roots' ordinary msaa_traversal_complete is null because each
+phase pair owns completeness. Capability failure does not change other backend
+execution or start inference/listeners. UIA stays the default; `all` retains its
+UIA+HWND+MSAA meaning without IA2 queries.
+
+For a complete visible-renderer pair: supported+expanded means more MSAA evidence;
+supported+unchanged means no change in this immediate bounded observation; and
+unavailable means this source/context did not provide the interface (inspect both
+HRESULT categories). None establishes chat controls/input/sending or absence of
+support in every object/version. Incomplete comparisons need operator review.
+The real idle command is in README; the agent did not run it.
+
+PC-SEND-1E validation (2026-10-09): focused native discovery tests **110 passed**;
+Tier A **140 passed, 1 skipped**; Tier B **502 passed, 1 skipped** with the two
+existing SDK/websockets deprecation warnings. The opt-in real UI test remained
+disabled. Stock x64/x86 PowerShell compiled the C# sources and exercised fake
+COM/UI boundaries only. `pip check` and the finite fake CLI passed. No real
+Studio discovery, LIVE, provider generation or physical action was performed.
+
 Microsoft documents [UIA tree scoping and changing trees](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-tree-overview)
 and [TreeWalker/property-based discovery](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/obtaining-ui-automation-elements).
 These support the diagnostic approach, not a claim about TikTok's actual accessibility.
@@ -357,9 +467,11 @@ not block safe standalone manual preparation.
    the observed Chromium shell. No production controls or actions.
    **PC-SEND-1C:** fix child-ID/object traversal, per-root dedup,
    optional properties and precise scan limits. Still read-only evidence collection.
-   **PC-SEND-1D (current slice):** diagnose native VARIANT tags/QI/partial results,
+   **PC-SEND-1D:** diagnose native VARIANT tags/QI/partial results,
    prioritize visible roots and report per-root completeness. Exact real child failure
-   still requires operator capture; IA2 is deferred.
+   still requires operator capture; IA2 was deferred in that slice.
+   **PC-SEND-1E (current slice):** standard IServiceProvider/QueryService capability
+   and paired MSAA experiment; no IA2 vtable/actions or input implementation.
 2. **PC-SEND-2:** collect/redact real control/raw/HWND/MSAA trees and version/locale/account/LIVE
    evidence; review a backend profile. Implement an explicit approved-envelope
    preparation route that rechecks session/runtime/approval/expiry, uniquely locates

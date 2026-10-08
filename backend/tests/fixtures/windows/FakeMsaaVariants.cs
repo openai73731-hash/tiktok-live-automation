@@ -3,7 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 namespace LiveStudioDiscovery {
-    sealed class FakeAccessibleReads : IAccessibleReads {
+    sealed class FakeAccessibleReads : IAccessibleReads, IIa2Reads {
         public string identity = "parent";
         public object[] variants = new object[0];
         public readonly Dictionary<int, IAccessibleReads> objects = new Dictionary<int, IAccessibleReads>();
@@ -11,7 +11,10 @@ namespace LiveStudioDiscovery {
         public bool protectedChild, protectedSelf, unknownState, unknownSelf, roleFailure, nameFailure, locationFailure, countFailure, objectFailure, childrenFailure;
         public int closes;
         public string Identity { get { return identity; } }
-        void Read(string property, int child) { calls.Add(property + ":" + child); }
+        public Action<string, int> observe;
+        public IIa2Com ia2;
+        public Ia2Capability Capability() { return Ia2Contract.Check(ia2 ?? new FakeIa2Com { providerHr = unchecked((int)0x80004002) }); }
+        void Read(string property, int child) { calls.Add(property + ":" + child); if (observe != null) observe(property, child); }
         static Exception Failure() { return new COMException("PRIVATE HRESULT EXCEPTION", unchecked((int)0x80004005)); }
         public int State(int child) {
             Read("state", child);

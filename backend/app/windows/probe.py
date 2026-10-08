@@ -152,8 +152,8 @@ def cli(argv=None):
             raise argparse.ArgumentTypeError(f"invalid_argument: expected {lower}..{upper}")
         return validate
     parser = argparse.ArgumentParser(description="Read-only LIVE Studio accessibility discovery; never types or submits.")
-    parser.add_argument("--backend", choices=("uia", "hwnd", "msaa", "all"), default="uia")
-    parser.add_argument("--process-id", type=bounded(1, 2**31 - 1), default=0, help="Your current Studio PID; required for hwnd/msaa/all.")
+    parser.add_argument("--backend", choices=("uia", "hwnd", "msaa", "all", "ia2"), default="uia")
+    parser.add_argument("--process-id", type=bounded(1, 2**31 - 1), default=0, help="Your current Studio PID; required for hwnd/msaa/all/ia2.")
     parser.add_argument("--max-nodes", type=bounded(1, 2000), default=500)
     parser.add_argument("--max-hwnd", type=bounded(1, 2000), default=256)
     parser.add_argument("--max-depth", type=bounded(1, 20), default=12)
@@ -163,7 +163,7 @@ def cli(argv=None):
     parser.add_argument("--instance-id", default="default")
     args = parser.parse_args(argv)
     if args.backend != "uia" and args.process_id == 0:
-        parser.error("invalid_argument: --process-id is required for hwnd/msaa/all")
+        parser.error("invalid_argument: --process-id is required for hwnd/msaa/all/ia2")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}", args.instance_id):
         parser.error("invalid_argument: invalid --instance-id")
     try:

@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 namespace LiveStudioDiscovery {
     sealed class FakeVariantApi : IVariantApi {
         public int[] tags = new int[] {3, 3, 3, 3, 3, 3, 3};
-        public int hr, obtained = 7, inits, clears, queries;
+        public int hr, obtained = 7, inits, clears, queries, badIdValue = -1;
         public bool badId, nullDispatch, failQi, throwFetch, invalidObtained, failClear;
         public readonly List<FakeAccessibleReads> objects = new List<FakeAccessibleReads>();
         public void Init(IntPtr slot) {
@@ -20,7 +20,7 @@ namespace LiveStudioDiscovery {
             for (int i = 0; i < Math.Min(count, tags.Length); i++) {
                 IntPtr slot = IntPtr.Add(buffer, i * VariantReader.Size);
                 Marshal.WriteInt16(slot, unchecked((short)tags[i]));
-                if (tags[i] == 3) Marshal.WriteInt32(slot, 8, badId && i == 0 ? 0 : i + 1);
+                if (tags[i] == 3) Marshal.WriteInt32(slot, 8, badId && i == 0 ? badIdValue : i + 1);
                 else if (tags[i] == 9) Marshal.WriteIntPtr(slot, 8, nullDispatch && i == 0 ? IntPtr.Zero : new IntPtr(0x12345678 + i));
                 else if (tags[i] == 8 || tags[i] == 0x4003 || tags[i] == 0x2003)
                     // Deliberately untrusted fake address: the reader must never dereference it.
@@ -40,7 +40,7 @@ namespace LiveStudioDiscovery {
         public static Dictionary<string, object> All() {
             var result = new Dictionary<string, object>();
             foreach (string mode in new string[] {"native_i4", "native_dispatch", "native_mixed", "native_partial", "native_empty",
-                "native_qi", "native_unsupported", "native_malformed", "native_bad_id", "native_null_dispatch",
+                "native_qi", "native_unsupported", "native_malformed", "native_bad_id", "native_self", "native_null_dispatch",
                 "native_bad_obtained", "native_fetch_failure", "native_diag_cap", "native_diag_budget", "native_clear_failure", "root_priority"}) {
                 var api = new FakeVariantApi();
                 if (mode == "native_dispatch" || mode == "native_qi" || mode == "native_null_dispatch") api.tags = new int[] {9, 9, 9, 9, 9, 9, 9};
@@ -51,6 +51,7 @@ namespace LiveStudioDiscovery {
                 if (mode == "native_unsupported") api.tags = new int[] {8, 0x4003, 0x2003, 3, 9, 3, 9};
                 if (mode == "native_malformed") api.tags = new int[] {0xffff, 3, 9, 3, 9, 3, 9};
                 if (mode == "native_bad_id") api.badId = true;
+                if (mode == "native_self") { api.badId = true; api.badIdValue = 0; }
                 if (mode == "native_null_dispatch") api.nullDispatch = true;
                 if (mode == "native_bad_obtained") { api.obtained = 8; api.invalidObtained = true; }
                 if (mode == "native_fetch_failure") api.throwFetch = true;

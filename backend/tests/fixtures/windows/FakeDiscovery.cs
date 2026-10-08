@@ -33,21 +33,25 @@ namespace LiveStudioDiscovery {
         public int accessibleCalls;
         public FakeNode root;
         public Func<IMsaaNode> accessibleFactory;
+        public Func<long, IMsaaNode> accessibleByHwnd;
         public Func<int, IEnumerable<long>> topFactory;
-        public bool hwndCycle, hiddenRoots;
+        public Func<long, IEnumerable<long>> childFactory;
+        public bool hwndCycle, hiddenRoots, secondWidget;
+        public readonly Dictionary<long, int> ownerOverrides = new Dictionary<long, int>();
         public IEnumerable<long> TopWindows(int pid) {
             if (topFactory != null) { foreach (long hwnd in topFactory(pid)) yield return hwnd; }
             else if (pid == 11300) yield return 100;
         }
         public IEnumerable<long> ChildWindows(long hwnd) {
+            if (childFactory != null) { foreach (long child in childFactory(hwnd)) yield return child; yield break; }
             if (hwnd == 100) yield return 200;
             if (hwnd == 200) yield return hwndCycle ? 100 : 300;
         }
-        public int WindowProcess(long hwnd) { return hwnd >= 100 && hwnd < 113 ? 11300 : hwnd == 200 ? 11301 : 11302; }
+        public int WindowProcess(long hwnd) { int owner; if (ownerOverrides.TryGetValue(hwnd, out owner)) return owner; return hwnd >= 100 && hwnd < 113 ? 11300 : hwnd == 200 ? 11301 : 11302; }
         public WindowRow Window(long hwnd, bool names) {
             if (badWindow) throw new Exception("PRIVATE WINDOW");
-            return new WindowRow { hwnd = hwnd, parent_hwnd = hwnd >= 100 && hwnd < 113 ? (long?)null : hwnd == 200 ? 100 : 200,
-                process_id = WindowProcess(hwnd), class_name = hwnd == 100 ? "Chrome_WidgetWin_1" : hwnd == 200 ? "Chrome_RenderWidgetHostHWND" : "Chrome_Other",
+            return new WindowRow { hwnd = hwnd, parent_hwnd = hwnd >= 100 && hwnd < 113 ? (long?)null : hwnd == 400 && secondWidget ? 101 : hwnd == 200 || hwnd >= 400 ? 100 : 200,
+                process_id = WindowProcess(hwnd), class_name = hwnd == 100 || hwnd == 101 && secondWidget ? "Chrome_WidgetWin_1" : hwnd == 200 || hwnd == 400 && secondWidget ? "Chrome_RenderWidgetHostHWND" : "Chrome_Other",
                 name = names ? "PRIVATE WINDOW NAME" : null, protected_content = protectedWindow,
                 enabled = true, visible = !hiddenRoots || hwnd == 100 || hwnd >= 200, bounds = new int[] {0, 0, 10, 20} };
         }
@@ -59,7 +63,7 @@ namespace LiveStudioDiscovery {
         }
         public string ImagePath(int pid) { if (pathThrows) throw new Exception("PRIVATE PATH"); return noPath ? null : longPath ? "X:/" + new string('a', 1100) + "/studio.exe" : "X:/synthetic/studio.exe"; }
         public string ProductVersion(string path) { if (!path.EndsWith("/studio.exe")) throw new Exception("Shortened path"); return "1.36.6"; }
-        public IMsaaNode Accessible(long hwnd) { accessibleCalls++; if (noMsaa) throw new Exception("PRIVATE COM"); return accessibleFactory != null ? accessibleFactory() : root; }
+        public IMsaaNode Accessible(long hwnd) { accessibleCalls++; if (noMsaa) throw new Exception("PRIVATE COM"); return accessibleByHwnd != null ? accessibleByHwnd(hwnd) : accessibleFactory != null ? accessibleFactory() : root; }
     }
     public static class Harness {
         public static object All() {
@@ -93,6 +97,7 @@ namespace LiveStudioDiscovery {
             }
             foreach (var item in VariantHarness.All()) result[item.Key] = item.Value;
             foreach (var item in NativeVariantHarness.All()) result[item.Key] = item.Value;
+            foreach (var item in Ia2Harness.All()) result[item.Key] = item.Value;
             return result;
         }
     }

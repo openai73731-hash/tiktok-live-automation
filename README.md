@@ -1,6 +1,6 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-1D
+## PC-first: Windows LIVE Studio, этап PC-SEND-1E
 
 Текущая PC-ветка добавляет выбор транспорта и **read-only discovery**. Это ещё не
 manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
@@ -78,6 +78,77 @@ Root cap остаётся 8, desktop cap 512. Среди roots выбранно�
 false. Это полнота данного snapshot, не доказательство доступности chat controls.
 Отдельный `--root-hwnd` не добавлен.
 
+PC-SEND-1E добавляет отдельный **read-only IA2 capability probe**. После 1D оператор
+получил 52 MSAA nodes: Windows chrome/simple children доступны, но TikTok comment
+panel/composer/Send ещё не найдены. Ручное включение Narrator структуру не изменило.
+Четыре VT_I4 diagnostics не доказывают, что за ними находятся TikTok controls.
+
+`--backend ia2` использует только уже выбранные bounded Chromium HWND. Capability
+checks идут в порядке visible main widget → его renderer → остальные in-scope
+Chromium HWND; максимум 32 checks, root cap 8 и desktop cap 512 сохранены. Visible
+renderer остаётся приоритетным независимо от пропущенных hidden roots.
+`ia2.primary_root_hwnd` фиксирует первый выбранный видимый main widget; сводные
+renderer flags относятся только к его renderer, а не к другому видимому окну.
+Проверяется `QI(IServiceProvider)` → `QueryService(IID_IAccessible, IID_IAccessible2)`.
+IID/signatures сверены с официальным Chromium `ia2_api_all.idl` и Microsoft COM
+документацией; источники и точные GUID — в архитектурном документе.
+
+Этот этап читает capability/HRESULT categories, source/owner HWND/PID, отношение к
+visible root и обычную безопасную MSAA metadata. IA2 role/states/uniqueID/windowHandle/
+indexInParent пока не читаются: полного IA2 vtable/traversal нет. Не читаются Value,
+password text или arbitrary attributes, не объявляются IA2 action interfaces.
+Исходный root COM object удерживается до конца before/after; окна не переоткрываются.
+Все baseline snapshots снимаются **до первого QueryService**. После каждого capability
+check тот же объект повторно читается один раз, сразу, без ожидания/retry или UI action.
+Проверки process/root scope и protection повторяются перед запросом и чтением.
+Сам стандартный IA2 запрос может включить accessibility on-demand; реальное поведение
+данной сборки Studio ещё должен измерить оператор. Query другого root и асинхронные
+изменения Chromium могут повлиять на дерево, поэтому сравнение не доказывает причинность.
+
+Schema 5 добавляет `ia2.primary_root_hwnd`, `capability_checks`, `query_success_count`,
+`query_failure_count` (только attempted QueryService), `visible_renderer_supported`,
+`visible_renderer_checked`, `before_msaa_nodes`, `after_msaa_nodes`,
+`comparison_complete`, `tree_changed_after_ia2_query`, `before_msaa`. Повторное дерево
+сохраняется в обычном `msaa`; оба используют прежний serializer/privacy policy.
+Каждый check содержит source/root/owner HWND, source/owner PID, visibility, Chromium
+hint, nested `capability` с отдельными provider/query HRESULT categories, before/after
+counts и результат сравнения. Это capability, не readiness аккаунта/LIVE/контролов.
+
+Общий `--max-nodes` делится между before/after и всеми checks, а не удваивается.
+Для пары visible renderer резервируется приоритетный бюджет. Depth/time/output/storage
+caps сохранены; diagnostic records суммарно ограничены 64. Полнота пары указана в
+check, в IA2 режиме `hwnd.selected_roots[].msaa_traversal_complete` = null. При caps,
+protection или ошибке сравнение = null; общий target_root_limit сам по себе не делает
+полную пару visible renderer неполной. Сводное comparison_complete требует полных
+пар всех выбранных checks; иначе сводный changed=null. Сравниваются relationships/role/state/count,
+не приватные names. `--include-names` по-прежнему разрешает labels только в nodes.
+
+`child_diagnostics.child_id_kind` различает zero/positive/negative/invalid без raw
+неположительного ID. `CHILDID_SELF=0` — ссылка на текущий object, informational
+`childid_self_reference`; её не обходят повторно и не называют malformed. Отрицательный
+ID остаётся conservative unsupported. Эти slots расходуют bounded visit budget.
+
+Оператор может выполнить **один idle IA2 capture**, без LIVE и без изменения UI,
+заменив пример PID актуальным GUI PID. Команда по умолчанию не включает names:
+
+```powershell
+Set-Location C:\Users\user\Documents\tiktok-live-automation
+$studioProcessId = 4620 # Заменить актуальным основным GUI PID.
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend ia2 --process-id $studioProcessId --instance-id vm1 --max-nodes 2000 --max-hwnd 256 --max-depth 20 --timeout 60
+```
+
+Интерпретация **полной пары visible renderer**, а не суммарного status/root limit:
+
+- IA2 supported + tree expands: после стандартных IA2 queries появились дополнительные
+  MSAA descendants. Они требуют review; увеличение nodes не доказывает TikTok controls.
+- IA2 supported + tree unchanged: интерфейс доступен, но данный немедленный snapshot
+  не раскрыл новое дерево. Это не доказательство, что позднее Chromium ничего не изменит.
+- IA2 unavailable: смотрите раздельные provider/query HRESULT categories. Интерфейс
+  не предоставлен в этом объекте/контексте; поддержка всей сборки этим не опровергнута.
+- `comparison_complete=false` / changed=null: вывод об unchanged/expansion не делать.
+
+Агент real probe не запускал. PC-SEND-2/input/SEND остаются отдельными этапами.
+
 В отдельном PowerShell оператор вручную выполняет read-only capture (LIVE для самого
 discovery не нужен). PID 4620 — пример из последнего capture, замените текущим основным
 GUI PID своего Studio из Task Manager. `--include-names` включает приватные labels;
@@ -98,11 +169,11 @@ $captureArgs = @('--process-id', "$studioProcessId", '--instance-id', 'vm1', '--
 
 JSON tree сохраняется только в ignored `diagnostics/windows/vm1/<id>.json`, максимум
 20 отчётов суммарно для всех backends, без eviction; stdout показывает status/count/path.
-UIA сохраняет schema 1; native schema 4 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
+UIA сохраняет schema 1; native schema 5 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
 `uia`. HWND metadata содержит реальный owning PID, parent/depth/class/rectangle и
 Chromium hints. MSAA содержит role/state/relationships/location и diagnostic hints.
 Различение object/simple child с `child_id` сохранено из schema 3;
-старые schema 2/3 captures остаются историческими файлами и не переписываются.
+старые schema 2/3/4 captures остаются историческими файлами и не переписываются.
 Bounded process metadata содержит descendants, optional image path и HWND references;
 `has_windows` относится только к окнам в этом snapshot. `studio_version` читается из
 доступного executable основного PID; недоступный path/version — `null`, не ошибка.

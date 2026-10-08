@@ -1,4 +1,4 @@
-"""PC-SEND-1B/1C: real walkers and variant wrappers, fully fake boundaries."""
+"""PC-SEND-1B..1E: production serializers/contracts, fully fake UI/COM boundaries."""
 import base64
 import json
 import os
@@ -27,8 +27,8 @@ def worker_platform(monkeypatch):
 
 def fake_scenarios(system_directory="System32"):
     if sys.platform != "win32": pytest.skip("Stock .NET fake boundary harness requires Windows")
-    paths = [Path(p).absolute() for p in ("backend/app/windows/NativeDiscovery.cs",
-        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs", "backend/tests/fixtures/windows/FakeNativeVariants.cs")]
+    paths = [Path(p).absolute() for p in ("backend/app/windows/NativeDiscovery.cs", "backend/app/windows/Ia2Discovery.cs",
+        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs", "backend/tests/fixtures/windows/FakeNativeVariants.cs", "backend/tests/fixtures/windows/FakeIa2Probe.cs")]
     literals = ",".join("'" + str(path).replace("'", "''") + "'" for path in paths)
     command = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); "
         "Add-Type -Path @(" + literals + ") -ReferencedAssemblies 'System.dll','Accessibility.dll'; "
@@ -69,7 +69,7 @@ def test_msaa_roles_parent_relations_and_state_are_metadata(scenarios):
     assert edit.owner_hwnd == 200 and edit.process_id == 11301
     simple = next(n for n in nodes if n.semantic_hint == "listitem")
     assert simple.owner_kind == "simple_child" and simple.child_id == 1
-    assert data.schema_version == 4 and data.backend == "msaa"
+    assert data.schema_version == 5 and data.backend == "msaa"
     assert data.studio_version == "1.36.6"
     assert scenarios["msaa"]["root_closes"] > 0
 
@@ -393,7 +393,7 @@ def test_unsupported_native_payloads_are_never_dereferenced_or_serialized(scenar
         (8, "other", "unsupported_variant_type"), (0x4003, "byref", "unsupported_variant_type"),
         (0x2003, "array", "unsupported_variant_type")]
     assert all(set(d.model_dump()) == {"source_hwnd", "parent_id", "child_index", "vt", "category",
-        "reason", "hresult_category", "requested", "obtained"} for d in diagnostics)
+        "reason", "hresult_category", "requested", "obtained", "child_id_kind"} for d in diagnostics)
     output = data.model_dump_json()
     for private in ("PRIVATE", "305419896", "1985229328", "12345678", "76543210", "object-"):
         assert private not in output
@@ -461,3 +461,215 @@ def test_x86_variant_layout_and_seven_slots_use_same_production_reader():
         assert cases[mode]["payload_offset"] == 8
         assert report(cases, mode).status == "discovered"
         assert cases[mode]["inits"] == cases[mode]["clears"] == 21
+
+
+@pytest.mark.parametrize("case,status,provider,attempted,supported", [
+    ("ia2_no_provider", "provider_unavailable", False, False, False),
+    ("ia2_no_interface", "ia2_unavailable", True, True, False),
+    ("ia2_unchanged", "supported", True, True, True),
+    ("ia2_null", "ia2_unavailable", True, True, False),
+    ("ia2_query_error", "capability_failed", True, True, False),
+])
+def test_ia2_capability_query_service_contract_and_failures(scenarios, case, status, provider, attempted, supported):
+    data = report(scenarios, case)
+    assert data.backend == "ia2" and data.ia2 is not None
+    assert len(data.ia2.capability_checks) == 3
+    for check in data.ia2.capability_checks:
+        capability = check.capability
+        assert capability.status == status
+        assert capability.iserviceprovider_available is provider
+        assert capability.query_service_attempted is attempted and capability.ia2_available is supported
+        assert check.owner_hwnd == 200 and check.process_id == 11301
+        assert scenarios[case]["calls"][str(check.source_hwnd)] == [
+            "provider:6d5140c1-7436-11ce-8034-00aa006009fa",
+            *(["service:618736e0-3c3d-11cf-810c-00aa00389b71:e89f726e-c4f4-4c19-bb19-b647d7fa8478"] if attempted else [])]
+    assert data.ia2.query_success_count == (3 if supported else 0)
+    assert data.ia2.query_failure_count == (3 if attempted and not supported else 0)
+    assert scenarios[case]["accessible_calls"] == scenarios[case]["root_closes"] == scenarios[case]["bridge_closes"] == 3
+
+
+@pytest.mark.parametrize("case,changed,after", [("ia2_unchanged", False, 6), ("ia2_expands", True, 8)])
+def test_ia2_reuses_exact_root_and_snapshots_all_baselines_before_queries(scenarios, case, changed, after):
+    data = report(scenarios, case)
+    evidence = data.ia2
+    assert evidence.before_msaa_nodes == len(evidence.before_msaa.nodes) == 6
+    assert evidence.after_msaa_nodes == len(data.msaa.nodes) == after
+    assert evidence.comparison_complete and evidence.tree_changed_after_ia2_query is changed
+    assert evidence.visible_renderer_checked and evidence.visible_renderer_supported
+    renderer = next(c for c in evidence.capability_checks if c.source_hwnd == 200)
+    assert renderer.source_process_id == 11301 and renderer.root_hwnd == 100 and renderer.visible_root
+    assert renderer.before_child_count == renderer.after_child_count == 1  # Count alone cannot detect changed descendants.
+    assert renderer.tree_changed_after_ia2_query is changed
+    trace = scenarios[case]["trace"]
+    first_query = next(i for i, event in enumerate(trace) if event.endswith(":query"))
+    for hwnd in (100, 200, 300): assert f"{hwnd}:count:0" in trace[:first_query]
+    assert [event for event in trace if event.endswith(":query")] == ["100:query", "200:query", "300:query"]
+    # Existing safe serializer owns local parents and serializes the expansion; no IA2 traversal.
+    after_nodes = [n for n in data.msaa.nodes if n.source_hwnd == 200]
+    assert len(after_nodes) == (4 if changed else 2)
+    if changed:
+        assert after_nodes[2].parent_id == after_nodes[1].node_id
+        assert after_nodes[2].child_id == 1
+
+
+def test_ia2_visible_renderer_precedes_hidden_sources_despite_root_cap(scenarios):
+    data = report(scenarios, "ia2_priority")
+    stats = data.hwnd.root_statistics
+    assert (stats.target_roots_total, stats.target_roots_selected, stats.target_roots_skipped) == (15, 8, 7)
+    assert "target_root_limit" in data.errors and data.truncated
+    assert [c.source_hwnd for c in data.ia2.capability_checks[:2]] == [100, 200]
+    assert data.ia2.visible_renderer_supported and data.ia2.comparison_complete
+    assert data.ia2.tree_changed_after_ia2_query is False
+
+
+@pytest.mark.parametrize("case,code", [("ia2_budget", "msaa_node_limit"), ("ia2_depth", "msaa_depth_limit"), ("ia2_deadline", "timeout")])
+def test_ia2_expansion_has_joint_budgets_and_incomplete_comparisons_are_unknown(scenarios, case, code):
+    data = report(scenarios, case)
+    assert data.truncated and code in data.errors and data.status == "unknown_ui_state"
+    assert data.ia2.tree_changed_after_ia2_query is None and not data.ia2.comparison_complete
+    if case == "ia2_budget":
+        assert data.ia2.before_msaa_nodes + data.ia2.after_msaa_nodes <= 4
+        assert data.ia2.visible_renderer_supported  # Capability query has its own bounded budget.
+        renderer = next(c for c in data.ia2.capability_checks if c.source_hwnd == 200)
+        assert renderer.before_msaa_nodes is not None and renderer.after_msaa_nodes is not None
+    if case == "ia2_depth":
+        assert max(n.depth for n in (*data.msaa.nodes, *data.ia2.before_msaa.nodes)) <= 1
+    if case == "ia2_deadline":
+        assert [t for t in scenarios[case]["trace"] if t.endswith(":query")] == ["100:query"]
+        assert data.ia2.after_msaa_nodes == 0
+
+
+@pytest.mark.parametrize("case,status", [("ia2_protected", "protected"), ("ia2_unknown", "unknown_protection")])
+def test_ia2_protection_gate_precedes_names_children_and_capability_query(scenarios, case, status):
+    data = report(scenarios, case)
+    renderer = next(c for c in data.ia2.capability_checks if c.source_hwnd == 200)
+    assert renderer.capability.status == status and not renderer.capability.query_service_attempted
+    assert not scenarios[case]["calls"]["200"]
+    assert not any(t.startswith("200:name:") or t.startswith("200:count:") for t in scenarios[case]["trace"])
+    assert not any(n.source_hwnd == 200 for n in (*data.msaa.nodes, *data.ia2.before_msaa.nodes))
+    assert scenarios[case]["bridge_closes"] == 2 and scenarios[case]["root_closes"] == 3
+
+
+def test_ia2_names_are_opt_in_in_both_snapshots_and_private_com_data_stays_absent(scenarios):
+    hidden = report(scenarios, "ia2_expands")
+    assert all(n.name is None for n in (*hidden.msaa.nodes, *hidden.ia2.before_msaa.nodes))
+    named = report(scenarios, "ia2_names")
+    assert any(n.name for n in named.msaa.nodes) and any(n.name for n in named.ia2.before_msaa.nodes)
+    for case in ("ia2_unchanged", "ia2_query_error", "ia2_names"):
+        output = report(scenarios, case).model_dump_json()
+        for private in ("PRIVATE ROOT ADDRESS", "PRIVATE COM CHILD", "0x76543210", "COM ADDRESS", "exception", "pointer"):
+            assert private not in output
+        if case != "ia2_names": assert "PRIVATE" not in output
+    invalid = named.model_dump()
+    invalid["names_included"] = False
+    with pytest.raises(ValidationError): DiscoveryReport.model_validate(invalid)
+
+
+def test_ia2_uses_minimal_read_only_service_declaration_and_never_calls_ia2_methods():
+    source = Path("backend/app/windows/Ia2Discovery.cs").read_text(encoding="utf-8")
+    declaration = source.split("interface INativeServiceProvider {", 1)[1].split("}", 1)[0]
+    assert "[PreserveSig] int QueryService(ref Guid service, ref Guid iid, out IntPtr result);" in declaration
+    assert "InterfaceType(ComInterfaceType.InterfaceIsIUnknown)" in source
+    assert "interface IAccessible2" not in source and "GetObjectForIUnknown(ia2)" not in source
+    combined = source + Path("backend/app/windows/NativeDiscovery.cs").read_text(encoding="utf-8")
+    assert not re.search(r"\b(?:doAction|scrollTo|scrollToPoint|accDoDefaultAction|accSelect|SetFocus|setValue|get_accValue|accValue|attributes|SendInput|SetClipboardData|WriteProcessMemory|CreateRemoteThread)\s*\(", combined)
+    assert "Marshal.Release(ia2)" in source  # Even failed calls returning a pointer release it.
+
+
+def test_childid_self_is_informational_and_sign_classification_is_sanitized(scenarios):
+    self_ref = report(scenarios, "native_self")
+    assert self_ref.status == "discovered" and not self_ref.errors and self_ref.unreadable == 0
+    assert len(self_ref.msaa.nodes) == 21
+    assert all(d.child_id_kind == "zero" and d.reason == "childid_self_reference" for d in self_ref.msaa.child_diagnostics)
+    negative = report(scenarios, "native_bad_id")
+    assert all(d.child_id_kind == "negative" and d.reason == "malformed_variant" for d in negative.msaa.child_diagnostics)
+    positive = report(scenarios, "role_failure")
+    assert all(d.child_id_kind == "positive" for d in positive.msaa.child_diagnostics)
+    assert all(n.child_id is None or n.child_id > 0 for n in self_ref.msaa.nodes)
+
+
+def test_ia2_failure_isolated_from_default_backends_and_worker_timeout_is_shared(scenarios, worker_platform):
+    data = report(scenarios, "ia2_no_interface")
+    assert len(data.msaa.nodes) == len(data.ia2.before_msaa.nodes) == 6
+    for mode in ("hwnd", "msaa"):
+        assert report(scenarios, mode).ia2 is None
+    commands = []
+    def runner(argv, **kwargs):
+        command = base64.b64decode(argv[-1]).decode("utf-16-le")
+        assert "Ia2Discovery.cs" in command and "'ia2',256,500,12,$false,9.0)" in command
+        assert kwargs["timeout"] == 9
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout=data.model_dump_json().encode())
+    assert collect(backend="ia2", process_id=11300, timeout=9, runner=runner).ia2 is not None
+    assert len(commands) == 1
+    def blocked(*a, **k): raise subprocess.TimeoutExpired("PRIVATE", 9)
+    failure = collect(backend="ia2", process_id=11300, timeout=9, runner=blocked)
+    assert failure.status == "timeout" and failure.physical_action is False
+
+
+@pytest.mark.parametrize("field,value", [("raw_pointer", 0x76543210), ("owner_hwnd", -1), ("chromium_kind", "PRIVATE")])
+def test_ia2_schema_rejects_private_fields_and_invalid_context(scenarios, field, value):
+    data = report(scenarios, "ia2_unchanged").model_dump()
+    data["ia2"]["capability_checks"][0][field] = value
+    with pytest.raises(ValidationError): DiscoveryReport.model_validate(data)
+
+
+def test_ia2_schema_validates_before_snapshot_privacy_and_aggregate_counts(scenarios):
+    for mutate in (lambda d: d["ia2"].update(query_success_count=0),
+        lambda d: d["ia2"]["before_msaa"]["nodes"][0].update(name="PRIVATE"),
+        lambda d: d["ia2"]["capability_checks"][0].update(source_hwnd=999999)):
+        data = report(scenarios, "ia2_unchanged").model_dump()
+        mutate(data)
+        with pytest.raises(ValidationError): DiscoveryReport.model_validate(data)
+
+
+@pytest.mark.parametrize("case,queried", [("ia2_scope", False), ("ia2_scope_after", True)])
+def test_ia2_rechecks_source_process_scope_before_query_and_after_it(scenarios, case, queried):
+    data = report(scenarios, case)
+    renderer = next(c for c in data.ia2.capability_checks if c.source_hwnd == 200)
+    assert renderer.capability.query_service_attempted is queried
+    assert renderer.after_msaa_nodes is None and not renderer.comparison_complete
+    assert data.status == "unknown_ui_state" and data.unreadable > 0
+    assert data.ia2.tree_changed_after_ia2_query is None and not data.ia2.comparison_complete
+    assert ("200:query" in scenarios[case]["trace"]) is queried
+    if queried: assert "ia2_scope_changed" in data.errors
+
+
+def test_ia2_cli_saves_private_paired_report_and_prints_only_bounded_metadata(scenarios, tmp_path, monkeypatch, capsys):
+    data = report(scenarios, "ia2_expands")
+    calls = []
+    def native(**kwargs):
+        calls.append(kwargs)
+        return data
+    monkeypatch.setattr("app.windows.native_discovery.collect", native)
+    monkeypatch.setattr("app.windows.probe.save_report", lambda value, instance: save_report(value, instance, root=tmp_path))
+    monkeypatch.setattr("app.windows.probe.probe", lambda **kwargs: pytest.fail("IA2 must not start UIA"))
+    assert cli(["--backend", "ia2", "--process-id", "11300", "--instance-id", "vm1"]) == 0
+    assert len(calls) == 1 and calls[0]["backend"] == "ia2" and not calls[0]["include_names"]
+    output = json.loads(capsys.readouterr().out)
+    assert output["backend"] == "ia2" and output["msaa_nodes"] == 8 and output["physical_action"] is False
+    assert "capability_checks" not in output and "PRIVATE" not in json.dumps(output)
+    stored = DiscoveryReport.model_validate_json(Path(output["report"]).read_text(encoding="utf-8"))
+    assert stored.ia2.before_msaa_nodes == 6 and stored.ia2.after_msaa_nodes == 8
+
+
+def test_ia2_check_cap_cannot_evict_visible_renderer_and_diagnostics_cap_is_joint(scenarios):
+    capped = report(scenarios, "ia2_check_cap")
+    assert len(capped.ia2.capability_checks) == 32 and "ia2_check_limit" in capped.errors
+    assert [c.source_hwnd for c in capped.ia2.capability_checks[:2]] == [100, 200]
+    assert capped.ia2.visible_renderer_supported
+    assert scenarios["ia2_check_cap"]["accessible_calls"] == 32
+    noisy = report(scenarios, "ia2_diagnostics")
+    assert len(noisy.ia2.before_msaa.child_diagnostics) + len(noisy.msaa.child_diagnostics) == 64
+    assert noisy.ia2.before_msaa.diagnostics_dropped > 0 and noisy.msaa.diagnostics_dropped > 0
+    assert noisy.ia2.tree_changed_after_ia2_query is None
+
+
+def test_ia2_primary_renderer_precedes_other_visible_widgets_and_their_success_does_not_mask_failure(scenarios):
+    data = report(scenarios, "ia2_primary_failure")
+    assert data.ia2.primary_root_hwnd == 100
+    assert [c.source_hwnd for c in data.ia2.capability_checks] == [100, 200, 101, 400]
+    assert data.ia2.visible_renderer_checked and not data.ia2.visible_renderer_supported
+    other = next(c for c in data.ia2.capability_checks if c.source_hwnd == 400)
+    assert other.capability.ia2_available and other.visible_root
+    assert data.ia2.tree_changed_after_ia2_query is None
