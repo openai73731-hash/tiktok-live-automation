@@ -8,6 +8,13 @@ using Accessibility;
 
 namespace LiveStudioDiscovery {
     public sealed class WindowRow {
+        public long? owner_hwnd, ancestor_root, ancestor_rootowner;
+        public uint? style, exstyle;
+        public int? z_order_index, cloaked;
+        public int[] client_rect, window_rect;
+        public List<string> style_flags = new List<string>(), exstyle_flags = new List<string>();
+        public List<long> direct_renderer_hwnds = new List<long>();
+        public bool chat_window_candidate;
         public long hwnd, root_hwnd;
         public long? parent_hwnd;
         public int depth, process_id;
@@ -22,6 +29,7 @@ namespace LiveStudioDiscovery {
         public List<long> hwnds = new List<long>();
     }
     public sealed class MsaaRow {
+        public string original_child_kind, child_resolution_category;
         public string source_kind = "objid_client";
         public int object_id = -4;
         public int node_id, depth, state;
@@ -66,6 +74,7 @@ namespace LiveStudioDiscovery {
         IEnumerable<ChildRead> Children(int count);
         IMsaaNode ChildObject();
     }
+    interface IChildOrigin { string OriginalChildKind { get; } }
     [Flags] public enum ScanLimits { None = 0, Desktop = 1, TargetRoots = 2, TargetChildren = 4, Processes = 8 }
     public interface IReadOnlyDesktop {
         ScanLimits Limits { get; }
@@ -82,6 +91,7 @@ namespace LiveStudioDiscovery {
         readonly IReadOnlyDesktop api;
         readonly int maxHwnd, maxNodes, maxDepth;
         readonly bool names;
+        readonly int watchFocusSeconds;
         readonly Func<bool> expired;
         int hwndAttempts, msaaAttempts, unreadable, omissions, diagnosticsDropped;
         bool truncated;
@@ -91,11 +101,13 @@ namespace LiveStudioDiscovery {
         readonly List<ChildDiagnostic> diagnostics = new List<ChildDiagnostic>();
         readonly List<RootTraversal> roots = new List<RootTraversal>();
         readonly HashSet<long> hwndSeen = new HashSet<long>();
-        public Collector(IReadOnlyDesktop desktop, int hwndLimit, int nodeLimit, int depthLimit, bool includeNames, Func<bool> deadlineExpired = null) {
+        public Collector(IReadOnlyDesktop desktop, int hwndLimit, int nodeLimit, int depthLimit, bool includeNames, Func<bool> deadlineExpired = null, int focusSeconds = 0) {
             if (hwndLimit < 1 || hwndLimit > 2000 || nodeLimit < 1 || nodeLimit > 2000 || depthLimit < 1 || depthLimit > 20)
                 throw new ArgumentException("invalid_argument");
             api = desktop; maxHwnd = hwndLimit; maxNodes = nodeLimit; maxDepth = depthLimit; names = includeNames;
             expired = deadlineExpired ?? delegate { return false; };
+            if (focusSeconds < 0 || focusSeconds > 30) throw new ArgumentException("invalid_argument");
+            watchFocusSeconds = focusSeconds;
         }
         public static string Short(string text, int limit = 160) {
             if (text == null) return null;
@@ -166,6 +178,9 @@ namespace LiveStudioDiscovery {
                         focusable = (state & 0x100000) != 0, focused = (state & 4) != 0,
                         disabled = (state & 1) != 0, invisible = (state & 0x8000) != 0, offscreen = (state & 0x10000) != 0,
                         owner_kind = node.SimpleChild ? "simple_child" : "accessible_object" };
+                    var originNode = node as IChildOrigin;
+                    row.original_child_kind = originNode == null ? null : originNode.OriginalChildKind;
+                    if (row.original_child_kind == "negative") row.child_resolution_category = "negative_accessible_object";
                     try { int role = node.Role(); if (role < 0) throw new InvalidOperationException(); row.role = role; }
                     catch (Exception e) { Diagnostic(source, parent ?? row.node_id, origin, "child_property_failed", e); Note("msaa_role_unavailable"); }
                     row.semantic_hint = secret ? "protected" : Hint(row.role);
@@ -216,7 +231,7 @@ namespace LiveStudioDiscovery {
                             if (read.Reason != null) {
                                 // Failed populated slots consume the same visit budget as nodes.
                                 msaaAttempts++;
-                                if (read.Reason == "childid_self_reference") { Diagnostic(source, row.node_id, read); continue; }
+                                if (read.Reason == "childid_self_reference" || ((read.Reason == "reserved_system_objid" || read.Reason == "unresolved_negative_child") && read.Hresult == "s_false")) { Diagnostic(source, row.node_id, read); continue; }
                                 Diagnostic(source, row.node_id, read); Note(read.Index.HasValue ? "msaa_child_unsupported" : "msaa_children_unavailable"); continue;
                             }
                             IMsaaNode child = (IMsaaNode)read.Value;
@@ -238,7 +253,7 @@ namespace LiveStudioDiscovery {
                 Attempts = msaaAttempts, Unreadable = unreadable, Truncated = truncated, Complete = omissions == 0 && nodes.Count > 0, Errors = errors };
         }
         public Dictionary<string, object> Run(int processId, string backend) {
-            if (processId <= 0 || (backend != "hwnd" && backend != "msaa" && backend != "all" && backend != "ia2" && backend != "client"))
+            if (processId <= 0 || (backend != "hwnd" && backend != "msaa" && backend != "all" && backend != "ia2" && backend != "client" && backend != "chromium-ax"))
                 throw new ArgumentException("invalid_argument");
             var snapshot = new Dictionary<int, ProcessRow>();
             try { foreach (var p in api.Processes()) { if (snapshot.Count >= 4096) { Note("process_limit", false, true); break; } snapshot[p.process_id] = p; } }
@@ -288,6 +303,14 @@ namespace LiveStudioDiscovery {
                 try { version = api.ProductVersion(rootImagePath); } catch { }
                 if (version != null && !System.Text.RegularExpressions.Regex.IsMatch(version, @"^[0-9]+(\.[0-9]+){1,3}$")) version = null;
             }
+            var architecture = WindowArchitecture.Describe(windows, processId);
+            AxEvidence ax = null;
+            if (backend == "chromium-ax") {
+                ax = AxExperiment.Run(api, windows, processId, maxNodes, maxDepth, names, expired, watchFocusSeconds);
+                truncated |= ax.Truncated; unreadable += ax.Unreadable;
+                foreach (string code in ax.Errors) Note(code, false);
+                foreach (var root in roots) root.msaa_traversal_complete = null;
+            }
             Ia2Evidence ia2 = null; ClientEvidence client = null;
             if (backend == "client") {
                 client = ClientExperiment.Run(api, windows, processId, maxNodes, maxDepth, names, expired);
@@ -302,7 +325,7 @@ namespace LiveStudioDiscovery {
                 foreach (string code in ia2.Errors) Note(code, false);
                 foreach (var root in roots) root.msaa_traversal_complete = null; // Paired subset snapshots have their own completeness.
             }
-            if (backend != "hwnd" && backend != "ia2" && backend != "client") foreach (var w in windows) {
+            if (backend != "hwnd" && backend != "ia2" && backend != "client" && backend != "chromium-ax") foreach (var w in windows) {
                 RootTraversal root = roots.Find(delegate(RootTraversal r) { return r.hwnd == w.root_hwnd; });
                 if (msaaAttempts >= maxNodes) { Note("msaa_node_limit", false, true); if (root != null) root.msaa_traversal_complete = false; continue; }
                 if (w.protected_content) { if (root != null) root.msaa_traversal_complete = false; continue; }
@@ -312,12 +335,15 @@ namespace LiveStudioDiscovery {
             }
             string status = truncated || unreadable > 0 ? "unknown_ui_state" : windows.Count == 0 ? "window_not_found" : "discovered";
             return new Dictionary<string, object> {
-                {"schema_version", 6}, {"backend", backend}, {"status", status}, {"names_included", names},
+                {"schema_version", 7}, {"backend", backend}, {"status", status}, {"names_included", names},
                 {"process_id", processId}, {"studio_version", version}, {"processes", processes},
-                {"hwnd", new Dictionary<string, object> {{"windows", windows}, {"root_statistics", api.RootStats}, {"selected_roots", roots}}},
-                {"msaa", backend == "hwnd" || backend == "client" ? null : ia2 == null ? new Dictionary<string, object> {{"nodes", nodes}, {"child_diagnostics", diagnostics}, {"diagnostics_dropped", diagnosticsDropped}} : ia2.After.Section()},
+                {"hwnd", new Dictionary<string, object> {{"windows", windows}, {"root_statistics", api.RootStats}, {"selected_roots", roots}, {"architecture", architecture}}},
+                {"msaa", backend == "hwnd" || backend == "client" || backend == "chromium-ax" ? null : ia2 == null ? new Dictionary<string, object> {{"nodes", nodes}, {"child_diagnostics", diagnostics}, {"diagnostics_dropped", diagnosticsDropped}} : ia2.After.Section()},
                 {"msaa_client", client == null ? null : client.Client.After.Section()},
                 {"client_objects", client == null ? null : client.Section()},
+                {"chromium_accessibility_activation", ax == null ? null : ax.Section()},
+                {"focus_watch", ax == null ? null : ax.Focus},
+                {"accessibility_activation_performed", ax != null && ax.Performed},
                 {"ia2", ia2 == null ? null : ia2.Section()},
                 {"truncated", truncated}, {"unreadable", unreadable}, {"errors", errors}, {"physical_action", false}
             };
@@ -350,10 +376,11 @@ namespace LiveStudioDiscovery {
         }
     }
     // Narrow native read adapter. No generic COM dispatch or action wrapper.
-    public sealed class NativeDesktop : IReadOnlyDesktop, IAccessibleObjectSource {
+    public sealed class NativeDesktop : IReadOnlyDesktop, IAccessibleObjectSource, IAxDesktop {
         public ScanLimits Limits { get; private set; }
         public RootScanStats RootStats { get; private set; }
         public NativeDesktop() { RootStats = new RootScanStats { enumeration_complete = false }; }
+        readonly Dictionary<long, int> zOrder = new Dictionary<long, int>();
         delegate bool EnumProc(IntPtr hwnd, IntPtr state);
         [StructLayout(LayoutKind.Sequential)] struct Rect { public int left, top, right, bottom; }
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct ProcessEntry {
@@ -371,6 +398,9 @@ namespace LiveStudioDiscovery {
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr hwnd);
         [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+        [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+        [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+        [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hwnd, uint attribute, out uint value, int size);
         [DllImport("kernel32.dll")] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32FirstW(IntPtr snapshot, ref ProcessEntry row);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32NextW(IntPtr snapshot, ref ProcessEntry row);
@@ -383,6 +413,7 @@ namespace LiveStudioDiscovery {
             var scan = new TopWindowScan(processId);
             bool completed = EnumWindows(delegate(IntPtr h, IntPtr unused) {
                 int owner = scan.CanReadOwner ? WindowProcess(h.ToInt64()) : 0;
+                if (owner == processId && !zOrder.ContainsKey(h.ToInt64())) zOrder[h.ToInt64()] = zOrder.Count;
                 return scan.Observe(h.ToInt64(), owner, owner == processId && IsWindowVisible(h));
             }, IntPtr.Zero);
             if (!completed && (scan.Limits & ScanLimits.Desktop) == 0) throw new InvalidOperationException();
@@ -405,9 +436,21 @@ namespace LiveStudioDiscovery {
             string name = null;
             if (includeNames && !secret) { var text = new StringBuilder(161); GetWindowText(h, text, text.Capacity); name = text.ToString(); }
             long parent = GetParent(h).ToInt64();
-            return new WindowRow { hwnd = hwnd, parent_hwnd = parent == 0 ? (long?)null : parent, process_id = WindowProcess(hwnd),
+            var row = new WindowRow { hwnd = hwnd, parent_hwnd = parent == 0 ? (long?)null : parent, process_id = WindowProcess(hwnd),
                 class_name = className, name = name, visible = IsWindowVisible(h), enabled = IsWindowEnabled(h), protected_content = secret,
                 bounds = new int[] {r.left, r.top, checked(r.right - r.left), checked(r.bottom - r.top)} };
+            if (GetAncestor(h, 2) == h) { // GA_ROOT=2, GA_ROOTOWNER=3.
+                long owner = GetWindow(h, 4).ToInt64(); row.owner_hwnd = owner == 0 ? (long?)null : owner;
+                long ancestor = GetAncestor(h, 2).ToInt64(), rootOwner = GetAncestor(h, 3).ToInt64();
+                row.ancestor_root = ancestor == 0 ? (long?)null : ancestor; row.ancestor_rootowner = rootOwner == 0 ? (long?)null : rootOwner;
+                row.style = unchecked((uint)GetWindowLong(h, -16)); row.exstyle = unchecked((uint)GetWindowLong(h, -20));
+                row.style_flags = WindowArchitecture.Style(row.style.Value, false); row.exstyle_flags = WindowArchitecture.Style(row.exstyle.Value, true);
+                row.window_rect = new int[] {r.left, r.top, r.right, r.bottom};
+                Rect client; if (GetClientRect(h, out client)) row.client_rect = new int[] {client.left, client.top, client.right, client.bottom};
+                int order; if (zOrder.TryGetValue(hwnd, out order)) row.z_order_index = order;
+                try { uint cloaked; if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0) row.cloaked = (int)(cloaked & 7); } catch { }
+            }
+            return row;
         }
         public IEnumerable<ProcessRow> Processes() {
             IntPtr handle = CreateToolhelp32Snapshot(2, 0);
@@ -436,6 +479,7 @@ namespace LiveStudioDiscovery {
             return result.Node;
         }
         public ObjectAcquisition OpenAccessible(long hwnd, int objectId) { return ObjectAcquisition.Read(new NativeObjectApi(), hwnd, objectId); }
+        public IAxApi AxApi() { return new NativeAxApi(this); }
     }
     sealed class UnsupportedChildException : Exception { }
     // Raw variant/property boundary is injectable; fake tests exercise the real wrapper.
@@ -503,8 +547,8 @@ namespace LiveStudioDiscovery {
                     else if (vt == 3) {
                         int id = Marshal.ReadInt32(slot, 8);
                         read.ChildIdKind = id == 0 ? "zero" : id > 0 ? "positive" : "negative";
-                        if (id > 0) read.Value = id;
-                        else read.Reason = id == 0 ? "childid_self_reference" : "malformed_variant";
+                        if (id != 0) read.Value = id;
+                        else read.Reason = "childid_self_reference";
                     } else if (vt == 9) {
                         IntPtr pointer = Marshal.ReadIntPtr(slot, 8);
                         if (pointer == IntPtr.Zero) read.Reason = "malformed_variant";
@@ -602,11 +646,13 @@ namespace LiveStudioDiscovery {
             accessible = null;
         }
     }
-    sealed class NativeAccessible : IMsaaNode, IIa2CapabilityNode, IIa2ProviderNode {
+    sealed class NativeAccessible : IMsaaNode, IIa2CapabilityNode, IIa2ProviderNode, IChildOrigin {
         IAccessibleReads accessible, resolved;
         readonly int childId; readonly bool owned;
         bool resolutionChecked, resolutionFailure, resolvedMetadata; int resolutionHr;
-        public NativeAccessible(IAccessibleReads value, int child, bool owns) { accessible = value; childId = child; owned = owns; }
+        readonly string originalKind;
+        public NativeAccessible(IAccessibleReads value, int child, bool owns, string kind = null) { accessible = value; childId = child; owned = owns; originalKind = kind; }
+        public string OriginalChildKind { get { return originalKind; } }
         public bool SimpleChild { get { return childId != 0; } }
         public int? ChildId { get { return SimpleChild ? (int?)childId : null; } }
         public string Identity { get { return accessible.Identity + ":" + childId; } }
@@ -651,13 +697,27 @@ namespace LiveStudioDiscovery {
         public int ChildCount() { return SimpleChild ? 0 : accessible.ChildCount(); }
         public IMsaaNode ChildObject() {
             if (!SimpleChild || Resolve() == null) return null;
-            var result = new NativeAccessible(resolved, 0, true); resolved = null; return result;
+            var result = new NativeAccessible(resolved, 0, true, childId > 0 ? "positive" : "negative"); resolved = null; return result;
         }
         public IEnumerable<ChildRead> Children(int count) {
             foreach (ChildRead read in accessible.Children(count)) {
                 object value = read.Value;
                 if (read.Reason == null) {
-                    if (value is int && (int)value > 0) read.Value = new NativeAccessible(accessible, (int)value, false);
+                    if (value is int && (int)value > 0) {
+                        var child = new NativeAccessible(accessible, (int)value, false);
+                        // Every non-self VT_I4 first attempts exact get_accChild. Keep the
+                        // positive simple-child representation and defer property reads.
+                        try { child.Resolve(); } catch { }
+                        read.Value = child;
+                    }
+                    else if (value is int && (int)value < 0) {
+                        int id = (int)value; read.Value = null;
+                        try {
+                            var child = accessible.ChildObject(id); // Exact signed original VT_I4, never an OBJID substitution.
+                            if (child != null) { read.Value = new NativeAccessible(child, 0, true, "negative"); read.Hresult = "s_ok"; }
+                            else { read.Reason = ReservedObjectId(id) ? "reserved_system_objid" : "unresolved_negative_child"; read.Hresult = "s_false"; }
+                        } catch (Exception e) { read.Reason = ReservedObjectId(id) ? "reserved_system_objid" : "unresolved_negative_child"; read.Hresult = VariantReader.Hresult(e.HResult); }
+                    }
                     else if (value is int && (int)value == 0) { read.Value = null; read.Reason = "childid_self_reference"; }
                     else if (value is IAccessibleReads) read.Value = new NativeAccessible((IAccessibleReads)value, 0, true);
                     else { read.Value = null; read.Reason = "unsupported_variant_type"; }
@@ -665,6 +725,7 @@ namespace LiveStudioDiscovery {
                 yield return read;
             }
         }
+        internal static bool ReservedObjectId(int id) { return (id <= -1 && id >= -12) || id == -16; }
         public void Dispose() {
             if (resolved != null) resolved.Dispose();
             if (owned && accessible != null) accessible.Dispose();
@@ -672,9 +733,9 @@ namespace LiveStudioDiscovery {
         }
     }
     public static class Entry {
-        public static object Run(int pid, string backend, int maxHwnd, int maxNodes, int maxDepth, bool names, double timeout = 20) {
+        public static object Run(int pid, string backend, int maxHwnd, int maxNodes, int maxDepth, bool names, double timeout = 20, int watchFocusSeconds = 0) {
             var timer = Stopwatch.StartNew();
-            return new Collector(new NativeDesktop(), maxHwnd, maxNodes, maxDepth, names, delegate { return timer.Elapsed.TotalSeconds >= timeout; }).Run(pid, backend);
+            return new Collector(new NativeDesktop(), maxHwnd, maxNodes, maxDepth, names, delegate { return timer.Elapsed.TotalSeconds >= timeout; }, watchFocusSeconds).Run(pid, backend);
         }
     }
 }

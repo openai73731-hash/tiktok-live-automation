@@ -1,4 +1,4 @@
-# PC-first migration: architecture audit and PC-SEND-1F
+# PC-first migration: architecture audit and PC-SEND-1G
 
 Audited 2026-10-08 from the actual checkout, starting on clean `main` at
 `15e31f9d88688669b7bd430ebad2003f46ec53a7` (`Add TikTok You manual send release candidate`).
@@ -358,7 +358,8 @@ Sources checked 2026-10-09:
 - Microsoft's [simple elements](https://learn.microsoft.com/en-us/windows/win32/winauto/simple-elements)
   distinguish positive child identifiers from CHILDID_SELF, the object itself.
   The I4 reader records sign classification, skips zero as informational
-  childid_self_reference, and fails closed on negative IDs. Negative IDs are
+  childid_self_reference, and in 1E failed closed on negative IDs. 1G supersedes
+  that sign-only rejection with exact MSAA get_accChild resolution. IDs are still
   not reinterpreted as IA2 uniqueID or action targets.
 
 `Ia2Discovery.cs` declares only IServiceProvider's single COM method. It omits
@@ -504,7 +505,7 @@ min(candidate count, max-nodes/4) visits, CLIENT gets the remainder (at least 75
 Client pairs retain the 1E exact-object comparison and renderer snapshot priority.
 Bounded acquisition/provider capability can still run when metadata budget is exhausted.
 Depth, shared deadline, owned-worker kill, output/storage bounds and joint 64 diagnostics
-remain enforced. Existing negative child-ID behavior is unchanged.
+remain enforced. Negative child-ID behavior was unchanged in 1F; 1G below supersedes it.
 
 `client_objects.visible_renderer_client_available`, visible_renderer_client_nodes
 (after tree only) and visible_renderer_client_ia2_supported refer only to visible
@@ -524,6 +525,115 @@ existing SDK/websockets deprecation warnings. Real UI opt-in remained disabled.
 The stock x64/x86 PowerShell harness compiled the production C# sources and ran
 fake acquisition/COM/UI boundaries only. `pip check` and the finite fake CLI
 passed; no real Studio probe, LIVE, provider generation or input action was run.
+
+### PC-SEND-1G: Chromium activation and manual focus observation
+
+Implemented on 2026-10-09 from `2d09d8433461e4a37c8847a6e5dd9f4360edd531`.
+This is discovery only. No real probe was run by the agent. The operator's Studio
+1.36.6.0 capture (transient PID 3332) has visible roots 328574 and 459284, with separate
+renderers 197318 and 132028. The screenshot associates the second window with LIVE
+chat; its CLIENT returned role 10/count 0 and IA2 invalid_argument. Those numbers
+are evidence only, never selectors or constants in production code. No new real
+Hello/Test/composer tree has been observed by this implementation yet.
+
+Primary references, verified 2026-10-09:
+
+- [Current LegacyRenderWidgetHostHWND implementation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/content/browser/renderer_host/legacy_render_widget_host_win.cc),
+  observed blob `ec0f5c93d005f9ae2cbd77ef6d83220eb49e4ed4`: constant
+  `kIdScreenReaderHoneyPot=1`, NotifyWinEvent(EVENT_SYSTEM_ALERT, hwnd, 1, CHILDID_SELF),
+  OnGetObject low-32-bit object ID 1 calls AXPlatform.OnScreenReaderHoneyPotQueried().
+  OBJID_CLIENT separately marks MSAA requested. The class alone does not prove the
+  installed Studio embeds identical code or will enable a full content tree.
+- [Chromium Windows browser test at revision 0985614e49db6b4a94c551fda1107462b53a9aac](https://chromium.googlesource.com/chromium/src/+/0985614e49db6b4a94c551fda1107462b53a9aac/chrome/browser/accessibility/accessibility_win_browsertest.cc):
+  WM_GETOBJECT uses WPARAM OBJID_CLIENT (-4), LPARAM kIdCustom (1), before querying
+  CLIENT/IID_IAccessible. Its VT_I4 path calls parent get_accChild with the exact
+  variant, without a positive-only test. This pinned historical test supplies the
+  exact handshake contract; it is not an installed-Studio acceptance test.
+- [SendMessageTimeoutW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw),
+  [SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook),
+  [AccessibleObjectFromEvent](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-accessibleobjectfromevent),
+  [GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getguithreadinfo)
+  define the bounded message and external event observation APIs used here.
+
+Only the explicit `chromium-ax` backend instantiates the activation adapter. Every
+captured renderer is rechecked for exact class, target PID and target-owned selected
+root before baseline, activation, polling and IA2 capability. A fixed
+SendMessageTimeout sends 61/-4/1, once per renderer, timeout 250 ms, flags
+SMTO_ABORTIFHUNG|SMTO_ERRORONEXIT. No NOTIMEOUTIFNOTHUNG or retry exists. A zero message
+result is normal for the honey-pot; API completion does not prove AX enabled. On
+failure no poll/retry claims a changed tree. Acquisition is CLIENT/IID_IAccessible
+only. Fresh objects are acquired/released at bounded 100 ms intervals, up to 21
+attempts and 2 seconds including activation, subject to the global worker deadline.
+Root role/count changes or a document with children stop polling. Slow descendant-only
+changes can be missed, especially for an already expanded document. The final fresh
+snapshot uses the existing serializer, protection, root-local dedup and cycle limits.
+
+Schema 7 puts checks and separate before/after CLIENT snapshots under
+`chromium_accessibility_activation`. Each check carries root/source HWND, target PID,
+visibility/secondary context, fixed parameters, send_status/attempted, sanitized
+acquisition HRESULTs, baseline/after role/count, poll count, elapsed and paired
+comparison. Complete comparisons use shape/role/state/count without names. Null
+changed means incomplete. Max-nodes is joint for both snapshots and all renderers;
+before/after share 64 diagnostics. Checks cap at 32 with visible primary/secondary
+renderer priority. Limits/errors remain unknown_ui_state, not delivery readiness.
+Baseline and activation are sequential per renderer, so process-wide on-demand AX
+changes and asynchronous UI updates can affect later baselines. Comparison does not
+prove causality. `physical_action=false`; accessibility_activation_performed records
+any attempted message, including failed/timeout attempts. If the worker starts but
+no valid report survives, that flag is null (unknown), not a false claim of no effect.
+
+Fresh CLIENT objects with document/application root roles 15/14 get the
+existing official IServiceProvider → QueryService(IID_IAccessible, IID_IAccessible2)
+capability check after the final snapshot, guarded again after mandatory State.
+Shell objects report not_queried_shell. The reported tree precedes this IA2 query;
+an IA2 query's own on-demand effects are not mixed into activation comparison. The
+optional IID_IAccessible2 service fallback was not added. No IA2 actions/getters exist.
+
+Every nonzero VT_I4 now attempts exact signed parent get_accChild. Positive wrappers
+retain their existing simple ID and optional full descendant representation. Negative
+success is a full accessible_object with original_child_kind=negative and category
+negative_accessible_object; raw negative IDs are omitted. Failed resolution is then
+classified reserved_system_objid for known Windows IDs (-1..-12/-16), otherwise
+unresolved_negative_child. S_FALSE/null is informational and consumes bounded visits;
+HRESULT failures retain static categories and unreadable state. Zero is still an
+informational self reference. No COM addresses/identity strings enter reports.
+
+For captured top-level windows, metadata includes owner, GA_ROOT=2, GA_ROOTOWNER=3,
+numeric style/exstyle plus allowlisted flags, client/window RECT (LTRB), target-PID
+z-order index and optional DWMWA_CLOAKED=14. Window bounds remain XYWH. Direct renderer
+children are reported. `hwnd.architecture.primary_main_window` is explicitly the
+first selected visible widget (visibility then HWND), not verified main-window
+identity. All other visible widgets and their visible direct renderers are listed
+separately. A secondary visible widget with a visible renderer has a diagnostic
+chat_window_candidate hypothesis. Nothing selects by size, geometry or title.
+
+Optional `--watch-focus-seconds 1..30` observes only EVENT_OBJECT_FOCUS using
+WINEVENT_OUTOFCONTEXT=0, no DLL/module, target PID, all its threads. A private STA
+message pump observes the owned hook; unhook occurs in finally, worker termination
+settles all owned work. At most 64 events are retained. PID/root checks precede exact
+AccessibleObjectFromEvent(hwnd, objectId, childId). Only mandatory state, role/count/
+bounds and opt-in name are read; protected/unknown state suppresses names/descendants.
+Object/child IDs become categories/kinds. Secondary root/renderer relation and an
+inner accessible hypothesis are explicit. No Value is read. GetGUIThreadInfo uses
+only the foreground target's thread; foreign active/focus/caret handles become null,
+as does rcCaret without an owned caret. Its RECT is observation, not an insertion or
+click selector. Event metadata alone does not verify composer identity.
+
+The CLI streams only a fixed `live_studio_focus_watch_ready` JSON marker after hook
+installation, discarding other worker stderr and bounding stdout to 2 MB. Operator
+sequence and the exact LIVE capture command are in README: run → wait for READY →
+manually click composer → wait for completion without typing. No READY means hook
+installation was not confirmed. General timeout can shorten the requested watch.
+Report storage/privacy/20-capture cap stay unchanged. A-F interpretation in README
+separates unchanged tree, content expansion, negative resolution, inner focus,
+renderer-only focus and caret evidence. None authorizes preparation or SEND.
+
+PC-SEND-1G validation (2026-10-09): focused native discovery **183 passed**;
+Tier A **213 passed, 1 skipped**; Tier B **575 passed, 1 skipped**, with the two
+existing SDK/websockets deprecation warnings. Fake boundaries compile/run on stock
+x64 and x86 PowerShell; native activation/hooks/UI are never instantiated there.
+`pip check`, finite fake CLI, diff and staged secrets/runtime scans passed. No real
+probe, LIVE connection, paid/local inference, typing, click or SEND was run by the agent.
 
 Microsoft documents [UIA tree scoping and changing trees](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-tree-overview)
 and [TreeWalker/property-based discovery](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/obtaining-ui-automation-elements).
@@ -555,8 +665,11 @@ not block safe standalone manual preparation.
    still requires operator capture; IA2 was deferred in that slice.
    **PC-SEND-1E:** standard IServiceProvider/QueryService capability
    and paired MSAA experiment; no IA2 vtable/actions or input implementation.
-   **PC-SEND-1F (current slice):** explicit dual OBJID_CLIENT/OBJID_WINDOW evidence,
+   **PC-SEND-1F:** explicit dual OBJID_CLIENT/OBJID_WINDOW evidence,
    separate CLIENT tree and CLIENT-only IA2 queries. Previous code already used CLIENT.
+   **PC-SEND-1G (current slice):** opt-in Chromium honey-pot activation, fresh CLIENT
+   polling, signed negative-child resolution, secondary-window metadata and external
+   focus/caret observation. No input or production chat selector.
 2. **PC-SEND-2:** collect/redact real control/raw/HWND/MSAA trees and version/locale/account/LIVE
    evidence; review a backend profile. Implement an explicit approved-envelope
    preparation route that rechecks session/runtime/approval/expiry, uniquely locates

@@ -152,8 +152,9 @@ def cli(argv=None):
             raise argparse.ArgumentTypeError(f"invalid_argument: expected {lower}..{upper}")
         return validate
     parser = argparse.ArgumentParser(description="Read-only LIVE Studio accessibility discovery; never types or submits.")
-    parser.add_argument("--backend", choices=("uia", "hwnd", "msaa", "all", "ia2", "client"), default="uia")
-    parser.add_argument("--process-id", type=bounded(1, 2**31 - 1), default=0, help="Your current Studio PID; required for hwnd/msaa/all/ia2/client.")
+    parser.add_argument("--backend", choices=("uia", "hwnd", "msaa", "all", "ia2", "client", "chromium-ax"), default="uia")
+    parser.add_argument("--watch-focus-seconds", type=bounded(0, 30), default=0)
+    parser.add_argument("--process-id", type=bounded(1, 2**31 - 1), default=0, help="Your current Studio PID; required for native backends.")
     parser.add_argument("--max-nodes", type=bounded(1, 2000), default=500)
     parser.add_argument("--max-hwnd", type=bounded(1, 2000), default=256)
     parser.add_argument("--max-depth", type=bounded(1, 20), default=12)
@@ -162,8 +163,10 @@ def cli(argv=None):
     parser.add_argument("--include-names", action="store_true", help="Include private accessible names; redact before sharing.")
     parser.add_argument("--instance-id", default="default")
     args = parser.parse_args(argv)
+    if args.watch_focus_seconds and (args.backend != "chromium-ax" or args.watch_focus_seconds >= args.timeout):
+        parser.error("invalid_argument: focus watch requires chromium-ax and a longer timeout")
     if args.backend != "uia" and args.process_id == 0:
-        parser.error("invalid_argument: --process-id is required for hwnd/msaa/all/ia2/client")
+        parser.error("invalid_argument: --process-id is required for native backends")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}", args.instance_id):
         parser.error("invalid_argument: invalid --instance-id")
     try:
@@ -172,9 +175,13 @@ def cli(argv=None):
                            include_names=args.include_names, tree_view=args.tree_view, timeout=args.timeout)
         else:
             from app.windows.native_discovery import collect
+            watch = {}
+            if args.watch_focus_seconds:
+                watch = dict(watch_focus_seconds=args.watch_focus_seconds,
+                    on_focus_ready=lambda: print(json.dumps({"event": "live_studio_focus_watch_ready", "seconds": args.watch_focus_seconds}), flush=True))
             report = collect(backend=args.backend, process_id=args.process_id, max_hwnd=args.max_hwnd,
                 max_nodes=args.max_nodes, max_depth=args.max_depth, include_names=args.include_names,
-                tree_view=args.tree_view, timeout=args.timeout)
+                tree_view=args.tree_view, timeout=args.timeout, **watch)
         path = save_report(report, args.instance_id)
     except (OSError, ValueError):
         print(json.dumps({"event": "live_studio_probe_failed", "reason": "probe_or_report_unavailable"}))
@@ -184,6 +191,8 @@ def cli(argv=None):
     hwnd = () if args.backend == "uia" else report.hwnd.windows
     msaa = () if args.backend == "uia" else (getattr(report, "msaa_client", None) or report.msaa)
     msaa = msaa.nodes if msaa else ()
+    activation = getattr(report, "chromium_accessibility_activation", None)
+    if activation: msaa = activation.after_msaa.nodes
     print(json.dumps({"event": "live_studio_probe", "instance_id": args.instance_id, "backend": args.backend,
         "status": report.status, "windows": uia.windows if uia else sum(n.depth == 0 for n in hwnd),
         "nodes": (len(uia.nodes) if uia else 0) + len(msaa), "uia_nodes": len(uia.nodes) if uia else 0,
@@ -191,7 +200,8 @@ def cli(argv=None):
         "candidate_edits": sum(n.candidate_edit for n in uia.nodes) if uia else 0,
         "candidate_buttons": sum(n.candidate_button for n in uia.nodes) if uia else 0,
         "truncated": report.truncated, "unreadable": report.unreadable,
-        "report": str(path), "physical_action": False}))
+        "report": str(path), "physical_action": False,
+        "accessibility_activation_performed": getattr(report, "accessibility_activation_performed", False)}))
     return 0 if report.status == "discovered" else 2
 
 

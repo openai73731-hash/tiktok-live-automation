@@ -1,4 +1,4 @@
-"""PC-SEND-1B..1F: production serializers/contracts, fully fake UI/COM boundaries."""
+"""PC-SEND-1B..1G: production serializers/contracts, fully fake UI/COM boundaries."""
 import base64
 import json
 import os
@@ -27,8 +27,8 @@ def worker_platform(monkeypatch):
 
 def fake_scenarios(system_directory="System32"):
     if sys.platform != "win32": pytest.skip("Stock .NET fake boundary harness requires Windows")
-    paths = [Path(p).absolute() for p in ("backend/app/windows/NativeDiscovery.cs", "backend/app/windows/Ia2Discovery.cs", "backend/app/windows/ClientDiscovery.cs",
-        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs", "backend/tests/fixtures/windows/FakeNativeVariants.cs", "backend/tests/fixtures/windows/FakeIa2Probe.cs", "backend/tests/fixtures/windows/FakeClientProbe.cs")]
+    paths = [Path(p).absolute() for p in ("backend/app/windows/NativeDiscovery.cs", "backend/app/windows/Ia2Discovery.cs", "backend/app/windows/ClientDiscovery.cs", "backend/app/windows/ChromiumDiscovery.cs",
+        "backend/tests/fixtures/windows/FakeDiscovery.cs", "backend/tests/fixtures/windows/FakeMsaaVariants.cs", "backend/tests/fixtures/windows/FakeNativeVariants.cs", "backend/tests/fixtures/windows/FakeIa2Probe.cs", "backend/tests/fixtures/windows/FakeClientProbe.cs", "backend/tests/fixtures/windows/FakeChromiumProbe.cs")]
     literals = ",".join("'" + str(path).replace("'", "''") + "'" for path in paths)
     command = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); "
         "Add-Type -Path @(" + literals + ") -ReferencedAssemblies 'System.dll','Accessibility.dll'; "
@@ -69,7 +69,7 @@ def test_msaa_roles_parent_relations_and_state_are_metadata(scenarios):
     assert edit.owner_hwnd == 200 and edit.process_id == 11301
     simple = next(n for n in nodes if n.semantic_hint == "listitem")
     assert simple.owner_kind == "simple_child" and simple.child_id == 1
-    assert data.schema_version == 6 and data.backend == "msaa"
+    assert data.schema_version == 7 and data.backend == "msaa"
     assert data.studio_version == "1.36.6"
     assert scenarios["msaa"]["root_closes"] > 0
 
@@ -371,7 +371,7 @@ def test_partial_s_false_uses_only_obtained_and_ignores_empty_tail(scenarios):
     ("native_empty", 0, "empty", "empty_slot", "s_ok"),
     ("native_qi", 9, "dispatch", "dispatch_qi_failed", "no_interface"),
     ("native_malformed", 65535, "other", "malformed_variant", "s_ok"),
-    ("native_bad_id", 3, "i4", "malformed_variant", "s_ok"),
+    ("native_bad_id", 3, "i4", "reserved_system_objid", "s_false"),
     ("native_null_dispatch", 9, "dispatch", "malformed_variant", "s_ok"),
 ])
 def test_bad_native_child_has_scalar_diagnostics_and_does_not_abort_siblings(scenarios, case, vt, category, reason, hr):
@@ -381,7 +381,10 @@ def test_bad_native_child_has_scalar_diagnostics_and_does_not_abort_siblings(sce
     assert diagnostic.reason == reason and diagnostic.hresult_category == hr
     assert diagnostic.source_hwnd == 100 and diagnostic.parent_id == 1
     assert diagnostic.child_index == (1 if case == "native_empty" else 0)
-    assert "msaa_child_unsupported" in data.errors and data.status == "unknown_ui_state"
+    if case == "native_bad_id":
+        assert not data.errors and data.status == "discovered"
+    else:
+        assert "msaa_child_unsupported" in data.errors and data.status == "unknown_ui_state"
     if case != "native_qi": assert len([n for n in data.msaa.nodes if n.source_hwnd == 100]) == 7
     assert scenarios[case]["inits"] == scenarios[case]["clears"] == 21
 
@@ -582,7 +585,7 @@ def test_childid_self_is_informational_and_sign_classification_is_sanitized(scen
     assert len(self_ref.msaa.nodes) == 21
     assert all(d.child_id_kind == "zero" and d.reason == "childid_self_reference" for d in self_ref.msaa.child_diagnostics)
     negative = report(scenarios, "native_bad_id")
-    assert all(d.child_id_kind == "negative" and d.reason == "malformed_variant" for d in negative.msaa.child_diagnostics)
+    assert all(d.child_id_kind == "negative" and d.reason == "reserved_system_objid" and d.hresult_category == "s_false" for d in negative.msaa.child_diagnostics)
     positive = report(scenarios, "role_failure")
     assert all(d.child_id_kind == "positive" for d in positive.msaa.child_diagnostics)
     assert all(n.child_id is None or n.child_id > 0 for n in self_ref.msaa.nodes)
@@ -863,3 +866,247 @@ def test_client_cli_saves_distinct_sources_and_worker_compiles_fixed_native_brid
     assert output["backend"] == "client" and output["msaa_nodes"] == len(data.msaa_client.nodes)
     assert "objid_client" not in output and output["physical_action"] is False
     assert DiscoveryReport.model_validate_json(Path(output["report"]).read_text(encoding="utf-8")).client_objects
+
+
+def ax_renderer(data, hwnd=200):
+    return next(c for c in data.chromium_accessibility_activation.checks if c.source_hwnd == hwnd)
+
+
+@pytest.mark.parametrize("case,polls,changed", [("ax_expands", 1, True), ("ax_delayed", 3, True), ("ax_unchanged", 21, False)])
+def test_chromium_activation_fresh_client_polling_and_comparison(scenarios, case, polls, changed):
+    data = report(scenarios, case)
+    assert data.schema_version == 7 and data.msaa is None and data.ia2 is None
+    assert data.accessibility_activation_performed is True and data.physical_action is False
+    check = ax_renderer(data)
+    assert (check.message, check.honeypot_object_id, check.wparam_object_id, check.timeout_ms) == (61, 1, -4, 250)
+    assert check.attempted and check.send_status == "completed" and check.poll_attempts == polls
+    assert check.baseline_role == 10 and check.baseline_child_count == 0
+    assert check.after_role == (15 if changed else 10) and check.after_child_count == (1 if changed else 0)
+    assert check.tree_changed is changed and check.comparison_complete
+    assert check.activation_elapsed_ms <= 2000
+    trace = scenarios[case]["trace"]
+    assert trace.index("200:open:-4:1") < trace.index("200:activate:11300:250") < trace.index("200:open:-4:2")
+    assert trace.count("200:activate:11300:250") == trace.count("400:activate:11300:250") == 1
+    queries = [t for t in trace if ":ia2:fresh:" in t]
+    assert queries == ([f"200:ia2:fresh:{polls + 1}", f"400:ia2:fresh:{polls + 1}"] if changed else [])
+    assert check.ia2.query_service_attempted is changed
+    assert scenarios[case]["acquired"] == scenarios[case]["closes"] and scenarios[case]["api_closes"] == 1
+
+
+@pytest.mark.parametrize("case,status,attempted", [("ax_foreign", "scope_rejected", False), ("ax_scope_changed", "scope_rejected", False),
+    ("ax_class_changed", "scope_rejected", False), ("ax_timeout", "timeout", True), ("ax_disappears", "renderer_disappeared", True),
+    ("ax_protected", "protected", False), ("ax_unknown_state", "unknown_protection", False)])
+def test_chromium_scope_timeout_disappearance_and_protection_fail_closed(scenarios, case, status, attempted):
+    data = report(scenarios, case)
+    check = ax_renderer(data)
+    assert check.send_status == status and check.attempted is attempted
+    assert check.tree_changed is None and not check.comparison_complete
+    assert not check.ia2.query_service_attempted
+    trace = scenarios[case]["trace"]
+    assert sum(t.startswith("200:activate:") for t in trace) == int(attempted)
+    assert not any(t.startswith("300:activate:") for t in trace)
+    if case == "ax_timeout": assert check.poll_attempts == 0 and "activation_failed" in data.errors
+    if case in {"ax_protected", "ax_unknown_state"}:
+        assert not any(":name:" in t or ":count:" in t for t in trace)
+        assert data.accessibility_activation_performed is False
+    assert scenarios[case]["acquired"] == scenarios[case]["closes"]
+
+
+@pytest.mark.parametrize("mode", ["hwnd", "msaa", "client", "ia2"])
+def test_standard_backends_do_not_activate_or_watch(scenarios, mode):
+    data = report(scenarios, "ax_normal_" + mode)
+    assert data.accessibility_activation_performed is False and data.chromium_accessibility_activation is None and data.focus_watch is None
+    assert not any(":activate:" in t for t in scenarios["ax_normal_" + mode]["trace"])
+    assert scenarios["ax_normal_" + mode]["api_closes"] == 0
+
+
+def test_chromium_budget_and_deadline_never_claim_complete_comparison(scenarios):
+    data = report(scenarios, "ax_budget")
+    assert data.truncated and "msaa_node_limit" in data.errors
+    assert len(data.chromium_accessibility_activation.before_msaa.nodes) + len(data.chromium_accessibility_activation.after_msaa.nodes) <= 2
+    assert not ax_renderer(data, 400).comparison_complete and ax_renderer(data, 400).tree_changed is None
+    deadline = report(scenarios, "ax_deadline")
+    assert deadline.truncated and "timeout" in deadline.errors
+    assert ax_renderer(deadline).poll_attempts == 0 and not ax_renderer(deadline, 400).attempted
+
+
+def test_activation_check_cap_prioritizes_both_visible_renderers_and_names_stay_private(scenarios):
+    data = report(scenarios, "ax_check_cap")
+    assert len(data.chromium_accessibility_activation.checks) == 32 and "activation_check_limit" in data.errors
+    assert [c.source_hwnd for c in data.chromium_accessibility_activation.checks[:2]] == [200, 400]
+    assert sum(":activate:" in t for t in scenarios["ax_check_cap"]["trace"]) == 32
+    named = report(scenarios, "ax_names").chromium_accessibility_activation
+    assert all(n.name for s in (named.before_msaa, named.after_msaa) for n in s.nodes)
+    hidden = report(scenarios, "ax_expands").chromium_accessibility_activation
+    assert all(n.name is None for s in (hidden.before_msaa, hidden.after_msaa) for n in s.nodes)
+    for case in ("ax_names", "ax_check_cap", "ax_negative", "focus_names"):
+        text = report(scenarios, case).model_dump_json()
+        assert all(private not in text for private in ("PRIVATE ADDRESS", "pointer", "0x76543210", "EXCEPTION"))
+    pane = ax_renderer(report(scenarios, "ax_pane"))
+    assert pane.after_role == 16 and not pane.ia2.query_service_attempted and pane.ia2.status == "not_queried_shell"
+
+
+@pytest.mark.parametrize("case", ["ax_before_unavailable", "ax_after_unavailable"])
+def test_unavailable_client_acquisition_is_distinct_from_snapshot_budget(scenarios, case):
+    data = report(scenarios, case)
+    check = ax_renderer(data)
+    assert data.status == "unknown_ui_state" and data.unreadable > 0 and "msaa_unavailable" in data.errors
+    assert "msaa_node_limit" not in data.errors and check.tree_changed is None
+    assert check.attempted and check.send_status == "completed"
+    assert getattr(check, "baseline_hresult_category" if case == "ax_before_unavailable" else "after_hresult_category") == "no_interface"
+    assert scenarios[case]["acquired"] == scenarios[case]["closes"]
+
+
+def test_negative_native_variants_resolve_exact_signed_ids_before_classification(scenarios):
+    resolved = report(scenarios, "native_negative_object")
+    negative = [n for n in resolved.msaa.nodes if n.original_child_kind == "negative"]
+    assert len(negative) == 3 and all(n.owner_kind == "accessible_object" and n.child_id is None and n.role == 42 and n.child_resolution_category == "negative_accessible_object" for n in negative)
+    assert scenarios["native_negative_object"]["calls"].count("child:-100005") == 3
+    for case, category, hr in [("native_negative_failure", "unresolved_negative_child", "failed"), ("native_reserved_failure", "reserved_system_objid", "failed"), ("native_negative_null", "unresolved_negative_child", "s_false")]:
+        data = report(scenarios, case)
+        diagnostic = data.msaa.child_diagnostics[0]
+        assert diagnostic.reason == category and diagnostic.hresult_category == hr and diagnostic.child_id_kind == "negative"
+        assert "child:" + ("-4" if case == "native_reserved_failure" else "-100005") in scenarios[case]["calls"]
+        assert "malformed_variant" not in [d.reason for d in data.msaa.child_diagnostics]
+        if hr == "s_false": assert data.status == "discovered" and data.unreadable == 0
+        else: assert data.unreadable > 0
+        assert "-100005" not in data.model_dump_json() and "PRIVATE" not in data.model_dump_json()
+    cycle = report(scenarios, "native_negative_cycle")
+    assert cycle.truncated and "msaa_repeated" in cycle.errors
+    assert "child:0" not in scenarios["native_self"]["calls"]
+    assert "child:1" in scenarios["seven_ids"]["calls"]
+    assert "child:1" in scenarios["simple_protected"]["calls"]
+    activated = report(scenarios, "ax_negative")
+    assert any(n.original_child_kind == "negative" for n in activated.chromium_accessibility_activation.after_msaa.nodes)
+
+
+def test_secondary_visible_window_metadata_is_a_hypothesis_without_geometry_selector(scenarios):
+    data = report(scenarios, "ax_unchanged")
+    architecture = data.hwnd.architecture
+    assert architecture.primary_main_window == 100 and architecture.primary_selection_basis == "first_selected_visible_widget"
+    assert architecture.secondary_visible_chromium_windows == (101,) and architecture.secondary_renderer_hwnds == (400,)
+    main, second = [w for w in data.hwnd.windows if w.depth == 0]
+    assert not main.chat_window_candidate and second.chat_window_candidate and second.direct_renderer_hwnds == (400,)
+    assert second.owner_hwnd == 100 and second.ancestor_root == 101 and second.ancestor_rootowner == 100
+    assert second.style == 0x10C40000 and second.style_flags == ("visible", "caption", "thickframe")
+    assert second.exstyle_flags == ("appwindow",) and second.client_rect and second.window_rect and second.z_order_index == 1 and second.cloaked == 0
+    assert ax_renderer(data, 400).secondary_window and not ax_renderer(data).secondary_window
+    hidden = report(scenarios, "ax_hidden")
+    assert not hidden.hwnd.architecture.secondary_visible_chromium_windows
+    assert all(not w.chat_window_candidate for w in hidden.hwnd.windows)
+
+
+@pytest.mark.parametrize("case,status,descendant,caret", [("focus_inner", "available", True, False), ("focus_shell", "available", False, False),
+    ("focus_failure", "unavailable", False, False), ("focus_caret", "available", True, True), ("focus_protected", "protected", False, False), ("focus_unknown", "read_failed", False, False)])
+def test_focus_event_exact_metadata_filtering_and_caret(scenarios, case, status, descendant, caret):
+    data = report(scenarios, case)
+    watch = data.focus_watch
+    assert watch.status == "complete" and watch.hook_mode == "out_of_context" and watch.requested_seconds == 15
+    assert len(watch.events) == 1  # Foreign PID event excluded before any COM call.
+    event = watch.events[0]
+    assert (event.hwnd, event.root_hwnd, event.process_id) == (400, 101, 11300)
+    assert event.status == status and event.accessible_descendant is descendant
+    assert event.related_secondary_window and event.related_secondary_renderer
+    assert event.name is None and event.id_object_category == "objid_client"
+    assert event.gui.hwndCaret == (401 if caret else None) and (event.gui.rcCaret is not None) is caret
+    assert scenarios[case]["event_opens"] == 1
+    assert "event:400:-4:" + ("0" if case == "focus_shell" else "-100009") in scenarios[case]["trace"]
+    assert scenarios[case]["acquired"] == scenarios[case]["closes"]
+    if case == "focus_failure": assert event.hresult_category == "access_denied"
+    if case in {"focus_protected", "focus_unknown"}: assert "focus:name" not in scenarios[case]["trace"] and "focus:count" not in scenarios[case]["trace"]
+
+
+def test_focus_privacy_caps_foreign_gui_handles_and_secondary_descendants(scenarios):
+    named = report(scenarios, "focus_names")
+    assert named.focus_watch.events[0].name == "Label 0"
+    assert not any("focus:name" == t for t in scenarios["focus_inner"]["trace"])
+    foreign = report(scenarios, "focus_foreign_gui").focus_watch.events[0].gui
+    assert foreign.hwndActive == 101 and foreign.hwndFocus is None and foreign.hwndCaret is None and foreign.rcCaret is None
+    cap = report(scenarios, "focus_cap").focus_watch
+    assert len(cap.events) == 64 and cap.dropped == 7 and scenarios["focus_cap"]["event_opens"] == 64
+    descendant = report(scenarios, "focus_descendant").focus_watch.events[1]
+    assert descendant.hwnd == 401 and descendant.related_secondary_renderer and descendant.related_secondary_window
+    self_edit = report(scenarios, "focus_self_edit").focus_watch.events[0]
+    assert self_edit.id_child_kind == "zero" and self_edit.role == 42 and self_edit.accessible_descendant
+
+
+def test_native_activation_and_focus_fixed_read_only_api_contract():
+    source = Path("backend/app/windows/ChromiumDiscovery.cs").read_text(encoding="utf-8")
+    assert "SendMessageTimeout(new IntPtr(hwnd), 0x3D, new IntPtr(-4), new IntPtr(1), 0x0002 | 0x0020, 250, out ignored)" in source
+    assert "SetWinEventHook(0x8005, 0x8005, IntPtr.Zero, callback, (uint)pid, 0, 0)" in source
+    assert "AccessibleObjectFromEvent(new IntPtr(hwnd), unchecked((uint)objectId), unchecked((uint)childId), out accessible, out child)" in source
+    assert "GetGUIThreadInfo(thread, ref info)" in source and "UnhookWinEvent(owned)" in source
+    combined = source + "\n".join(p.read_text(encoding="utf-8") for p in Path("backend/app/windows").glob("*.cs"))
+    assert not re.search(r"\b(?:SendMessage|PostMessage|SendInput|mouse_event|SetCursorPos|SetForegroundWindow|SetFocus|SetClipboardData|accDoDefaultAction|accSelect|get_accValue|accValue|setValue|WriteProcessMemory|CreateRemoteThread|doAction)\s*\(", combined)
+    assert not re.search(r"328574|197318|459284|132028|344\s*,\s*640", source)
+
+
+@pytest.mark.parametrize("mutate", [lambda d: d.update(accessibility_activation_performed=False),
+    lambda d: d["chromium_accessibility_activation"]["checks"][0].update(message=62),
+    lambda d: d["chromium_accessibility_activation"]["checks"][0].update(honeypot_object_id=2),
+    lambda d: d["chromium_accessibility_activation"]["checks"][0].update(target_pid=555),
+    lambda d: d["chromium_accessibility_activation"]["checks"][0].update(raw_pointer=1234),
+    lambda d: d["hwnd"]["architecture"].update(primary_main_window=101),
+    lambda d: d["hwnd"]["windows"][0].update(chat_window_candidate=True),
+    lambda d: d["focus_watch"]["events"][0].update(name="PRIVATE"),
+    lambda d: d["focus_watch"].update(hook_mode="in_context"),
+    lambda d: d["focus_watch"]["events"][0].update(process_id=555),
+    lambda d: d["focus_watch"]["events"][0]["gui"].update(rcCaret=(1, 2, 3, 4))])
+def test_activation_focus_schema_rejects_unsafe_or_inconsistent_evidence(scenarios, mutate):
+    data = report(scenarios, "focus_inner").model_dump()
+    mutate(data)
+    with pytest.raises(ValidationError): DiscoveryReport.model_validate(data)
+
+
+def test_chromium_cli_readiness_private_report_and_fixed_worker(scenarios, worker_platform, tmp_path, monkeypatch, capsys):
+    data = report(scenarios, "focus_inner")
+    def runner(argv, **kwargs):
+        command = base64.b64decode(argv[-1]).decode("utf-16-le")
+        assert "ChromiumDiscovery.cs" in command and "'chromium-ax',256,500,12,$false,30.0,15)" in command
+        return SimpleNamespace(returncode=0, stdout=data.model_dump_json().encode())
+    assert collect(backend="chromium-ax", process_id=11300, timeout=30, watch_focus_seconds=15, runner=runner).focus_watch
+    def native(**kwargs):
+        assert kwargs["watch_focus_seconds"] == 15
+        kwargs["on_focus_ready"]()
+        return data
+    monkeypatch.setattr("app.windows.native_discovery.collect", native)
+    monkeypatch.setattr("app.windows.probe.save_report", lambda value, instance: save_report(value, instance, root=tmp_path))
+    assert cli(["--backend", "chromium-ax", "--process-id", "11300", "--watch-focus-seconds", "15", "--timeout", "30"]) == 0
+    ready, output = map(json.loads, capsys.readouterr().out.splitlines())
+    assert ready == {"event": "live_studio_focus_watch_ready", "seconds": 15}
+    assert output["accessibility_activation_performed"] is True and output["physical_action"] is False
+    assert output["msaa_nodes"] == len(data.chromium_accessibility_activation.after_msaa.nodes)
+    assert DiscoveryReport.model_validate_json(Path(output["report"]).read_text(encoding="utf-8")).focus_watch.events
+
+
+@pytest.mark.parametrize("args", [["--watch-focus-seconds", "15"], ["--backend", "client", "--process-id", "11300", "--watch-focus-seconds", "15"],
+    ["--backend", "chromium-ax", "--process-id", "11300", "--watch-focus-seconds", "31"],
+    ["--backend", "chromium-ax", "--process-id", "11300", "--watch-focus-seconds", "15", "--timeout", "15"]])
+def test_invalid_focus_cli_never_starts_worker(args, monkeypatch):
+    monkeypatch.setattr("app.windows.native_discovery.collect", lambda **kwargs: pytest.fail("Unexpected native inspection"))
+    with pytest.raises(SystemExit) as error: cli(args)
+    assert error.value.code == 2
+
+
+def test_worker_timeout_preserves_uncertainty_about_activation(worker_platform):
+    def blocked(*a, **k): raise subprocess.TimeoutExpired("PRIVATE", 20)
+    data = collect(backend="chromium-ax", process_id=11300, runner=blocked)
+    assert data.status == "timeout" and data.accessibility_activation_performed is None and data.physical_action is False
+
+
+def test_streamed_ready_marker_is_exact_once_and_stderr_is_discarded():
+    from app.windows.native_discovery import _run_watch_worker
+    ready = []
+    code = "import sys;sys.stderr.write('PRIVATE EXCEPTION\\nLIVE_STUDIO_FOCUS_WATCH_READY\\nLIVE_STUDIO_FOCUS_WATCH_READY\\n');sys.stderr.flush();sys.stdout.buffer.write(b'{}')"
+    result = _run_watch_worker([sys.executable, "-c", code], timeout=3, on_ready=lambda: ready.append(True), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert ready == [True] and result.returncode == 0 and result.stdout == b"{}"
+
+
+def test_stream_worker_output_cap_and_timeout_settle_owned_child(monkeypatch):
+    from app.windows.native_discovery import _run_watch_worker
+    monkeypatch.setattr("app.windows.native_discovery.MAX_REPORT_BYTES", 1024)
+    kwargs = dict(on_ready=lambda: None, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = _run_watch_worker([sys.executable, "-c", "import sys;sys.stdout.buffer.write(b'x'*100000);sys.stdout.flush()"], timeout=3, **kwargs)
+    assert result.returncode != 0 and len(result.stdout) <= 1024
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_watch_worker([sys.executable, "-c", "import time;time.sleep(10)"], timeout=0.1, **kwargs)

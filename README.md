@@ -1,6 +1,6 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-1F
+## PC-first: Windows LIVE Studio, этап PC-SEND-1G
 
 Текущая PC-ветка добавляет выбор транспорта и **read-only discovery**. Это ещё не
 manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
@@ -30,6 +30,95 @@ Windows-режим запускается без Android/ADB. GET/SSE/startup н
 DISABLED; Android startup flag не включает Windows-действия. Источник комментариев
 и существующий LM Studio/fake pipeline сохранены. Real CONNECT выполняет оператор.
 Для возврата к Android задайте `TIKTOK_TRANSPORT=android` и перезапустите backend.
+
+PC-SEND-1G добавляет **opt-in Chromium AX activation и наблюдение ручного focus**.
+Только `--backend chromium-ax` выполняет honey-pot handshake. UIA/HWND/MSAA/all/IA2/client
+его не выполняют. Это discovery, не PC-SEND-2: ввода/кликов/clipboard/SEND нет.
+Стандартный WM_GETOBJECT может изменить внутренний accessibility mode Studio;
+поэтому отчёт отдельно содержит `accessibility_activation_performed`, при этом
+`physical_action=false`. Агент реальный probe не запускал.
+
+Для каждого выбранного renderer **точного target PID** и класса
+`Chrome_RenderWidgetHostHWND` снимается CLIENT baseline, затем один
+`SendMessageTimeout(WM_GETOBJECT=61, wParam=OBJID_CLIENT=-4, lParam=1)` с timeout 250 ms,
+ABORTIFHUNG/ERRORONEXIT. Повторного activation при timeout нет. После успешного запроса
+CLIENT получается заново до 21 раза / до 2 секунд, интервал 100 ms, с проверкой scope,
+protection и общего deadline. Polling заканчивается при изменении root role/count
+или появлении document с детьми; это ограниченное наблюдение, не ожидание готовности UI.
+Максимум 32 renderer, visible primary и secondary идут прежде hidden. Общий max-nodes
+делится между before/after всех renderer, diagnostic cap 64 общий для обеих частей.
+
+Schema 7: `chromium_accessibility_activation.checks` содержит source/root HWND,
+target PID, message/object IDs, attempted/send_status/timeout_ms, poll_attempts,
+baseline/after role и child_count, tree_changed/comparison_complete и elapsed ms.
+Отдельные `before_msaa` / `after_msaa` содержат свежие CLIENT snapshots, `msaa=null`.
+Сравнение не использует names. Changed=null означает неполные данные, а не unchanged.
+`accessibility_activation_performed=true` означает выполненную попытку запроса, даже
+если он завершился timeout/ошибкой; false — запроса не было. Если worker был запущен,
+но погиб/вернул невалидный результат, flag=null: возможность activation неизвестна.
+На свежем after CLIENT с role document/application проверяется официальный
+`QI(IServiceProvider) → QueryService(IID_IAccessible, IID_IAccessible2)`; shell не
+запрашивается (`not_queried_shell`). Альтернативный service IID и IA2 actions не добавлены.
+
+Исправлены signed VT_I4 во всех MSAA backends: любой nonzero ID сначала проходит exact
+`get_accChild`, включая negative. Успешный negative становится accessible_object с
+`original_child_kind=negative`, `child_resolution_category=negative_accessible_object`;
+сам negative ID не сохраняется. S_FALSE/null — informational unresolved/leaf; failure —
+sanitized HRESULT и `reserved_system_objid` либо `unresolved_negative_child` после
+неуспешного resolution. CHILDID_SELF=0 остаётся ссылкой на текущий объект. Positive
+simple-child representation, protection, cycle guard и per-root dedup сохранены.
+
+`hwnd.architecture` показывает `primary_main_window`,
+`secondary_visible_chromium_windows`, `secondary_renderer_hwnds`. Primary — только
+первый выбранный visible widget (visibility, затем HWND), не доказанный main window.
+Secondary visible root с visible direct renderer получает `chat_window_candidate=true`
+как гипотезу. Размеры/координаты не используются для выбора. Top-level metadata:
+owner, GA_ROOT/GA_ROOTOWNER, style/exstyle numeric и allowlisted flags, client/window
+rect (left/top/right/bottom), direct renderer HWND, target-PID z-order и optional DWM
+cloaked. Обычный `bounds` по-прежнему x/y/width/height. По capture оператора Studio
+1.36.6.0 показал два visible widget с отдельными renderer; screenshot связывает второе
+окно с LIVE-чатом. Код пока не подтверждает эту семантику или стабильный selector.
+
+`--watch-focus-seconds 15` устанавливает только PID-filtered EVENT_OBJECT_FOCUS
+`WINEVENT_OUTOFCONTEXT`, без DLL/module/in-process hook. В callback exact
+`AccessibleObjectFromEvent` даёт безопасную metadata: role/state/count/bounds,
+name только с `--include-names`, никогда Value. `focus_watch.events` содержит
+category object ID, child kind, owning root и отношения к secondary window/renderer.
+После event GetGUIThreadInfo читает GUI thread foreground target window; foreign
+active/focus/caret handles заменяются null, при null caret rcCaret также null.
+rcCaret — RECT в системе координат соответствующего окна, не координаты для клика.
+Watcher ограничен 0..30 секундами, 64 событиями, общий timeout всё равно действует.
+
+Оператор может выполнить **один capture уже открытого собственного LIVE**. PID 3332 —
+только пример из его capture; замените актуальным GUI PID. Команда с names сохранит
+частные labels/comments в ignored diagnostics; перед передачей отчёт надо проверить.
+
+```powershell
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend chromium-ax --process-id 3332 --watch-focus-seconds 15 --include-names --instance-id vm1 --max-nodes 2000 --max-hwnd 256 --max-depth 20 --timeout 60
+```
+
+Последовательность: запустите из корня проекта → дождитесь JSON event
+`live_studio_focus_watch_ready` → вручную кликните «Добавить комментарий» во втором
+LIVE-окне → ничего не вводите → дождитесь завершения и пути отчёта. READY появляется
+после установки hook, уже после activation. Если READY не появился, watcher не был
+подтверждён; смотрите status/errors. Агент эту команду не выполняет.
+
+Интерпретация для **нужного secondary renderer** и его focus events:
+
+- A: полная пара, tree_changed=false — дерево не изменилось за окно наблюдения.
+- B: after document/application с descendants — content tree появилось; labels/ancestry
+  ещё требуют review. Увеличение количества nodes само по себе не доказывает composer.
+- C: negative_accessible_object — signed negative ID успешно resolved через get_accChild.
+- D: focus available, accessible_descendant=true и конкретный role/name/ancestry —
+  кандидат inner accessible, ещё не доказанный composer.
+- E: focus только renderer/shell, role 9/10, child zero либо доступного inner object нет —
+  inner composer пока не найден. Unavailable/read_failed не доказывает его отсутствие.
+- F: target-owned hwndCaret/rcCaret появились — наблюдение системного caret; это не
+  selector и не доказательство input/publication.
+
+Upstream honey-pot=1 и точные параметры подтверждены Chromium source/test;
+эффект в установленном Studio 1.36.6.0 ещё не доказан. Источники и ограничения —
+[PC architecture](docs/PC_LIVE_STUDIO_ARCHITECTURE.md#pc-send-1g-chromium-activation-and-manual-focus-observation).
 
 PC-SEND-1B добавляет HWND и MSAA/IAccessible discovery для Chromium shell. По отчёту
 оператора, на Studio 1.36.6 UIA control/raw показывают только `Chrome_WidgetWin_1`
@@ -112,7 +201,8 @@ IA2 metadata getters/actions/traversal не добавлены. Names остаю
 не более min(32, max-nodes/4) visits, CLIENT — оставшийся бюджет. Даже если metadata
 budget исчерпан, bounded acquisition/capability сохраняется; missing metadata/null
 не означает unavailable. Depth/timeout/output/storage/privacy guards сохранены.
-Negative child IDs сохраняют прежний conservative malformed_variant diagnostic.
+В 1F negative child IDs ещё имели conservative malformed_variant diagnostic;
+PC-SEND-1G выше заменяет его exact signed resolution во всех backends.
 
 Оператор может сделать **один idle capture без LIVE**, заменив пример PID текущим
 основным GUI PID Studio. Агент эту команду не выполняет:
@@ -188,7 +278,8 @@ protection или ошибке сравнение = null; общий target_root
 `child_diagnostics.child_id_kind` различает zero/positive/negative/invalid без raw
 неположительного ID. `CHILDID_SELF=0` — ссылка на текущий object, informational
 `childid_self_reference`; её не обходят повторно и не называют malformed. Отрицательный
-ID остаётся conservative unsupported. Эти slots расходуют bounded visit budget.
+ID в 1E оставался conservative unsupported; это исправлено в 1G выше.
+Эти slots расходуют bounded visit budget.
 
 Оператор может выполнить **один idle IA2 capture**, без LIVE и без изменения UI,
 заменив пример PID актуальным GUI PID. Команда по умолчанию не включает names:

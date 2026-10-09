@@ -92,12 +92,13 @@ namespace LiveStudioDiscovery {
     }
     // Keep the exact root RCW alive across both snapshots and QueryService. Child
     // wrappers still have their normal owned lifetime inside the existing serializer.
-    sealed class BorrowedMsaaNode : IMsaaNode {
+    sealed class BorrowedMsaaNode : IMsaaNode, IChildOrigin {
         readonly IMsaaNode node;
         internal BorrowedMsaaNode(IMsaaNode value) { node = value; }
         public string Identity { get { return node.Identity; } }
         public bool SimpleChild { get { return node.SimpleChild; } }
         public int? ChildId { get { return node.ChildId; } }
+        public string OriginalChildKind { get { var origin = node as IChildOrigin; return origin == null ? null : origin.OriginalChildKind; } }
         public int State() { return node.State(); } public int Role() { return node.Role(); }
         public int ChildCount() { return node.ChildCount(); } public string Name() { return node.Name(); }
         public int[] Location() { return node.Location(); } public long? OwnerWindow() { return node.OwnerWindow(); }

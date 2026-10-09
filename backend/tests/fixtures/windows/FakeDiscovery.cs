@@ -101,6 +101,7 @@ namespace LiveStudioDiscovery {
             foreach (var item in NativeVariantHarness.All()) result[item.Key] = item.Value;
             foreach (var item in Ia2Harness.All()) result[item.Key] = item.Value;
             foreach (var item in ClientHarness.All()) result[item.Key] = item.Value;
+            foreach (var item in AxHarness.All()) result[item.Key] = item.Value;
             return result;
         }
     }

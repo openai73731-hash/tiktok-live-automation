@@ -41,7 +41,8 @@ namespace LiveStudioDiscovery {
             var result = new Dictionary<string, object>();
             foreach (string mode in new string[] {"native_i4", "native_dispatch", "native_mixed", "native_partial", "native_empty",
                 "native_qi", "native_unsupported", "native_malformed", "native_bad_id", "native_self", "native_null_dispatch",
-                "native_bad_obtained", "native_fetch_failure", "native_diag_cap", "native_diag_budget", "native_clear_failure", "root_priority"}) {
+                "native_bad_obtained", "native_fetch_failure", "native_diag_cap", "native_diag_budget", "native_clear_failure", "root_priority",
+                "native_negative_object", "native_negative_failure", "native_reserved_failure", "native_negative_null", "native_negative_cycle"}) {
                 var api = new FakeVariantApi();
                 if (mode == "native_dispatch" || mode == "native_qi" || mode == "native_null_dispatch") api.tags = new int[] {9, 9, 9, 9, 9, 9, 9};
                 if (mode == "native_mixed") api.tags = new int[] {3, 9, 3, 9, 3, 9, 3};
@@ -59,6 +60,12 @@ namespace LiveStudioDiscovery {
                 if (mode == "native_diag_budget") api.tags = new int[] {8, 8, 8, 8, 8, 8, 8};
                 if (mode == "native_clear_failure") api.failClear = true;
                 var reads = new FakeAccessibleReads { nativeVariants = api, variants = new object[api.tags.Length == 100 ? 100 : 7] };
+                if (mode.StartsWith("native_negative_") || mode == "native_reserved_failure") {
+                    api.badId = true; api.badIdValue = mode == "native_reserved_failure" ? -4 : -100005;
+                    if (mode == "native_negative_object") reads.objects[api.badIdValue] = new FakeAccessibleReads { identity = "negative-child", selfRole = 42 };
+                    if (mode == "native_negative_cycle") reads.objects[api.badIdValue] = reads;
+                    if (mode == "native_negative_failure" || mode == "native_reserved_failure") reads.objectFailure = true;
+                }
                 var desktop = new FakeDesktop { accessibleFactory = delegate { return new NativeAccessible(reads, 0, false); } };
                 if (mode == "root_priority") {
                     var scan = new TopWindowScan(11300);
@@ -72,7 +79,7 @@ namespace LiveStudioDiscovery {
                 int closes = 0; foreach (var child in api.objects) closes += child.closes;
                 result[mode] = new Dictionary<string, object> {{"report", report}, {"inits", api.inits}, {"clears", api.clears},
                     {"queries", api.queries}, {"closes", closes}, {"slot_size", VariantReader.Size},
-                    {"payload_offset", Marshal.OffsetOf(typeof(NativeVariant), "payload").ToInt32()}, {"pointer_size", IntPtr.Size}};
+                    {"payload_offset", Marshal.OffsetOf(typeof(NativeVariant), "payload").ToInt32()}, {"pointer_size", IntPtr.Size}, {"calls", reads.calls}};
             }
             var early = new FakeVariantApi();
             using (var iterator = VariantReader.Read(early, 7).GetEnumerator()) { iterator.MoveNext(); }
