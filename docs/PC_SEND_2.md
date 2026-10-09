@@ -163,10 +163,14 @@ $env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'
 $env:ADMIN_LIVE_ENABLED = 'false'
 $env:STATE_DIR = 'work/pc/data'
 $env:LOG_DIR = 'work/pc/logs'
-& ./.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+& ./.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
 PID is optional if exactly one executable instance matches; ambiguous instances fail.
+Run from the repository root. On the prepared Windows VM, use
+`scripts/start-acceptance.ps1` for the next single acceptance instead of setting these
+values manually; it enables the Windows Enter gate and one-shot mode, checks local
+AI and the Admin APIs, and leaves the listener disconnected and AUTO OFF.
 All time limits are bounded at validation. Manual fill defaults true, Enter defaults
 false and AUTO always defaults OFF. Enabling Enter requires setting the startup flag
 true and restarting the backend; this does not arm or enable AUTO. Connect remains an

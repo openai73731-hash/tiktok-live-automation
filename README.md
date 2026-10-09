@@ -23,6 +23,45 @@ epoch/watermark без старого backlog. Для единственного
 Описание discovery ниже относится к предыдущему этапу и не является условием
 запуска нового sender: новый real Chromium probe не требуется.
 
+### Один запуск перед следующим acceptance на Windows VM
+
+Из любого каталога запустите `scripts/start-acceptance.ps1` (или ярлык
+**TikTok acceptance** на рабочем столе подготовленной VM):
+
+```powershell
+& 'C:\Users\Tiktok\Documents\tiktok-live-automation\scripts\start-acceptance.ps1'
+```
+
+Подтвердите обычный Windows **UAC**. Установленная Studio запрашивает
+`highestAvailable`, поэтому backend запускается с повышением и скрипт read-only
+проверяет integrity обоих процессов. Это требуется для Windows
+[UIPI / SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput);
+UAC не обходится и никакой пробный ввод не выполняется. Отказ UAC останавливает запуск.
+
+Скрипт проверяет branch/HEAD, свежий единственный GUI PID и exact executable
+Studio 1.36.6, effective own account `d3pp1s`, UID `7412662672502555649`, запускает
+llmster и loopback server 1234 при необходимости, загружает уже установленную
+`qwen/qwen3-8b`, проверяет `/v1/models`, короткий `/no_think` запрос и штатный
+application smoke **Is bot trading automatically?** с обязательным `status=ready`.
+Затем запускает backend **из корня repo** с `--app-dir backend` на `127.0.0.1:8000`,
+Windows Enter gate ON, Android gate OFF, one-shot AVAILABLE и AUTO OFF; проверяет
+оба admin status API и открывает админку. `-NoBrowser` отключает открытие браузера.
+Настройки startup, PID, результаты и логи сохраняются только в ignored `work/pc/`.
+Порты PocketWin `9000/9002/9003` не меняются.
+
+Studio GUI должен быть уже открыт оператором. Скрипт не начинает LIVE, не подключает
+listener, не делает discovery/ARM/Fill/Send. AI smoke READY **не означает** Windows
+Focus watch READY: он появится только после явного операторского ARM в acceptance.
+Повторный запуск до LIVE переиспользует проверенный backend с тем же PID Studio и
+HEAD. Активный listener/sender, SPENT, завершённая фаза, reserved/AUTO journal row
+блокируют подготовку; журнал и дедупликация не сбрасываются. Прежние MANUAL UNKNOWN
+сохраняются: эти replies нельзя повторять, следующая процедура использует новые
+комментарии. При сбое текущей acceptance — STOP, без перезапуска для повторения фазы.
+
+Краткий порядок для оператора: **BEFORE LIVE → START LIVE → CONNECT LISTENER →
+PHASE 1 FILL ONLY → PHASE 2 GUARDED SEND → PHASE 3 ONE-SHOT AUTO → STOP**.
+Точные действия и критерии остановки: [operator guide](docs/PC_SEND_2.md#one-acceptance-live-performed-only-by-the-operator).
+
 ### Предыдущий этап: PC-SEND-1G discovery
 
 PC-SEND-1G добавлял выбор транспорта и **read-only discovery**. На том этапе это ещё не
