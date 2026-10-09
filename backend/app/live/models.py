@@ -13,6 +13,8 @@ class Comment(BaseModel):
     _received_monotonic: float = PrivateAttr(default_factory=lambda: monotonic())
     username: str = Field(min_length=1)
     user_id: str | None = None
+    author_handle: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._]{1,24}$")
+    server_created_at: AwareDatetime | None = None
     message_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]{0,18}$")
     text: str = Field(min_length=1)
     # Local receipt time, in UTC; not an inferred TikTok server timestamp.

@@ -227,7 +227,12 @@ namespace LiveStudioDiscovery {
             if (timeoutMs != 250 || desktop.WindowProcess(hwnd) != pid || desktop.Window(hwnd, false).class_name != "Chrome_RenderWidgetHostHWND") return new AxSend();
             UIntPtr ignored;
             IntPtr success = SendMessageTimeout(new IntPtr(hwnd), 0x3D, new IntPtr(-4), new IntPtr(1), 0x0002 | 0x0020, 250, out ignored); // ABORTIFHUNG | ERRORONEXIT; never NOTIMEOUTIFNOTHUNG.
-            return new AxSend { attempted = true, status = success != IntPtr.Zero ? "completed" : Marshal.GetLastWin32Error() == 1460 ? "timeout" : "failed" };
+            return InterpretDelivery(success, ignored, Marshal.GetLastWin32Error());
+        }
+        internal static AxSend InterpretDelivery(IntPtr apiReturn, UIntPtr targetResult, int error) {
+            // lpdwResult is the target LRESULT, NOT the API completion flag.
+            // Chromium's honey-pot legitimately returns zero; never test it.
+            return new AxSend { attempted = true, status = apiReturn != IntPtr.Zero ? "completed" : error == 1460 ? "timeout" : "failed" };
         }
         delegate void WinEventProc(IntPtr hook, uint eventId, IntPtr hwnd, int objectId, int childId, uint thread, uint time);
         [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr module, WinEventProc callback, uint process, uint thread, uint flags);

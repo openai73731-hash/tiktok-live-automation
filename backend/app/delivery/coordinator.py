@@ -30,7 +30,7 @@ class DeliveryCoordinator:
             return False
 
     async def execute(self, suggestion_id, approval_id, expected_revision, idempotency_key, *, timeout=5,
-                      device_serial=None):
+                      device_serial=None, mode='MANUAL'):
         if self.closed or self.failed:
             try:
                 operation = self.journal.lookup(idempotency_key)
@@ -42,7 +42,7 @@ class DeliveryCoordinator:
         e, _, verdict = self.suggestions.authoritative(suggestion_id, approval_id, expected_revision, self.context())
         if not verdict.eligible:
             raise SuggestionConflict(verdict.reason)
-        request = DeliveryRequest(operation_id=uuid4().hex, idempotency_key=idempotency_key,
+        request = DeliveryRequest(operation_id=uuid4().hex, idempotency_key=idempotency_key, mode=mode,
             suggestion_id=e.suggestion_id, suggestion_revision=e.suggestion_revision,
             comment_identity=e.comment_identity, approval_id=approval_id,
             suggested_reply_hash=e.suggested_reply_hash, text=e.suggested_reply,

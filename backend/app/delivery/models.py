@@ -99,7 +99,7 @@ DeliveryReason = Literal["mock_confirmed", "not_configured", "rejected", "timeou
     "cancelled", "sender_failed", "interrupted", "operator_required",
     "physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen",
     "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
-    "journal_unavailable", "delivery_paused", "cooldown", "dry_run", "shutdown"]
+    "journal_unavailable", "delivery_paused", "cooldown", "dry_run", "shutdown", "filled_only", "echo_verified"]
 
 
 class DeliveryResult(FrozenModel):
@@ -108,6 +108,7 @@ class DeliveryResult(FrozenModel):
 
 
 class DeliveryRequest(FrozenModel):
+    mode: Literal['MANUAL', 'AUTO'] = 'MANUAL'
     operation_id: OpaqueId
     idempotency_key: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
     suggestion_id: OpaqueId

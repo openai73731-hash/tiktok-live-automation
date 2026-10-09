@@ -1041,6 +1041,12 @@ def test_native_activation_and_focus_fixed_read_only_api_contract():
     assert not re.search(r"328574|197318|459284|132028|344\s*,\s*640", source)
 
 
+def test_honeypot_api_success_with_zero_target_lresult_is_delivered(scenarios):
+    results = scenarios["honeypot_api_result"]
+    assert results["zero_target_result"] == results["nonzero_target_result"] == {"attempted": True, "status": "completed"}
+    assert results["api_failed"] == {"attempted": True, "status": "timeout"}
+
+
 @pytest.mark.parametrize("mutate", [lambda d: d.update(accessibility_activation_performed=False),
     lambda d: d["chromium_accessibility_activation"]["checks"][0].update(message=62),
     lambda d: d["chromium_accessibility_activation"]["checks"][0].update(honeypot_object_id=2),

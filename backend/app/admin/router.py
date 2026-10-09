@@ -16,6 +16,7 @@ from app.admin.service import PaidRequestNotConfirmed, PlaygroundBusy, PRESETS
 from app.delivery.models import ApprovalInput, ApprovalEvent, ManualDeliveryInput
 from app.delivery.suggestions import SuggestionConflict
 from app.android.diagnostics import CaptureError
+from app.windows.target import TargetRejected
 
 router = APIRouter()
 ASSETS = Path(__file__).resolve().parents[1] / "static" / "admin"
@@ -23,6 +24,66 @@ ASSETS = Path(__file__).resolve().parents[1] / "static" / "admin"
 
 class EmptyInput(UIModel):
     pass
+
+
+class WindowsArmInput(UIModel):
+    empty_confirmed: bool = Field(strict=True)
+
+
+class WindowsFillInput(WindowsArmInput):
+    delivery: ManualDeliveryInput
+
+
+class WindowsAutoInput(UIModel):
+    enabled: bool = Field(strict=True)
+
+
+def windows_service(request):
+    service = request.app.state.delivery
+    if service.view().transport != "windows_live_studio": raise HTTPException(409, detail="Windows transport unavailable.")
+    return service
+
+
+@router.post("/api/admin/windows/arm", status_code=202)
+async def arm_windows(request: Request, body: WindowsArmInput):
+    try: return windows_service(request).start_workflow(empty_confirmed=body.empty_confirmed)
+    except SuggestionConflict: raise HTTPException(409, detail="Windows arm unavailable.") from None
+
+
+@router.post("/api/admin/windows/disarm")
+async def disarm_windows(request: Request, body: EmptyInput):
+    return await windows_service(request).disarm()
+
+
+@router.post("/api/admin/windows/fill", status_code=202)
+async def fill_windows(request: Request, body: WindowsFillInput):
+    try: return windows_service(request).start_workflow(empty_confirmed=body.empty_confirmed, body=body.delivery)
+    except SuggestionConflict: raise HTTPException(409, detail="Windows fill unavailable.") from None
+
+
+@router.post("/api/admin/windows/send-once", status_code=202)
+async def send_once_windows(request: Request, body: WindowsFillInput):
+    try: return windows_service(request).start_workflow(empty_confirmed=body.empty_confirmed, body=body.delivery, mode="send_once")
+    except SuggestionConflict: raise HTTPException(409, detail="Windows send gate unavailable.") from None
+
+
+@router.post("/api/admin/windows/accept-empty")
+async def accept_windows_empty(request: Request, body: WindowsArmInput):
+    service = windows_service(request)
+    try:
+        if not body.empty_confirmed: raise TargetRejected("not_confirmed")
+        service.sender.confirm_empty()
+        return service.view()
+    except TargetRejected: raise HTTPException(409, detail="A recent verified send and explicit empty-field review are required.") from None
+
+
+@router.post("/api/admin/windows/auto")
+async def windows_auto(request: Request, body: WindowsAutoInput):
+    service = windows_service(request)
+    try:
+        service.sender.set_auto(body.enabled)
+        return service.view()
+    except TargetRejected: raise HTTPException(409, detail="Windows AUTO requires the startup gate, own identity and verified empty-composer acceptance.") from None
 
 
 class ConfirmSendInput(UIModel):
@@ -210,6 +271,8 @@ async def approve_suggestion(request: Request, suggestion_id: str, body: Approva
     except SuggestionConflict as exc:
         raise HTTPException(409, detail=str(exc)) from None
     admin.events.publish("suggestion_approval", ApprovalEvent(suggestion_id=suggestion_id))
+    delivery = request.app.state.delivery
+    if hasattr(delivery, "approved"): delivery.approved(suggestion_id)
     return admin.review_view(suggestion_id)
 
 

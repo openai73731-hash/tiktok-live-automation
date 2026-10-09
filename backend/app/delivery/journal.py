@@ -34,7 +34,7 @@ class Operation(FrozenModel):
     status: Literal["reserved", "confirmed", "not_sent", "unknown", "needs_operator"]
     reason: DeliveryReason | None
     device_serial: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
-    mode: Literal["MANUAL"] = "MANUAL"
+    mode: Literal["MANUAL", "AUTO"] = "MANUAL"
 
 
 class DeliveryOperationStore(Protocol):
@@ -113,7 +113,7 @@ class SQLiteDeliveryOperationStore:
             values = (request.operation_id, request.idempotency_key, request.suggestion_id,
                 request.suggestion_revision, request.comment_identity, request.approval_id,
                 request.suggested_reply_hash, request.live_session_id, request.target_account,
-                request.active_runtime_revision, datetime.now(UTC).isoformat(), "reserved", None, request.device_serial, "MANUAL")
+                request.active_runtime_revision, datetime.now(UTC).isoformat(), "reserved", None, request.device_serial, request.mode)
             db.execute("INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
             row = db.execute("SELECT * FROM operations WHERE operation_id=?", (request.operation_id,)).fetchone()
             db.execute("COMMIT")

@@ -228,11 +228,14 @@ class AdminService:
                 status.terminal_state in {LiveState.ENDED, LiveState.OPERATOR_REQUIRED}):
             self.runtime.live.session_invalidated = True
         self.live_status = status
+        if hasattr(self.delivery, "live_state"): self.delivery.live_state(status)
         self.events.publish("live_state", self.live_view())
 
     async def handle_live(self, comment: Comment, processor: CommentProcessor, *, mode=None, session_id=None, target_account=None) -> ReplyRecord | None:
         source = {"real": "tiktok", "fake": "fake", "replay": "replay"}[mode or self.settings.live_mode]
         if not self.accepts_session(session_id) or source == "tiktok" and not session_id: return None
+        if source == "tiktok" and hasattr(self.delivery, "observe_comment"):
+            self.delivery.observe_comment(comment, session_id, target_account)
         identity, _ = comment_identity(comment, source, session_id, target_account)
         # Deduplicate SDK message IDs within a bounded receipt window. No unbounded log.
         if source == "tiktok" and identity in self.live_seen: return None

@@ -57,6 +57,11 @@ class AdminLiveController:
                     self.runtime.admin.on_live_state(status)
             try:
                 service = self.factory(config, on_comment=handle, on_status=on_status)
+                def receipt(comment):
+                    delivery = self.runtime.admin.delivery
+                    if self.session_id == session_id and hasattr(delivery, "observe_comment"):
+                        delivery.observe_comment(comment, session_id, username)
+                service.on_receipt = receipt
             except BaseException:
                 await processor.aclose()
                 raise

@@ -1,4 +1,9 @@
-# PC-first migration: architecture audit and PC-SEND-1G
+# PC-first migration: architecture audit and PC-SEND-2
+
+The current operator-intent keyboard transport supersedes this document's older
+discovery-only sender restrictions. See [PC-SEND-2](PC_SEND_2.md) for the exact
+architecture, configuration, lifecycle, verification limits and one-LIVE acceptance.
+Historical discovery sections remain evidence, not prerequisites for delivery.
 
 Audited 2026-10-08 from the actual checkout, starting on clean `main` at
 `15e31f9d88688669b7bd430ebad2003f46ec53a7` (`Add TikTok You manual send release candidate`).

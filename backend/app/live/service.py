@@ -20,6 +20,8 @@ class LiveService:
     ) -> None:
         self.queue: asyncio.Queue[Comment] = asyncio.Queue(maxsize=settings.queue_size)
         self.listener: Listener = create_listener(settings, self.queue)
+        self.on_receipt = None
+        self.listener.on_receipt = lambda comment: self.on_receipt(comment) if self.on_receipt else None
         if on_status:
             previous = self.listener.on_state
 

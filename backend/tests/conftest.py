@@ -1,6 +1,7 @@
 import socket
 import ipaddress
 import logging
+import os
 from pathlib import Path
 
 import httpx
@@ -44,6 +45,8 @@ def isolated_environment(monkeypatch):
     for name in Settings.model_fields:
         monkeypatch.delenv(name.upper(), raising=False)
         monkeypatch.delenv(name.lower(), raising=False)
+    for name in tuple(os.environ):
+        if name.upper().startswith('WINDOWS__'): monkeypatch.delenv(name)
     yield
     logger = logging.getLogger("tiktok_assistant")
     for handler in logger.handlers[:]:

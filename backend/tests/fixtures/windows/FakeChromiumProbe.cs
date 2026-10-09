@@ -103,6 +103,10 @@ namespace LiveStudioDiscovery {
     public static class AxHarness {
         public static Dictionary<string, object> All() {
             var result = new Dictionary<string, object>();
+            result["honeypot_api_result"] = new Dictionary<string, object> {
+                {"zero_target_result", NativeAxApi.InterpretDelivery(new IntPtr(1), UIntPtr.Zero, 1460)},
+                {"nonzero_target_result", NativeAxApi.InterpretDelivery(new IntPtr(1), new UIntPtr(7), 0)},
+                {"api_failed", NativeAxApi.InterpretDelivery(IntPtr.Zero, new UIntPtr(7), 1460)}};
             foreach (string mode in new string[] {"ax_expands", "ax_delayed", "ax_unchanged", "ax_timeout", "ax_disappears", "ax_foreign", "ax_scope_changed", "ax_class_changed", "ax_hidden", "ax_names", "ax_negative", "ax_protected", "ax_unknown_state", "ax_budget", "ax_deadline", "ax_check_cap", "ax_before_unavailable", "ax_after_unavailable", "ax_pane",
                 "ax_normal_hwnd", "ax_normal_msaa", "ax_normal_client", "ax_normal_ia2", "focus_inner", "focus_shell", "focus_self_edit", "focus_failure", "focus_caret", "focus_foreign_gui", "focus_names", "focus_protected", "focus_unknown", "focus_cap", "focus_descendant"}) {
                 var desktop = new FakeAxDesktop(mode);

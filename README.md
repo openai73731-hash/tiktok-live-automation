@@ -1,8 +1,22 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-1G
+## PC-first: Windows LIVE Studio, этап PC-SEND-2
 
-Текущая PC-ветка добавляет выбор транспорта и **read-only discovery**. Это ещё не
+Добавлен Windows transport: явный operator ARM → ручной клик пустого composer →
+guarded Unicode Fill → опциональный один Enter → подтверждение по собственному
+comment echo. По умолчанию DISARMED, AUTO OFF, `ENABLE_PHYSICAL_WINDOWS_SEND=false`.
+Fill работает независимо от Enter gate; approval, reservation, dedup и expiry
+остаются обязательными. Без readback пустое поле подтверждает оператор.
+Реальная работа sender ещё не проверена; агент выполнял только offline tests.
+
+Настройка, ограничения timestamp/identity и **единственная acceptance процедура
+за один LIVE**: [PC-SEND-2 operator guide](docs/PC_SEND_2.md).
+Описание discovery ниже относится к предыдущему этапу и не является условием
+запуска нового sender: новый real Chromium probe не требуется.
+
+### Предыдущий этап: PC-SEND-1G discovery
+
+PC-SEND-1G добавлял выбор транспорта и **read-only discovery**. На том этапе это ещё не
 manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
 Android RC ниже сохранён; default transport остаётся `android` для совместимости.
 PocketWin — внешняя программа, её internals и торговля здесь не управляются.
@@ -26,7 +40,7 @@ $env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'
 ```
 
 Windows-режим запускается без Android/ADB. GET/SSE/startup не сканируют desktop и
-не вызывают AI. Dashboard показывает `PC-SEND-1 / probe_required`, Prepare/Submit
+не вызывают AI. Discovery dashboard показывал `PC-SEND-1 / probe_required`, Prepare/Submit
 DISABLED; Android startup flag не включает Windows-действия. Источник комментариев
 и существующий LM Studio/fake pipeline сохранены. Real CONNECT выполняет оператор.
 Для возврата к Android задайте `TIKTOK_TRANSPORT=android` и перезапустите backend.

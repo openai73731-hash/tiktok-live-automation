@@ -293,6 +293,7 @@
     receive("quality_update", quality.apply);
     receive("operator_settings", (value) => { operator.render(value); refreshReviews().catch(() => setConnected(false)); });
     receive("suggestion_approval", () => { refresh().catch(() => setConnected(false)); });
+    receive("windows_sender_status", () => { delivery.refresh().catch(() => setConnected(false)); });
     receive("live_state", (value) => {
       const changed = value.state !== state.status?.live?.state || value.live_session_id !== state.status?.live?.live_session_id;
       renderLiveStatus(value);

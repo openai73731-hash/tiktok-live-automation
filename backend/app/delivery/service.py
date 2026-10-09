@@ -16,17 +16,19 @@ from app.delivery.journal import SQLiteDeliveryOperationStore, JournalConflict, 
 from app.delivery.sender import AndroidTikTokReplySender
 from app.delivery.suggestions import SuggestionConflict
 from app.lifecycle import finish_owned
+from app.windows.sender import WindowsSenderStatus
 
 
 class DeliveryView(FrozenModel):
     transport: Literal["android", "windows_live_studio"] = "android"
     instance_id: str = "default"
     account_label: str = ""
-    windows_status: Literal["probe_required"] | None = None
+    windows_status: Literal["probe_required", "operator_arm_required"] | None = None
+    windows_sender: WindowsSenderStatus | None = None
     inspection: DeviceInspection | None = None
     physical_delivery_enabled: bool
     physical_ready: bool
-    delivery: Literal["NOT READY", "DRY RUN READY"]
+    delivery: Literal["NOT READY", "DRY RUN READY", "FILL READY"]
     paused: bool
     busy: bool
     reason: Literal["physical_delivery_disabled", "device_unavailable", "ready", "delivery_paused", "cooldown", "not_configured"]
@@ -38,7 +40,7 @@ class DeliveryHistoryEntry(FrozenModel):
     time: str
     username: str
     device: str | None
-    mode: Literal["MANUAL"] = "MANUAL"
+    mode: Literal["MANUAL", "AUTO"] = "MANUAL"
     result: Literal["confirmed", "not_sent", "unknown", "needs_operator"]
     reason: DeliveryReason | None
 
