@@ -1,6 +1,6 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-2
+## PC-first: Windows LIVE Studio, этап PC-SEND-2A
 
 Добавлен Windows transport: явный operator ARM → ручной клик пустого composer →
 guarded Unicode Fill → опциональный один Enter → подтверждение по собственному
@@ -8,6 +8,15 @@ comment echo. По умолчанию DISARMED, AUTO OFF, `ENABLE_PHYSICAL_WINDO
 Fill работает независимо от Enter gate; approval, reservation, dedup и expiry
 остаются обязательными. Без readback пустое поле подтверждает оператор.
 Реальная работа sender ещё не проверена; агент выполнял только offline tests.
+
+Pre-LIVE hardening: final native guard после SQLite/preflight, clock bridge,
+durable SDK delivery key независимо от session, server-owned AUTO eligibility и
+epoch/watermark без старого backlog. Для единственного acceptance LIVE заранее
+установите `$env:WINDOWS__ACCEPTANCE_ONE_SHOT = 'true'` (по умолчанию false):
+максимум один AUTO Enter за процесс, затем AUTO OFF и DISARM после verification.
+Порядок фазы AUTO: включить epoch → новый комментарий → AI/policy → approval →
+ручной ARM. AI `auto_send_eligible=false` не является правом физической отправки;
+сервер отдельно вычисляет и проверяет AUTO delivery eligibility.
 
 Настройка, ограничения timestamp/identity и **единственная acceptance процедура
 за один LIVE**: [PC-SEND-2 operator guide](docs/PC_SEND_2.md).

@@ -45,6 +45,8 @@ class DeliveryCoordinator:
         request = DeliveryRequest(operation_id=uuid4().hex, idempotency_key=idempotency_key, mode=mode,
             suggestion_id=e.suggestion_id, suggestion_revision=e.suggestion_revision,
             comment_identity=e.comment_identity, approval_id=approval_id,
+            durable_delivery_key=e.durable_delivery_key, source_kind=e.source,
+            source_message_id=e._source_message_id,
             suggested_reply_hash=e.suggested_reply_hash, text=e.suggested_reply,
             live_session_id=e.live_session_id, target_account=e.target_account,
             active_runtime_revision=e.active_runtime_revision, expires_at=e.expires_at, device_serial=device_serial)

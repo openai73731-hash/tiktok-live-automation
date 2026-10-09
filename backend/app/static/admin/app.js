@@ -166,14 +166,14 @@
     [["INTENT", item.intent], ["SHOULD REPLY", String(item.should_reply)], ["FACT IDS", item.fact_ids.join(", ") || "—"],
       ["PROVIDER / MODEL", `${providerName(item.provider)} / ${item.model || "фикстуры"}`], ["ВРЕМЯ АНАЛИЗА", `${record.duration_ms} мс`],
       ["PROCESSING ERROR", item.processing_error || "—"], ["ERROR DETAIL", item.processing_error_detail || "—"],
-      ["AUTO SEND ELIGIBLE", String(item.auto_send_eligible)], ["TRANSLATION REVIEW", String(item.translation_requires_review)],
+      ["AI AUTO AUTHORITY", String(item.auto_send_eligible)], ["TRANSLATION REVIEW", String(item.translation_requires_review)],
       ["TRANSLATION SOURCE", item.translation_source]].forEach(([label, value]) => {
         const cell = node("div"); cell.append(node("div", "reply-field-label", label), node("div", "value mono", value)); metadata.append(cell);
       });
     card.append(metadata);
     const flags = node("div", "flag-list");
     flags.append(node("span", "badge warning", item.requires_approval ? "REQUIRES APPROVAL" : "APPROVAL STATUS UNKNOWN"),
-      node("span", "badge neutral", item.auto_send_eligible ? "AUTO ELIGIBILITY UNKNOWN" : "AUTO SEND NOT ELIGIBLE"));
+      node("span", "badge neutral", "AI DOES NOT AUTHORIZE AUTO"));
     card.append(flags, node("p", "reply-reason", item.reason));
     const actions = node("div", "reply-actions"), copy = node("button", "button secondary-button", "COPY REPLY");
     copy.type = "button"; copy.disabled = !item.suggested_reply;

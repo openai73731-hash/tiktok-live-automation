@@ -29,6 +29,12 @@ def comment_identity(comment, source, session_id, target_account):
         [comment.user_id, comment.username, comment.text, int(comment.timestamp.timestamp()) // 30]}), kind
 
 
+def durable_delivery_key(source, account, message_id):
+    if source != "tiktok" or not message_id: return None
+    return digest({"version": "sdk-delivery-v2", "source": source,
+        "account": (account or "").casefold(), "id": message_id})
+
+
 def policy_revision(processor):
     from app.ai.social import bank
     return digest({"version": "stage4a4-safety-v1", "project": processor.project.model_dump(mode="json"),
@@ -88,6 +94,7 @@ class SuggestionStore:
     def __init__(self):
         self.groups = {"playground": OrderedDict(), "live": OrderedDict()}
         self.approvals = {}
+        self.sequence = 0
 
     def register(self, record, comment, processor, runtime_revision, *, session_id=None, target_account=None):
         # Fallback is a conservative 30-second receipt bucket, not a TikTok ID.
@@ -95,6 +102,7 @@ class SuggestionStore:
         now = datetime.now(UTC)
         values = record.suggestion.model_dump(mode="json") | dict(suggestion_id=record.id,
             source=record.source, comment_identity=identity, comment_identity_kind=identity_kind,
+            durable_delivery_key=durable_delivery_key(record.source, target_account, comment.message_id),
             created_at=now.isoformat(), expires_at=(comment.timestamp + timedelta(minutes=5)).isoformat(),
             live_session_id=session_id, target_account=target_account,
             active_runtime_revision=runtime_revision, knowledge_revision=digest(processor.knowledge),
@@ -102,6 +110,10 @@ class SuggestionStore:
         envelope = SuggestionEnvelope.model_validate(values | {"suggestion_revision": "0" * 64})
         envelope = envelope.model_copy(update={"suggestion_revision": digest(envelope.model_dump(mode="json", exclude={"suggestion_revision"}))})
         envelope._monotonic_deadline = comment._received_monotonic + 300
+        envelope._created_monotonic = monotonic()
+        self.sequence += 1
+        envelope._created_sequence = self.sequence
+        envelope._source_message_id = comment.message_id if identity_kind == "sdk_message_id" else None
         group = self.groups["playground" if record.source == "playground" else "live"]
         group[record.id] = envelope
         limit = 100 if record.source == "playground" else 50
@@ -130,6 +142,9 @@ class SuggestionStore:
             **{name: getattr(e, name) for name in ("suggestion_id", "suggestion_revision", "suggested_reply_hash",
                 "live_session_id", "active_runtime_revision", "knowledge_revision", "policy_revision")},
             approved_at=now, translation_review_confirmed=body.translation_review_confirmed)
+        approval._approved_monotonic = monotonic()
+        self.sequence += 1
+        approval._approved_sequence = self.sequence
         self.approvals[suggestion_id] = approval
         return approval
 

@@ -59,8 +59,9 @@ class FakeNative(NativeInput):
     def snapshot(self): return self.current
     def watch(self, target, notify, invalidate):
         watch = FakeWatch(self, notify, invalidate); self.watches.append(watch); return watch
-    def emit(self, events):
+    def emit(self, events, guard):
         if self.before_emit: self.before_emit()
+        if not guard(): raise TargetRejected('guard_failed')
         batch = [(e.kind, e.keyboard.vk, e.keyboard.scan, e.keyboard.flags) for e in events]
         self.batches.append(batch)
         if self.after_emit: self.after_emit()
@@ -280,6 +281,20 @@ def delivery_body(r, key='service_test'):
         approval_id=r.approval.approval_id, idempotency_key=key)
 
 
+async def new_approved(r, message_id='124', *, account='own', session=None, runtime=None):
+    """Real processor/store/approval; private clocks are assigned only by store."""
+    from app.admin.service import record_for
+    from app.delivery.models import ApprovalInput
+    comment = Comment(username='viewer', text='Is it automatic?', message_id=message_id)
+    result = await r.processor.process(comment)
+    e = r.store.register(record_for(comment, result, 'tiktok', 2, uuid4().hex), comment, r.processor,
+        runtime or r.context.active_runtime_revision, session_id=session or r.context.live_session_id, target_account=account)
+    ctx = r.context.model_copy(update={'target_account':account, 'live_session_id':e.live_session_id,
+        'active_runtime_revision':e.active_runtime_revision})
+    a = r.store.approve(e.suggestion_id, ApprovalInput(expected_suggestion_revision=e.suggestion_revision), ctx)
+    return e, a
+
+
 @pytest.fixture
 async def service(suggestion, tmp_path):
     settings = configuration(enable_physical_windows_send=True)
@@ -308,7 +323,8 @@ async def test_reserved_before_fill_and_duplicate_never_typed(service):
 async def test_service_auto_uses_real_approval_and_journal_mode(service):
     s, n, r = service; await arm(s.sender, n)
     s.sender.accepted_target = s.sender.target  # Fake acceptance, never OS.
-    s.sender.set_auto(True)
+    s.set_auto(True)
+    r.e, r.approval = await new_approved(r)
     n.on_enter = lambda: s.observe_comment(echo(s.sender), r.context.live_session_id, 'own')
     s.approved(r.e.suggestion_id)
     await until(lambda: not s.auto_pending)
@@ -365,7 +381,7 @@ def test_native_input_layout_and_partial_return_never_retries():
     calls = []
     def partial(count, array, size): calls.append((count, size)); return count - 1
     native.u = SimpleNamespace(SendInput=partial)
-    with pytest.raises(TargetRejected, match='partial_input'): native.emit(next(unicode_events('x')))
+    with pytest.raises(TargetRejected, match='partial_input'): native.emit(next(unicode_events('x')), lambda: True)
     assert len(calls) == 1
     source = Path('backend/app/windows/native_input.py').read_text()
     for forbidden in ['SetForegroundWindow', 'SetFocus', 'WM_SETTEXT', 'WM_PASTE', 'OpenClipboard', 'SetClipboardData', 'mouse_event', 'VkKeyScan']:
@@ -475,6 +491,7 @@ async def test_explicit_disarm_during_arm_is_disarmed(service):
 def test_windows_startup_configuration_and_strict_bounds(monkeypatch):
     from pydantic import ValidationError
     assert not Settings(_env_file=None).enable_physical_windows_send
+    assert not WindowsSettings().acceptance_one_shot
     monkeypatch.setenv('WINDOWS__MANUAL_FILL_ENABLED','false')
     assert not Settings(_env_file=None).windows.manual_fill_enabled
     for key, value in [('arm_ttl_seconds',0), ('focus_watch_seconds',31), ('verification_seconds',float('nan')),
@@ -516,6 +533,8 @@ async def test_windows_routes_are_identity_only_csrf_and_inert(settings):
                 response = await client.post('/api/admin/windows/' + path, json={'empty_confirmed':True, 'text':'injected', 'hwnd':42})
                 assert response.status_code == 422
             assert (await client.post('/api/admin/windows/auto', json={'enabled':True})).status_code == 409
+            for injected in ['auto_delivery', 'auto_send_eligible', 'auto_epoch_id', 'acceptance_one_shot', 'executable_path', 'process_id', 'broadcaster_user_id', 'enable_physical_windows_send']:
+                assert (await client.post('/api/admin/windows/auto', json={'enabled':True, injected:True})).status_code == 422
             assert app.state.delivery.journal is None
 
 
@@ -577,21 +596,22 @@ async def test_auto_serial_queue_waits_cooldown_before_first_attempt(service):
     from app.delivery.models import ApprovalInput
     s,n,r = service; await arm(s.sender,n)
     s.settings = s.settings.model_copy(update={'windows':s.settings.windows.model_copy(update={'cooldown_seconds':.03})})
-    s.sender.accepted_target = s.sender.target; s.sender.set_auto(True)
+    s.sender.accepted_target = s.sender.target; s.set_auto(True)
+    r.e, r.approval = await new_approved(r)
     count = 2000
     def receipt():
         nonlocal count
         count += 1; s.observe_comment(echo(s.sender, message_id=str(count)), r.context.live_session_id,'own')
     n.on_enter = receipt
-    assert (await s._execute(delivery_body(r),'auto')).status == 'confirmed'
-    comment = Comment(username='viewer2',text='Is it automatic?',message_id='124')
+    assert (await s._execute(delivery_body(r),'auto', auto_epoch_id=s.sender.auto_epoch_id)).status == 'confirmed'
+    comment = Comment(username='viewer2',text='Is it automatic?',message_id='125')
     reply = await r.processor.process(comment)
     e = r.store.register(record_for(comment,reply,'tiktok',2,uuid4().hex),comment,r.processor,
         r.context.active_runtime_revision,session_id=r.context.live_session_id,target_account='own')
     approval = r.store.approve(e.suggestion_id,ApprovalInput(expected_suggestion_revision=e.suggestion_revision),r.context)
     body = ManualDeliveryInput(suggestion_id=e.suggestion_id,expected_suggestion_revision=e.suggestion_revision,
         approval_id=approval.approval_id,idempotency_key='second_auto')
-    assert (await s._execute(body,'auto')).status == 'confirmed' and n.enters == 2
+    assert (await s._execute(body,'auto', auto_epoch_id=s.sender.auto_epoch_id)).status == 'confirmed' and n.enters == 2
 
 
 async def test_journal_failure_blocks_focus_watch_before_arming(service):
@@ -605,7 +625,8 @@ async def test_journal_failure_blocks_focus_watch_before_arming(service):
 
 async def test_full_owned_queue_does_not_leak_auto_pending_identity(service):
     s,n,r = service; await arm(s.sender,n)
-    s.sender.accepted_target = s.sender.target; s.sender.set_auto(True)
+    s.sender.accepted_target = s.sender.target; s.set_auto(True)
+    r.e, r.approval = await new_approved(r)
     blocked = {asyncio.create_task(asyncio.Event().wait()) for _ in range(8)}
     s.tasks.update(blocked)
     s.approved(r.e.suggestion_id)
@@ -632,7 +653,7 @@ const delivery=window.createDeliveryControls({api,node:(_,__,s)=>Object.assign(e
 const record={delivery_review:{approval_state:'approved',approval:{approval_id:'a'.repeat(32)},text_entry_supported:true,
 envelope:{source:'tiktok',status:'ready',suggestion_id:'b'.repeat(32),suggestion_revision:'c'.repeat(64),expires_at:new Date(Date.now()+60000).toISOString(),suggested_reply:'NEVER BROWSER AUTHORITY'}}};
 const send=el(),actions=el();delivery.attach(actions,record,send);
-assert(!send.disabled);assert(actions.children[0].disabled);assert(send.textContent.includes('Fill'));
+assert(!send.disabled);assert(actions.children.find(x=>x.textContent==='Guarded send once').disabled);assert(send.textContent.includes('Fill'));
 await send.listeners.click();const fill=calls.find(c=>c.path.endsWith('/fill'));assert(fill.body.empty_confirmed);
 assert.deepStrictEqual(Object.keys(fill.body.delivery).sort(),['approval_id','expected_suggestion_revision','idempotency_key','suggestion_id']);
 assert(!JSON.stringify(fill.body).includes('NEVER BROWSER AUTHORITY'));

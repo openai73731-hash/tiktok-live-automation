@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from time import monotonic
 import threading
 import unicodedata
+from uuid import uuid4
 from typing import Literal
 from pydantic import Field
 
@@ -25,6 +26,12 @@ class WindowsSenderStatus(FrozenModel):
     armed_age_seconds: int | None = None
     foreground_guard: bool = False
     auto_enabled: bool = False
+    auto_epoch_id: str | None = None
+    auto_epoch_state: Literal['OFF', 'ACTIVE'] = 'OFF'
+    auto_watermark: int | None = None
+    acceptance_one_shot: bool = False
+    acceptance_status: Literal['DISABLED', 'AVAILABLE', 'SPENT'] = 'DISABLED'
+    clock_verification: Literal['stable', 'unstable', 'unavailable'] = 'unavailable'
     composer: Literal['UNKNOWN', 'EMPTY_ATTESTED', 'FILLED_UNVERIFIED'] = 'UNKNOWN'
     verification: Literal['UNAVAILABLE', 'AVAILABLE', 'WEAK', 'VERIFYING', 'VERIFIED', 'TIMEOUT'] = 'UNAVAILABLE'
     last_send_status: Literal['NONE', 'FILLED_ONLY', 'SENT_CONFIRMED', 'SEND_UNKNOWN', 'NOT_SENT'] = 'NONE'
@@ -37,13 +44,16 @@ class WindowsSenderStatus(FrozenModel):
 
 
 class WindowsLiveStudioReplySender:
-    def __init__(self, settings=None, context=None, *, native=None, clock=monotonic):
+    def __init__(self, settings=None, context=None, *, native=None, clock=monotonic, wall_clock=None):
         from app.config import Settings
         self.settings = settings or Settings(_env_file=None)
         self.config = self.settings.windows
         self.context = context or (lambda: None)
         self.native = native or NativeInput(self.config)
         self.clock = clock
+        self.wall_clock = wall_clock or (lambda: datetime.now(UTC))
+        self.clock_anchor = None
+        self.clock_verification = 'unavailable'
         self.state, self.reason = 'DISARMED', 'disarmed'
         self.target = self.watch = self.monitor = None
         self.session = self.runtime = None
@@ -52,6 +62,9 @@ class WindowsLiveStudioReplySender:
         self.composer, self.last_send_status = 'UNKNOWN', 'NONE'
         self.verification = 'AVAILABLE' if self.config.broadcaster_user_id else 'UNAVAILABLE'
         self.auto_enabled = False
+        self.auto_epoch_id = self.auto_enabled_monotonic = None
+        self.auto_watermark = None
+        self.acceptance_spent = False
         self.accepted_target = self.confirmed_target = None
         self.confirmed_at = None
         self.invalid = threading.Event()
@@ -125,6 +138,23 @@ class WindowsLiveStudioReplySender:
             self.invalidate(reason)
             return False
 
+    def final_emission_guard(self):
+        """Last check after authoritative preflight; no I/O follows except input."""
+        task = asyncio.current_task()
+        if task and task.cancelling(): return False
+        if self.invalid.is_set() or not self.check(): return False
+        # snapshot invokes native calls; recheck the cross-thread latch, binding,
+        # cancellation and TTL after them too. OS check->SendInput is not atomic.
+        return (not self.invalid.is_set() and not (task and task.cancelling()) and
+            self._context_ok() and self.armed_at is not None and
+            self.clock() - self.armed_at < self.config.arm_ttl_seconds)
+
+    def clock_stable(self, mono, wall, anchor):
+        # 250 ms permits normal scheduling/sampling jitter, never a seconds jump.
+        if anchor is None: return False
+        delta = mono - anchor[0]
+        return delta >= 0 and abs((wall - anchor[1]).total_seconds() - delta) <= .25
+
     def _event(self, kind, generation=None):
         if generation is not None and generation != self.generation: return
         if kind in {'destroyed', 'failed'}:
@@ -167,6 +197,8 @@ class WindowsLiveStudioReplySender:
                     if self._context_ok() and focused(self.native.snapshot(), self.target):
                         self.invalid.clear()  # Fresh explicit focus, not automatic re-arm.
                         self.armed_at = self.clock(); self.composer = 'EMPTY_ATTESTED'
+                        self.clock_anchor = (self.armed_at, self.wall_clock())
+                        self.clock_verification = 'stable'
                         self.state, self.reason = 'ARMED', 'ready'
                         if not self.check(): break
                         self.monitor = self.own(self._monitor())
@@ -192,6 +224,11 @@ class WindowsLiveStudioReplySender:
         return WindowsSenderStatus(state=self.state, prepare_available=ready and self.config.manual_fill_enabled,
             submit_available=ready and self.settings.enable_physical_windows_send and bool(self.config.broadcaster_user_id),
             armed_age_seconds=age, foreground_guard=valid, auto_enabled=self.auto_enabled, composer=self.composer,
+            auto_epoch_id=self.auto_epoch_id, auto_epoch_state='ACTIVE' if self.auto_enabled else 'OFF',
+            auto_watermark=self.auto_watermark,
+            acceptance_one_shot=self.config.acceptance_one_shot,
+            acceptance_status='DISABLED' if not self.config.acceptance_one_shot else 'SPENT' if self.acceptance_spent else 'AVAILABLE',
+            clock_verification=self.clock_verification,
             verification=self.verification, last_send_status=self.last_send_status, reason=self.reason,
             watch_seconds=self.config.focus_watch_seconds, empty_after_verified_confirmed=self.empty_after_verified_confirmed,
             watch_ready=self.watch_ready, target_process_id=self.target.pid if self.target else None,
@@ -208,6 +245,11 @@ class WindowsLiveStudioReplySender:
         pending = self.pending
         if not pending or session_id != self.session or account != pending['account']: return
         if comment.user_id != self.config.broadcaster_user_id or normalized(comment.text) != pending['text']: return
+        attempt = (pending['mono'], pending['wall'])
+        if (not self.clock_stable(comment._received_monotonic, comment.timestamp, attempt) or
+                not self.clock_stable(self.clock(), self.wall_clock(), attempt)):
+            self.clock_verification = 'unstable'
+            pending['wake'].set(); self.changed(); return
         if not comment.author_handle or comment.server_created_at is None:
             self.verification = 'WEAK'; self.changed(); return
         if comment.author_handle.casefold() != account.casefold(): return
@@ -231,9 +273,15 @@ class WindowsLiveStudioReplySender:
                 return DeliveryResult(status='not_sent', reason='physical_delivery_disabled')
             def guard():
                 nonlocal physical
-                allowed = self.check() and self.preflight(request) and request.live_session_id == self.session
+                allowed = self.preflight(request) and request.live_session_id == self.session
                 if self.operation_mode == 'auto': allowed = allowed and self.auto_enabled and self.empty_after_verified_confirmed
-                if allowed: physical = True
+                allowed = allowed and self.final_emission_guard()
+                if allowed:
+                    physical = True
+                    if self.state == 'SENDING' and self.operation_mode == 'auto' and self.config.acceptance_one_shot:
+                        # Consume before possible native action, even partial/zero.
+                        self.acceptance_spent = True
+                        self.auto_enabled = False
                 return allowed
             try:
                 list(unicode_events(request.text))
@@ -247,8 +295,12 @@ class WindowsLiveStudioReplySender:
                 if not enter: return DeliveryResult(status='not_sent', reason='filled_only')
                 if not guard(): raise TargetRejected('guard_failed')
                 self.state = 'SENDING'
+                attempt_mono, attempt_wall = self.clock(), self.wall_clock()
+                if not self.clock_stable(attempt_mono, attempt_wall, self.clock_anchor):
+                    self.clock_verification = 'unstable'
+                    raise TargetRejected('clock_unstable')
                 self.pending = {'account': request.target_account, 'text': normalized(request.text),
-                    'mono': self.clock(), 'wall': datetime.now(UTC), 'deadline': self.clock() + self.config.verification_seconds,
+                    'mono': attempt_mono, 'wall': attempt_wall, 'deadline': attempt_mono + self.config.verification_seconds,
                     'wake': asyncio.Event(), 'verified': False}
                 self.verification = 'VERIFYING'
                 await self.native.enter(guard)
@@ -269,6 +321,10 @@ class WindowsLiveStudioReplySender:
                 if isinstance(exc, asyncio.CancelledError): raise
                 return DeliveryResult(status='unknown' if physical else 'needs_operator', reason='timeout' if isinstance(exc, TimeoutError) else 'operator_required')
             finally:
+                if self.operation_mode == 'auto' and self.config.acceptance_one_shot and self.acceptance_spent:
+                    # AUTO is OFF immediately at emission. Keep the observer/watch
+                    # only for bounded verification, then revoke all input authority.
+                    self.invalidate('acceptance_complete', operator=True)
                 self.pending = None; self.changed()
 
     def confirm_empty(self):
@@ -279,9 +335,14 @@ class WindowsLiveStudioReplySender:
         if self.target == self.accepted_target: self.composer = 'EMPTY_ATTESTED'
         self.changed()
 
-    def set_auto(self, enabled):
+    def set_auto(self, enabled, *, watermark=None):
         if enabled and (not self._context_ok() or not self.settings.enable_physical_windows_send or not self.config.broadcaster_user_id or not self.empty_after_verified_confirmed):
             raise TargetRejected('auto_unavailable')
+        if enabled and self.config.acceptance_one_shot and self.acceptance_spent:
+            raise TargetRejected('acceptance_spent')
+        if enabled and not self.auto_enabled:
+            self.auto_epoch_id, self.auto_enabled_monotonic = uuid4().hex, self.clock()
+            self.auto_watermark = watermark
         self.auto_enabled = enabled; self.changed()
 
     async def aclose(self):

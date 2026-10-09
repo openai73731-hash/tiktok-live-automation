@@ -103,7 +103,7 @@ class ManualDeliveryService:
         actions = getattr(self.controller, "actions", None)
         if actions is None or not actions.supports(review.envelope.suggested_reply): return False
         try:
-            return not self.journal or not self.journal.has_operation(review.envelope.suggestion_id, review.envelope.comment_identity)
+            return not self.journal or not self.journal.has_envelope_operation(review.envelope)
         except Exception:
             return False
 

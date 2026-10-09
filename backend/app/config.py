@@ -19,6 +19,7 @@ class WindowsSettings(BaseModel):
     process_id: int | None = Field(default=None, gt=0, le=2**31 - 1)
     broadcaster_user_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]{0,18}$")
     manual_fill_enabled: bool = True
+    acceptance_one_shot: bool = False
     arm_ttl_seconds: float = Field(default=600, ge=1, le=1200, allow_inf_nan=False)
     focus_watch_seconds: float = Field(default=15, ge=1, le=30, allow_inf_nan=False)
     verification_seconds: float = Field(default=10, ge=0.1, le=15, allow_inf_nan=False)

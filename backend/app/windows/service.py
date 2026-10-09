@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from app.delivery.coordinator import DeliveryCoordinator
 from app.delivery.journal import SQLiteDeliveryOperationStore, JournalConflict
-from app.delivery.models import DeliveryResult, DryRunView, ManualDeliveryInput
+from app.delivery.models import DeliveryResult, DryRunView, ManualDeliveryInput, AutoDeliveryEligibility
 from app.delivery.service import DeliveryView, ManualDeliveryService
 from app.delivery.suggestions import SuggestionConflict
 from app.windows.sender import WindowsLiveStudioReplySender
@@ -51,7 +51,7 @@ class WindowsManualDeliveryService(ManualDeliveryService):
 
     def can_send(self, review):
         if not review.eligibility.eligible or not self.sender.get_status().prepare_available or self.busy or self.paused: return False
-        try: return not self.journal or not self.journal.has_operation(review.envelope.suggestion_id, review.envelope.comment_identity)
+        try: return not self.journal or not self.journal.has_envelope_operation(review.envelope)
         except Exception: return False
 
     @property
@@ -124,7 +124,7 @@ class WindowsManualDeliveryService(ManualDeliveryService):
         async def run(): return await self._execute(body, 'send_once')
         return await self._owned(run)
 
-    async def _execute(self, body, mode):
+    async def _execute(self, body, mode, *, auto_epoch_id=None):
         async with self.lock:
             self.prepare()
             if self.journal is None: return DeliveryResult(status='needs_operator', reason='journal_unavailable')
@@ -137,28 +137,35 @@ class WindowsManualDeliveryService(ManualDeliveryService):
                     return DeliveryResult(status='not_sent', reason='rejected')
                 return DeliveryResult(status='unknown', reason='interrupted') if previous.status == 'reserved' else DeliveryResult(status=previous.status, reason=previous.reason)
             if self.paused or self.closed: return DeliveryResult(status='needs_operator', reason='delivery_paused')
+            if mode == 'auto' and (auto_epoch_id is None or not self.auto_eligibility(body.suggestion_id, epoch_id=auto_epoch_id).eligible):
+                return DeliveryResult(status='not_sent', reason='rejected')
             if self.cooldown and mode == 'auto':
                 # Waiting before a first attempt is not an input retry. The bounded
                 # owned queue rechecks all live/approval/native guards afterwards.
                 await asyncio.sleep(max(0, self.settings.windows.cooldown_seconds - (monotonic() - self.last_attempt)))
-                if not self.sender.auto_enabled or not self.sender.check():
+                if not self.auto_eligibility(body.suggestion_id, epoch_id=auto_epoch_id).eligible or not self.sender.check():
                     return DeliveryResult(status='not_sent', reason='rejected')
             if self.cooldown: return DeliveryResult(status='not_sent', reason='cooldown')
             self.sender.operation_mode = mode
             coordinator = DeliveryCoordinator(self.suggestions, self.journal, self.sender, self.context)
             self.coordinator = coordinator
-            self.sender.preflight = coordinator.preflight
+            def preflight(request):
+                return coordinator.preflight(request) and (mode != 'auto' or
+                    self.auto_eligibility(request.suggestion_id, epoch_id=auto_epoch_id, operation=True).eligible)
+            self.sender.preflight = preflight
             try:
                 self.last_attempt = monotonic()
                 result = await coordinator.execute(body.suggestion_id, body.approval_id, body.expected_suggestion_revision,
                     body.idempotency_key, timeout=60, mode='AUTO' if mode == 'auto' else 'MANUAL')
                 if result.status in {'unknown', 'needs_operator'}:
-                    self.paused = True; self.sender.invalidate('delivery_unknown')
+                    self.paused = True
+                    self.sender.invalidate('delivery_unknown', operator=self.sender.config.acceptance_one_shot and self.sender.acceptance_spent)
                 return result
             except JournalConflict:
                 return DeliveryResult(status='not_sent', reason='rejected')
             except BaseException:
-                self.sender.invalidate('sender_exception'); raise
+                self.sender.invalidate('sender_exception', operator=self.sender.config.acceptance_one_shot and self.sender.acceptance_spent)
+                raise
             finally:
                 await coordinator.aclose(); self.on_idle()
 
@@ -169,19 +176,53 @@ class WindowsManualDeliveryService(ManualDeliveryService):
     def live_state(self, status):
         if status.state != 'connected' or status.terminal_state is not None: self.sender.invalidate('live_not_connected')
 
+    def set_auto(self, enabled):
+        self.sender.set_auto(enabled, watermark=self.suggestions.sequence)
+
+    def auto_eligibility(self, suggestion_id, *, epoch_id=None, operation=False):
+        """Server-owned authorization. AI's legacy advisory false grants nothing.
+
+        Epoch + server creation/approval clocks are private and cannot be supplied
+        by JSON. Recomputed at enqueue, reservation and every emission preflight.
+        """
+        s = self.sender
+        reason = 'eligible'
+        if self.closed or self.paused: reason = 'delivery_paused'
+        elif s.config.acceptance_one_shot and s.acceptance_spent: reason = 'acceptance_spent'
+        elif not s.auto_enabled: reason = 'auto_off'
+        elif epoch_id is not None and epoch_id != s.auto_epoch_id: reason = 'epoch_mismatch'
+        elif not self.settings.enable_physical_windows_send or not s.config.broadcaster_user_id: reason = 'physical_gate'
+        elif not s.empty_after_verified_confirmed or s.accepted_target != s.target: reason = 'composer_acceptance'
+        else:
+            try:
+                review = self.suggestions.view(suggestion_id, self.context())
+                e, approval = review.envelope, review.approval
+                if not approval: reason = 'approval_required'
+                elif (s.auto_enabled_monotonic is None or e._created_monotonic is None or approval._approved_monotonic is None or
+                      e._created_monotonic < s.auto_enabled_monotonic or approval._approved_monotonic < s.auto_enabled_monotonic or
+                      s.auto_watermark is None or e._created_sequence is None or approval._approved_sequence is None or
+                      e._created_sequence <= s.auto_watermark or approval._approved_sequence <= s.auto_watermark): reason = 'before_epoch'
+                elif not review.eligibility.eligible: reason = 'manual_ineligible'
+                elif e.username.casefold() == (e.target_account or '').casefold(): reason = 'own_comment'
+                elif (s.state not in ({'ARMED', 'FILLING', 'FILLED', 'SENDING'} if operation else {'ARMED'}) or
+                      not self.device_ready(self.context()) or not s._context_ok()): reason = 'not_armed'
+                elif not operation and self.journal and self.journal.has_envelope_operation(e): reason = 'unused_required'
+            except Exception: reason = 'manual_ineligible'
+        return AutoDeliveryEligibility(eligible=reason == 'eligible', reason=reason, epoch_id=s.auto_epoch_id)
+
     def approved(self, suggestion_id):
         if not self.sender.auto_enabled or self.paused or suggestion_id in self.auto_pending or len(self.auto_pending) >= 8: return
         try:
             review = self.suggestions.view(suggestion_id, self.context())
             e = review.envelope
-            if (not review.eligibility.eligible or not review.approval or e.username.casefold() == (e.target_account or '').casefold() or
-                    self.journal and self.journal.has_operation(e.suggestion_id, e.comment_identity)): return
+            if not self.auto_eligibility(suggestion_id).eligible: return
             body = ManualDeliveryInput(suggestion_id=e.suggestion_id, expected_suggestion_revision=e.suggestion_revision,
                 approval_id=review.approval.approval_id, idempotency_key='windows_auto_' + e.suggestion_id)
+            epoch_id = self.sender.auto_epoch_id
         except Exception: return
         self.auto_pending.add(suggestion_id)
         async def run():
-            if self.sender.auto_enabled: await self._execute(body, 'auto')
+            if self.sender.auto_enabled: await self._execute(body, 'auto', auto_epoch_id=epoch_id)
         async def owned_run():
             try:
                 await self._owned(run)

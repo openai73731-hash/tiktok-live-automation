@@ -1,4 +1,4 @@
-# PC-SEND-2: guarded Windows delivery
+# PC-SEND-2A: pre-LIVE hardening of guarded Windows delivery
 
 This is a production-oriented implementation, **not a real-device acceptance claim**.
 All development validation is offline. No real LIVE, Studio click, SendInput or
@@ -14,8 +14,16 @@ The sender receives immutable server text; browser requests contain only suggest
 revision, approval and idempotency identities plus explicit empty-field attestation.
 The existing monotonic expiry, account/session/runtime/knowledge/policy checks run
 after reservation and before **every** Unicode scalar batch and the single Enter.
-AUTO consumes only already approved eligible LIVE suggestions. It does not remove
-mandatory translation review/approval or change `auto_send_eligible=false` in AI output.
+AUTO consumes only new, approved, server-authorized LIVE suggestions in the current
+AUTO epoch. Mandatory translation review/approval remains in force. AI's legacy
+`ReplySuggestion.auto_send_eligible` is an advisory literal false and grants no
+physical authority; AI JSON cannot set it true. The authoritative replacement is
+`SuggestionView.auto_delivery: AutoDeliveryEligibility`, computed by
+`WindowsManualDeliveryService.auto_eligibility` after policy, approval, current LIVE,
+account/runtime, freshness, epoch, unused identity, physical gate, composer acceptance
+and ARM checks. Only this server policy may return eligible=true; no browser mutation
+can supply it. It is rechecked before reservation and each input preflight. Manual
+fill/send-once uses its own existing approval policy and does not require AUTO rights.
 
 The pure target resolver requires one exact configured executable instance (and PID
 when configured), exactly two visible enabled uncloaked `Chrome_WidgetWin_1` roots,
@@ -35,9 +43,16 @@ PID, process start identity, root/renderer and monotonic ARM age form the lease.
 A per-instance Windows named mutex excludes another backend's worker. Event-loop
 locks serialize all delivery; hook threads only latch invalidation and queue events.
 Old watch generations cannot arm a new lease. A 100-ms monitor and fresh native
-checks before each input enforce topology/focus/TTL. The final check and OS input
-cannot be made globally atomic with another application's foreground changes;
-external hooks/latch reduce that race, without claiming an OS-level guarantee.
+checks before each input enforce topology/focus/TTL. Every native emission marshals
+its batch, performs authoritative coordinator/SQLite preflight, then performs the
+FINAL EMISSION GUARD: fresh process/start identity, secondary/renderer, visible/enabled/
+uncloaked topology, foreground/active/focus roots, latch, TTL, session/runtime and
+pending task cancellation. The latch/cancellation are reread after native inspection.
+There is no await or further preflight after this guard before SendInput. Focus loss
+inside SQLite/preflight means zero subsequent physical input, including Enter.
+There is still an unavoidable residual OS race between the last GetForegroundWindow/
+GetGUIThreadInfo check and SendInput: Windows provides no transaction tying these
+operations together. Hooks/latch reduce that race; they do not make it atomic.
 
 `DISARMED → ARMING → ARMED → FILLING → FILLED` for manual Fill.
 Optional Enter continues `SENDING → VERIFYING → ARMED/SENT_CONFIRMED`.
@@ -77,7 +92,14 @@ The installed SDK exposes int64 create_time but does not document its precision 
 The adapter accepts plausible Unix seconds or milliseconds; absent/implausible time
 is unavailable. **A second-resolution timestamp in the same second as the send is
 insufficient evidence and yields UNKNOWN**, even if the operator sees the message.
-No clock rollback or late/replayed event can revive an attempt. Missing UID blocks
+An ARM clock anchor and an attempt bridge each capture monotonic + wall time.
+The attempt is checked against ARM, and receipt/current wall progress against the
+attempt's monotonic progress. Absolute divergence above 250 ms is CLOCK_UNSTABLE:
+no VERIFIED, no correction/retry. This catches jumps before and after Enter, including
+a stale unseen message arriving after rollback. Same-second server timestamps still
+cannot confirm. Stable local clocks do not independently prove server clock alignment
+or cryptographic attribution; ambiguous/missing server evidence remains UNKNOWN.
+Missing UID blocks
 Enter/AUTO; missing handle/time or ambiguous receipt cannot confirm. WEAK/UNAVAILABLE
 is not successful delivery. Strong own echo, not SendInput return, yields confirmed.
 This is stream correlation, not cryptographic attribution: the broadcaster must not
@@ -89,6 +111,35 @@ The fixed ignored journal is `STATE_DIR/windows-delivery.sqlite3`, bounded to 10
 metadata rows, never reply/original text. Manual and AUTO mode are recorded. Shutdown
 owns only this service's tasks/hooks/mutex/coordinator and settles despite repeated
 caller cancellation. Incoming comments never depend on sender readiness.
+
+The history's `comment_identity` remains session-bound. A separate versioned
+`durable_delivery_key` hashes source kind/version + case-folded own account + stable
+SDK msg_id, never the transient session/runtime UUID. A unique SQLite index consumes
+it transactionally before typing. New session/runtime/approval cannot unlock
+filled_only, UNKNOWN, reserved/crashed or confirmed comments. Without a stable SDK ID,
+the existing conservative session-bound receipt fingerprint remains in use; no global
+dedup claim is made. Migration adds a nullable durable-key column without deleting
+rows. For legacy rows, the journal recomputes the old SDK hash using each stored
+session/account and the incoming SDK ID. Matching old reservations remain blocking;
+no source IDs or reply text are persisted by the migration.
+
+AUTO OFF -> ON creates an opaque epoch ID, monotonic activation time and a private
+store sequence watermark. Both suggestion creation and approval must follow that
+watermark; the sequence also handles equal monotonic readings on Windows. Idempotent
+re-approval cannot freshen an old approval. ARM may scan the bounded group, but filters
+all pre-epoch suggestions/approvals. Queued tasks carry their original epoch and are
+rechecked after lock/cooldown waits; OFF -> ON, full reconnect, APPLY or restart never
+transfers old AUTO authority into a new epoch. Internal reconnect invalidates ARM/AUTO
+and does not reset the watermark to admit old work.
+
+`WINDOWS__ACCEPTANCE_ONE_SHOT=true` adds a process-lifetime AUTO Enter budget of one.
+The budget is spent immediately before the first possible AUTO Enter, including
+partial/zero returns. AUTO becomes OFF at that boundary, so no second queued item can
+reserve/type/send. Only the bounded observer/watch remains during VERIFYING; input
+authority is unavailable. On settlement, DISARM occurs regardless of VERIFIED,
+UNKNOWN, error or cancellation. No subsequent ARM, session or AUTO toggle replenishes
+the budget. A backend restart requires fresh manual acceptance and a fresh epoch.
+Default false retains continuous mode with the same new-approval epoch policy.
 
 ## Startup configuration (PowerShell)
 
@@ -102,6 +153,7 @@ $env:WINDOWS__EXECUTABLE_PATH = 'C:/absolute/path/to/TikTok LIVE Studio.exe'
 $env:WINDOWS__PROCESS_ID = '<actual PID>'
 $env:WINDOWS__BROADCASTER_USER_ID = '<verified own numeric UID>'
 $env:WINDOWS__MANUAL_FILL_ENABLED = 'true'
+$env:WINDOWS__ACCEPTANCE_ONE_SHOT = 'false' # Set true BEFORE the single acceptance LIVE.
 $env:WINDOWS__ARM_TTL_SECONDS = '600'
 $env:WINDOWS__FOCUS_WATCH_SECONDS = '15'
 $env:WINDOWS__VERIFICATION_SECONDS = '10'
@@ -124,7 +176,9 @@ same-origin, CSRF and sanitized UI/SSE guards remain in force.
 ## Admin workflow
 
 The Windows panel shows state, instance/PID, armed age, foreground guard, composer,
-last send/verification and Enter gate. **Arm Windows chat** is a standalone focus test.
+last send/verification, clock status (stable/unstable/unavailable), AUTO epoch/watermark,
+one-shot status and Enter gate. Each card shows server-side AUTO eligibility/reason.
+**Arm Windows chat** is a standalone focus test.
 **Disarm** stops the lease and AUTO. For an approved LIVE card, **Fill approved reply**
 queues that immutable identity and starts its own explicit ARM watch. Clicking Admin
 necessarily takes focus away from Studio, so Fill does not reuse an old ARM.
@@ -133,20 +187,21 @@ Fill inserts text only. **Guarded send once** uses the same workflow plus one En
 and bounded echo verification; it requires the startup gate and own UID.
 
 **Confirm empty after VERIFIED** is explicit first-send acceptance. **Auto-send approved
-replies** requires that acceptance and the Enter gate. Toggle ON, then use fresh manual
-ARM and click the empty composer; no automatic re-arm occurs. New approval while
-disarmed cannot type. Switching back to Admin disarms; never click it while expecting
-continuous armed operation. Inspect the result after the bounded verification finishes.
+replies** requires that acceptance and the Enter gate. Toggle ON FIRST, then receive
+and approve a NEW comment, then use fresh manual ARM and click the empty composer.
+Approving while disarmed cannot type; ARM schedules only post-epoch work. No automatic
+re-arm occurs. Switching back to Admin disarms; inspect after bounded verification.
 
 ## One acceptance LIVE, performed only by the operator
 
 Do all three phases in **one own LIVE**; no real discovery probe is needed. Before
 starting, configure the actual executable/PID/UID, choose fake or the existing local
-AI provider, and explicitly set `ENABLE_PHYSICAL_WINDOWS_SEND=true` for phases 2/3.
+AI provider, explicitly set `ENABLE_PHYSICAL_WINDOWS_SEND=true` for phases 2/3 and
+`WINDOWS__ACCEPTANCE_ONE_SHOT=true` BEFORE starting the backend for this LIVE.
 AUTO remains OFF. Connect the listener manually to the same own handle. Keep other
 clients from sending identical text. Ensure no login/security/verification dialog.
-There should be exactly one unused approved reply for each sending phase; do not
-approve a backlog before enabling AUTO. Keep focus in Studio through verification.
+Require one-shot status AVAILABLE. Old approvals cannot enter AUTO. Keep focus in
+Studio through verification and supply only one new test comment in phase 3.
 
 1. **Fill-only:** obtain a LIVE suggestion through the existing pipeline and review/
    approve it. Click **Fill approved reply**, attest the field is empty, wait for READY
@@ -160,12 +215,16 @@ approve a backlog before enabling AUTO. Keep focus in Studio through verificatio
    changing focus, then inspect Admin: require SENT_CONFIRMED / VERIFIED. Inspect that
    the composer cleared, then click **Confirm empty after VERIFIED** within 60 seconds.
    Moving to Admin disarms and does not invalidate the reviewable confirmed evidence.
-3. **One AUTO reply:** one viewer supplies one new test comment in the same LIVE.
-   Existing AI generates the reply; operator reviews both translations and approves
-   it. Enable AUTO, click **Arm Windows chat**, attest empty, wait READY and manually
-   click the composer. Exactly this one unused approved suggestion should fill, Enter
-   once and confirm by own echo. After verification inspect SENT_CONFIRMED / VERIFIED
-   and one AUTO journal row. Turn AUTO OFF / **Disarm**, then disconnect as desired.
+3. **ONE-SHOT AUTO:** enable AUTO while in Admin; verify ACTIVE epoch and AVAILABLE
+   one-shot budget. Only THEN one viewer supplies one new comment in the same LIVE.
+   The existing AI/policy pipeline creates a new suggestion. Review both translations
+   and approve it; server eligibility remains blocked until fresh ARM. Click
+   **Arm Windows chat**, attest empty, wait READY and manually click the composer.
+   The server authorizes only the new approved reply: fill -> at most one Enter ->
+   bounded own-echo verification. AUTO turns OFF immediately at the attempt; after
+   verification inspect SENT_CONFIRMED / VERIFIED, stable clock, SPENT budget,
+   DISARMED state and exactly one AUTO journal row. Disconnect as desired. Do not
+   enable AUTO again or restart to repeat a failed phase.
 
 **Any phase failure, unexpected text/UI, WEAK/UNKNOWN or timeout: STOP / DISARM.**
 Inspect manually; no automatic retry, extra Enter, automated probe or second acceptance
@@ -239,3 +298,88 @@ Paths are repository-relative; this list covers the single PC-SEND-2 commit.
 Primary native API references: [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput), [KEYBDINPUT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-keybdinput), [SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook), [SendMessageTimeout](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw).
 
 - Final full pytest suite: 1371 passed, 1 skipped; final focused sender suite after foreground-event refinement: 68 passed.
+
+## PC-SEND-2A offline hardening evidence
+
+The figures above describe the original PC-SEND-2 commit. PC-SEND-2A adds 28
+regressions in `backend/tests/test_windows_hardening.py`, using the production
+CommentProcessor, SuggestionStore/approval, DeliveryCoordinator, SQLite journal and
+Windows sender together with a fake desktop/input boundary. Real WinDLL loading is
+forbidden. The native encoder/fill/Enter path is shared with production.
+
+Critical integration regressions include:
+
+- `test_focus_loss_inside_real_sql_preflight_blocks_next_emission`: foreground loss
+  inside real journal lookup at ARMED/FILLING/SENDING; zero first Unicode input or
+  zero subsequent Enter, with settlement and no retry.
+- `test_clock_jump_with_stale_unseen_sdk_echo_never_verifies` and
+  `test_clock_bridge_keeps_strong_echo_requirements`: rollback before/after attempt,
+  forward jump, unseen old SDK event, same-second time, missing time and old receipt.
+  `test_stable_clock_bridge_and_explicit_composer_acceptance` covers normal success.
+- `test_old_approved_backlog_never_crosses_auto_epoch_and_arm`,
+  `test_new_epoch_rejects_old_queue_and_old_approvals`, and
+  `test_trusted_auto_decision_is_rechecked_during_production_preflight`: old backlog
+  stays untouched; fresh server-created/approved suggestions can be authorized;
+  stale epochs or revoked server decisions cannot type. AI true is rejected.
+- `test_one_shot_auto_consumes_budget_before_enter_and_leaves_second_unused` and
+  `test_one_shot_cancel_after_enter_never_replenishes_budget`: confirmed/timeout/
+  partial/cancelled attempts consume one budget, disable AUTO and disarm; the second
+  queued suggestion remains unreserved. Acceptance setup itself uses a production
+  manual send + observe + confirm_empty, without directly seeding accepted_target.
+- `test_new_service_runtime_session_same_sdk_comment_remains_consumed`: service
+  shutdown/recreation, new runtime/session, same SDK ID after filled_only/UNKNOWN/
+  reserved, each against both current and migrated legacy SQLite schema.
+  `test_two_real_journal_connections_new_session_keys_race_only_one_types` opens both
+  connections before reservation and verifies one durable consumption/one writer,
+  with no leaked transaction. Account/source separation and weak fallback are covered.
+- `test_epoch_and_watermark_are_published_together` prevents a transient inconsistent
+  SSE projection. API regressions reject browser-supplied eligibility/epoch/one-shot/
+  executable/PID/UID/send-gate fields. Pending cancellation is checked before input.
+
+Final offline results:
+
+| Check | Result |
+| --- | --- |
+| Windows sender + hardening modules (included in tiers/full) | 96 passed |
+| Pre-delivery / Admin / native discovery modules (included in full) | 75 / 51 / 184 passed |
+| Tier A `scripts/test-fast.ps1` | 310 passed, 1 skipped |
+| Tier B `scripts/test-pc.ps1` | 672 passed, 1 skipped |
+| Full `python -m pytest -q` | 1399 passed, 1 skipped |
+| Final Admin/JS check after wording cleanup | 52 passed |
+| `pip check` | No broken requirements |
+| Finite Windows-selected fake CLI | Exit 0; 2 ready, 1 skipped, STOPPED; no send |
+| Secret/runtime scan and `git diff --check` | No findings |
+
+The opt-in real UI test is skipped (`RUN_LIVE_STUDIO_E2E=0`). Physical Windows and
+Android gates are false during validation; true-gate cases exist only with fake native
+boundaries. Two existing SDK/websockets deprecation warnings remain. The default
+Windows SQLite/WAL/SHM path is now ignored alongside the existing runtime paths.
+REAL LIVE NOT RUN. Real SendInput, Chromium AX probe and discovery were not run.
+Additional discovery LIVE required: NO. Real acceptance is still operator-only.
+
+### PC-SEND-2A changed files
+
+- `.env.example`
+- `.gitignore`
+- `README.md`
+- `backend/app/admin/router.py`
+- `backend/app/admin/service.py`
+- `backend/app/ai/models.py`
+- `backend/app/config.py`
+- `backend/app/delivery/coordinator.py`
+- `backend/app/delivery/journal.py`
+- `backend/app/delivery/models.py`
+- `backend/app/delivery/service.py`
+- `backend/app/delivery/suggestions.py`
+- `backend/app/static/admin/app.js`
+- `backend/app/static/admin/delivery.js`
+- `backend/app/static/admin/index.html`
+- `backend/app/windows/native_input.py`
+- `backend/app/windows/sender.py`
+- `backend/app/windows/service.py`
+- `backend/tests/test_predelivery_hardening.py`
+- `backend/tests/test_windows_hardening.py`
+- `backend/tests/test_windows_sender.py`
+- `docs/PC_SEND_2.md`
+- `scripts/test-fast.ps1`
+- `scripts/test-pc.ps1`

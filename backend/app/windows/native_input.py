@@ -153,23 +153,24 @@ class NativeInput:
         clear = not any(self.u.GetAsyncKeyState(key) & 0x8000 for key in (0x10, 0x11, 0x12, 0x5B, 0x5C, 0x0D))
         return DesktopSnapshot(pid, instance, tuple(windows), foreground, active, focus, clear)
 
-    def emit(self, events):
+    def emit(self, events, guard):
         array = (Input * len(events))(*events)
+        # Allocation/preflight precede the final native guard. No await or other
+        # work belongs between that guard and this single, non-retrying call.
+        if not guard(): raise TargetRejected("guard_failed")
         if self.u.SendInput(len(events), array, C.sizeof(Input)) != len(events): raise TargetRejected("partial_input")
 
     async def fill(self, text, guard):
         batches = list(unicode_events(text))  # Validate the entire text before input.
         for batch in batches:
-            if not guard(): raise TargetRejected("guard_failed")
-            self.emit(batch)
+            self.emit(batch, guard)
             await asyncio.sleep(0)
 
     async def enter(self, guard):
-        if not guard(): raise TargetRejected("guard_failed")
         events = []
         for flag in (0, 2):
             event = Input(kind=1); event.keyboard = Keyboard(0x0D, 0, flag, 0, 0); events.append(event)
-        self.emit(events)  # Single activation, no retry even on partial/zero return.
+        self.emit(events, guard)  # Single activation, no retry on partial/zero return.
 
     def watch(self, target, notify, invalidate):
         self._load()

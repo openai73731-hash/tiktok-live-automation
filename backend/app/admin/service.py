@@ -159,6 +159,7 @@ class AdminService:
     def review_view(self, suggestion_id):
         review = self.suggestions.view(suggestion_id, self.delivery_context())
         return review.model_copy(update={"physical_send_allowed": bool(self.delivery and self.delivery.can_send(review)),
+            "auto_delivery": self.delivery.auto_eligibility(suggestion_id) if self.delivery and hasattr(self.delivery, 'auto_eligibility') else None,
             "text_entry_supported": bool(self.delivery and self.delivery.text_supported(review.envelope.suggested_reply))})
 
     def begin_live_session(self, session_id):

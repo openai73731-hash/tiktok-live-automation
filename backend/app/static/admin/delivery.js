@@ -8,10 +8,13 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     const windows = next.transport === "windows_live_studio";
     $("device-panel-title").textContent = windows ? "Windows LIVE Studio" : "Android / TikTok UI";
     $("device-panel-note").textContent = windows
-      ? "PC-SEND-2 · оператор сам фокусирует пустой composer. Fill вводит текст; Guarded send once отдельно нажимает Enter и ждёт собственный echo."
+      ? "PC-SEND-2A · оператор сам фокусирует пустой composer. AUTO принимает только новые комментарии и approvals после включения epoch."
       : "Явная проверка и capture не запускают LIVE/AI, не вводят текст и не отправляют сообщения.";
     $("android-settings").hidden = windows;
     $("windows-panel").hidden = !windows;
+    $("manual-mode-panel").hidden = windows;
+    $("legacy-delivery-settings").hidden = windows;
+    $("dash-delivery-mode").textContent = windows && next.windows_sender?.auto_enabled ? "AUTO · operator approved" : "MANUAL";
     $("android-capture-note").hidden = windows;
     ["inspect-device", "capture-device", "verify-account", "confirm-send"].forEach((id) => {
       $(id).hidden = windows;
@@ -24,6 +27,8 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       ["Target instance", w.target_instance],
       ["Armed age (s)", w.armed_age_seconds], ["Foreground guard", w.foreground_guard ? "OK" : "FAIL"],
       ["Composer", w.composer], ["Last send", w.last_send_status], ["Verification", w.verification],
+      ["Clock verification", w.clock_verification], ["AUTO epoch state", w.auto_epoch_state],
+      ["AUTO epoch", w.auto_epoch_id], ["Approval watermark", w.auto_watermark], ["One-shot acceptance", w.acceptance_status],
       ["Physical Enter gate", next.physical_delivery_enabled ? "ON" : "OFF"], ["Reason", w.reason],
       ["Delivery", next.delivery]] : [["ADB", d.adb], ["Device", d.device], ["Serial", d.serial],
       ["Client", ({TIKTOK_YOU: "TikTok You · observed hint", OFFICIAL: "Official profile · локально reviewed", UNKNOWN: "UNKNOWN"}[d.client_variant] || "UNKNOWN")],
@@ -46,7 +51,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       $("windows-disarm").disabled = !state.connected;
       $("windows-accept-empty").disabled = !state.connected || w.last_send_status !== "SENT_CONFIRMED";
       $("windows-auto").checked = Boolean(w.auto_enabled);
-      $("windows-auto").disabled = !state.connected || !next.physical_delivery_enabled || !w.empty_after_verified_confirmed;
+      $("windows-auto").disabled = !state.connected || !next.physical_delivery_enabled || !w.empty_after_verified_confirmed || w.acceptance_status === "SPENT";
       refreshCards(); return;
     }
     const select = $("operator-device"), selected = select.value;
@@ -133,6 +138,8 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     const live = e?.source === "tiktok";
     const allowed = Boolean(approved && live && e.status === "ready");
     if (view?.transport === "windows_live_studio") {
+      const auto = review?.auto_delivery;
+      actions.append(node("span", "badge neutral", `Server AUTO: ${auto?.eligible ? "ELIGIBLE" : "BLOCKED"} · ${auto?.reason || "unavailable"}`));
       send.textContent = "Fill approved reply";
       send.disabled = !allowed || !review?.text_entry_supported || view.busy || busy || !state.connected || Date.now() >= Date.parse(e?.expires_at);
       const once = node("button", "button secondary-button", "Guarded send once");

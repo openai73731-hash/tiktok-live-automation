@@ -81,7 +81,7 @@ async def accept_windows_empty(request: Request, body: WindowsArmInput):
 async def windows_auto(request: Request, body: WindowsAutoInput):
     service = windows_service(request)
     try:
-        service.sender.set_auto(body.enabled)
+        service.set_auto(body.enabled)
         return service.view()
     except TargetRejected: raise HTTPException(409, detail="Windows AUTO requires the startup gate, own identity and verified empty-composer acceptance.") from None
 

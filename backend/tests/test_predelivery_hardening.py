@@ -547,7 +547,7 @@ async def test_journal_capacity_and_conflicting_key_fail_closed(suggestion, tmp_
     sender = SimpleNamespace(send=AsyncMock(return_value=DeliveryResult(status="confirmed", reason="mock_confirmed")))
     service = coordinator(rig, journal, sender)
     await execute(rig, service)
-    new = rehash(rig.e, suggestion_id=uuid4().hex, comment_identity="9" * 64)
+    new = rehash(rig.e, suggestion_id=uuid4().hex, comment_identity="9" * 64, durable_delivery_key="8" * 64)
     rig.store.groups["live"][new.suggestion_id] = new
     approval = rig.store.approve(new.suggestion_id, ApprovalInput(expected_suggestion_revision=new.suggestion_revision), rig.context)
     with pytest.raises(JournalConflict, match="binding conflict"):

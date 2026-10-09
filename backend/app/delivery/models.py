@@ -18,11 +18,15 @@ class FrozenModel(BaseModel):
 class SuggestionEnvelope(ReplySuggestion):
     # Absent on a deserialized envelope: only the server store grants lifetime.
     _monotonic_deadline: float | None = PrivateAttr(default=None)
+    _created_monotonic: float | None = PrivateAttr(default=None)
+    _created_sequence: int | None = PrivateAttr(default=None)
+    _source_message_id: str | None = PrivateAttr(default=None)
     suggestion_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     suggestion_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     source: Literal["tiktok", "fake", "replay", "playground"]
     comment_identity: str = Field(pattern=r"^[a-f0-9]{64}$")
     comment_identity_kind: Literal["sdk_message_id", "fingerprint"]
+    durable_delivery_key: Revision | None = None
     created_at: AwareDatetime
     expires_at: AwareDatetime
     live_session_id: OpaqueId | None
@@ -39,6 +43,8 @@ class ApprovalInput(FrozenModel):
 
 
 class Approval(FrozenModel):
+    _approved_monotonic: float | None = PrivateAttr(default=None)
+    _approved_sequence: int | None = PrivateAttr(default=None)
     approval_id: OpaqueId
     suggestion_id: OpaqueId
     suggestion_revision: Revision
@@ -87,6 +93,16 @@ class SuggestionView(FrozenModel):
     delivery: Literal["NOT CONFIGURED"] = "NOT CONFIGURED"
     physical_send_allowed: bool = False
     text_entry_supported: bool = False
+    auto_delivery: "AutoDeliveryEligibility | None" = None
+
+
+class AutoDeliveryEligibility(FrozenModel):
+    """Trusted delivery policy, never parsed from AI output or browser input."""
+    eligible: bool = False
+    reason: Literal["eligible", "auto_off", "epoch_mismatch", "before_epoch", "approval_required",
+        "manual_ineligible", "own_comment", "unused_required", "physical_gate", "not_armed",
+        "composer_acceptance", "acceptance_spent", "delivery_paused"] = "auto_off"
+    epoch_id: OpaqueId | None = None
 
 
 class ApprovalEvent(FrozenModel):
@@ -114,6 +130,9 @@ class DeliveryRequest(FrozenModel):
     suggestion_id: OpaqueId
     suggestion_revision: Revision
     comment_identity: Revision
+    durable_delivery_key: Revision | None = None
+    source_kind: Literal["tiktok", "fake", "replay", "playground"] | None = None
+    source_message_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]{0,18}$")
     approval_id: OpaqueId
     suggested_reply_hash: Revision
     text: str = Field(min_length=1, max_length=400)
