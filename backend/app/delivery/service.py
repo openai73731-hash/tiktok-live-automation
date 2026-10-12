@@ -25,6 +25,7 @@ class DeliveryView(FrozenModel):
     account_label: str = ""
     windows_status: Literal["probe_required", "operator_arm_required"] | None = None
     windows_sender: WindowsSenderStatus | None = None
+    delivery_uncertain: bool = False
     inspection: DeviceInspection | None = None
     physical_delivery_enabled: bool
     physical_ready: bool

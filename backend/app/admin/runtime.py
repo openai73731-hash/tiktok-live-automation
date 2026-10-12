@@ -7,7 +7,7 @@ from app.admin.models import AIStatus, OperatorView
 from app.admin.operator_config import LocalConfigError, OperatorOverlay, OperatorStore, TikTokOverride
 from app.ai.factory import create_processor
 from app.ai.knowledge import ProjectConfig, load_yaml_model
-from app.live.models import LiveState, LiveStatus
+from app.live.models import IngestionLedger, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
 from app.lifecycle import finish_owned
 from app.quality.service import QualityService
@@ -36,17 +36,26 @@ class AdminLiveController:
         app.state.comment_processor = self.processor
         self.runtime.admin.live_service = self.service
 
-    async def connect(self, username, *, startup=False):
+    async def connect(self, username, *, startup=False, expected_active_runtime_revision=None):
         async with self.runtime.lock:
             username = TikTokOverride(username=username).username
             if not username:
                 raise ValueError("Own TikTok username required")
+            if self.runtime.settings.tiktok_transport == 'windows_live_studio':
+                if not startup and expected_active_runtime_revision != self.runtime.active_runtime_revision:
+                    raise RuntimeConflict('Runtime изменился. Обновите панель перед CONNECT.')
+                configured = TikTokOverride(username=self.runtime.settings.tiktok_username).username.casefold()
+                applied = TikTokOverride(username=self.runtime.username).username.casefold()
+                if not configured or applied != configured or username.casefold() != configured:
+                    raise RuntimeConflict('Windows CONNECT разрешён только для configured own account.')
+                username = configured
             reason = self.runtime.connect_block_reason(username, startup=startup)
             if reason: raise RuntimeConflict(reason)
             config = self.runtime.settings.model_copy(update={"tiktok_username": username,
                 **({} if startup else {"live_mode": "real", "diagnostic": False, "replay_scenario": None})})
             processor = create_processor(config, project=self.runtime.project)
             session_id = uuid4().hex
+            runtime_revision = self.runtime.active_runtime_revision
             async def handle(comment):
                 if self.session_id != session_id:
                     return None
@@ -60,6 +69,7 @@ class AdminLiveController:
                 def receipt(comment):
                     delivery = self.runtime.admin.delivery
                     if self.session_id == session_id and hasattr(delivery, "observe_comment"):
+                        self.runtime.ingestion.bind(comment, username, session_id, runtime_revision, config.windows.broadcaster_user_id)
                         delivery.observe_comment(comment, session_id, username)
                 service.on_receipt = receipt
             except BaseException:
@@ -155,6 +165,7 @@ class OperatorRuntime:
         self.saved_config_revision = uuid4().hex
         self.active_runtime_revision = uuid4().hex
         self.live = AdminLiveController(self, factory)
+        self.ingestion = IngestionLedger()
 
     @property
     def pending(self):
@@ -181,6 +192,11 @@ class OperatorRuntime:
     def connect_block_reason(self, username=None, *, startup=False):
         # Listener input is independent of Android readiness/client/profile.
         if self.closed: return "Панель завершает работу."
+        if self.settings.tiktok_transport == 'windows_live_studio':
+            configured = TikTokOverride(username=self.settings.tiktok_username).username.casefold()
+            applied = TikTokOverride(username=self.username).username.casefold()
+            if not configured or applied != configured:
+                return 'Windows own account должен совпадать с trusted startup configuration.'
         reason = self.lock_reason()
         if reason: return reason
         if self.config_error: return "Исправьте или сбросьте локальные настройки перед подключением."

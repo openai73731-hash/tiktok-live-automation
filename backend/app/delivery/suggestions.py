@@ -95,6 +95,7 @@ class SuggestionStore:
         self.groups = {"playground": OrderedDict(), "live": OrderedDict()}
         self.approvals = {}
         self.sequence = 0
+        self.auto_registration_epoch = lambda envelope: None
 
     def register(self, record, comment, processor, runtime_revision, *, session_id=None, target_account=None):
         # Fallback is a conservative 30-second receipt bucket, not a TikTok ID.
@@ -114,6 +115,14 @@ class SuggestionStore:
         self.sequence += 1
         envelope._created_sequence = self.sequence
         envelope._source_message_id = comment.message_id if identity_kind == "sdk_message_id" else None
+        receipt = comment._ingestion_receipt
+        if (receipt and record.source == 'tiktok' and receipt.account == target_account and
+                receipt.session_id == session_id and receipt.runtime_revision == runtime_revision and
+                receipt.message_id == envelope._source_message_id):
+            envelope._ingestion_receipt = receipt
+        # Admission is evaluated at registration too; a later epoch cannot admit
+        # an earlier suggestion, regardless of approval or AI completion timing.
+        envelope._registered_auto_epoch_id = self.auto_registration_epoch(envelope)
         group = self.groups["playground" if record.source == "playground" else "live"]
         group[record.id] = envelope
         limit = 100 if record.source == "playground" else 50

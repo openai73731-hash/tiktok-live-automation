@@ -128,6 +128,8 @@ class AdminService:
         self.runtime = None
         self.delivery = None
         self.suggestions = SuggestionStore()
+        from app.windows.preparation import StartupPreparation
+        self.preparation = StartupPreparation(settings)
         playground.register_record = self.register_record
 
     def delivery_context(self):
@@ -159,6 +161,7 @@ class AdminService:
     def review_view(self, suggestion_id):
         review = self.suggestions.view(suggestion_id, self.delivery_context())
         return review.model_copy(update={"physical_send_allowed": bool(self.delivery and self.delivery.can_send(review)),
+            "consumed": bool(self.delivery and hasattr(self.delivery, 'consumed') and self.delivery.consumed(review.envelope)),
             "auto_delivery": self.delivery.auto_eligibility(suggestion_id) if self.delivery and hasattr(self.delivery, 'auto_eligibility') else None,
             "text_entry_supported": bool(self.delivery and self.delivery.text_supported(review.envelope.suggested_reply))})
 
@@ -203,6 +206,7 @@ class AdminService:
 
     def status(self) -> AdminStatus:
         return AdminStatus(started_at=self.started_at, uptime_seconds=int(perf_counter() - self.started),
+                           preparation=self.preparation.view(),
                            live=self.live_view(), ai=self.ai_status, metrics=self.metrics,
                            playground_processed=self.playground.processed,
                            reply_policy=self.playground.processor.project.ai.reply_policy,

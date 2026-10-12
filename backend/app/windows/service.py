@@ -2,6 +2,8 @@
 import asyncio
 from time import monotonic
 from uuid import uuid4
+from contextlib import contextmanager
+import sqlite3
 
 from app.delivery.coordinator import DeliveryCoordinator
 from app.delivery.journal import SQLiteDeliveryOperationStore, JournalConflict
@@ -28,6 +30,8 @@ class WindowsManualDeliveryService(ManualDeliveryService):
         self.journal_factory = journal_factory or (lambda: SQLiteDeliveryOperationStore(settings.state_dir / 'windows-delivery.sqlite3'))
         self.last_attempt = float('-inf')
         self.auto_pending = set()
+        if suggestions is not None:
+            suggestions.auto_registration_epoch = self.registration_epoch
 
     @property
     def configured(self): return self.settings.windows.executable_path is not None
@@ -51,8 +55,37 @@ class WindowsManualDeliveryService(ManualDeliveryService):
 
     def can_send(self, review):
         if not review.eligibility.eligible or not self.sender.get_status().prepare_available or self.busy or self.paused: return False
-        try: return not self.journal or not self.journal.has_envelope_operation(review.envelope)
-        except Exception: return False
+        return not self.consumed(review.envelope)
+
+    @contextmanager
+    def read_journal(self):
+        """GET never creates/migrates a DB. Existing durable results survive UI refresh/restart."""
+        if self.journal is not None:
+            yield self.journal
+            return
+        path = self.settings.state_dir / 'windows-delivery.sqlite3'
+        if not path.exists():
+            yield None
+            return
+        reader = SQLiteDeliveryOperationStore.__new__(SQLiteDeliveryOperationStore)
+        reader.connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=.1)
+        reader.connection.row_factory = sqlite3.Row
+        try: yield reader
+        finally: reader.connection.close()
+
+    def consumed(self, envelope):
+        try:
+            with self.read_journal() as journal:
+                return bool(journal and journal.has_envelope_operation(envelope))
+        except Exception: return True
+
+    def uncertain(self):
+        if self.sender.last_send_status == 'SEND_UNKNOWN': return True
+        try:
+            with self.read_journal() as journal:
+                owned = self.coordinator.operation_id if self.coordinator and not self.coordinator.closed and self.lock.locked() else None
+                return bool(journal and journal.unresolved(excluding=owned))
+        except Exception: return True
 
     @property
     def cooldown(self): return monotonic() - self.last_attempt < self.settings.windows.cooldown_seconds
@@ -63,6 +96,7 @@ class WindowsManualDeliveryService(ManualDeliveryService):
         return DeliveryView(transport='windows_live_studio', instance_id=self.settings.instance_id,
             account_label=self.settings.account_label, windows_status='operator_arm_required' if self.configured else 'probe_required',
             windows_sender=status, physical_delivery_enabled=self.settings.enable_physical_windows_send,
+            delivery_uncertain=self.uncertain(),
             physical_ready=ready, delivery='FILL READY' if ready else 'NOT READY', paused=self.paused, busy=self.busy,
             reason='delivery_paused' if self.paused or self.closed else 'not_configured' if not self.configured else 'cooldown' if self.cooldown else 'ready' if ready else 'device_unavailable')
 
@@ -159,12 +193,14 @@ class WindowsManualDeliveryService(ManualDeliveryService):
                     body.idempotency_key, timeout=60, mode='AUTO' if mode == 'auto' else 'MANUAL')
                 if result.status in {'unknown', 'needs_operator'}:
                     self.paused = True
-                    self.sender.invalidate('delivery_unknown', operator=self.sender.config.acceptance_one_shot and self.sender.acceptance_spent)
+                    self.sender.invalidate('delivery_unknown', operator=self.sender.clock_verification == 'unstable' or
+                        self.sender.config.acceptance_one_shot and self.sender.acceptance_spent)
                 return result
             except JournalConflict:
                 return DeliveryResult(status='not_sent', reason='rejected')
             except BaseException:
-                self.sender.invalidate('sender_exception', operator=self.sender.config.acceptance_one_shot and self.sender.acceptance_spent)
+                self.sender.invalidate('sender_exception', operator=self.sender.clock_verification == 'unstable' or
+                    self.sender.config.acceptance_one_shot and self.sender.acceptance_spent)
                 raise
             finally:
                 await coordinator.aclose(); self.on_idle()
@@ -178,6 +214,20 @@ class WindowsManualDeliveryService(ManualDeliveryService):
 
     def set_auto(self, enabled):
         self.sender.set_auto(enabled, watermark=self.suggestions.sequence)
+
+    def receipt_after_epoch(self, envelope):
+        s, r = self.sender, envelope._ingestion_receipt
+        ctx = self.context()
+        return bool(r and ctx and s.auto_enabled_monotonic is not None and s.ingestion_watermark is not None and
+            r.monotonic >= s.auto_enabled_monotonic and r.sequence > s.ingestion_watermark and
+            r.account == envelope.target_account == ctx.target_account and
+            r.session_id == envelope.live_session_id == ctx.live_session_id and
+            r.runtime_revision == envelope.active_runtime_revision == ctx.active_runtime_revision and
+            r.message_id and r.message_id == envelope._source_message_id and
+            r.broadcaster_user_id == s.config.broadcaster_user_id)
+
+    def registration_epoch(self, envelope):
+        return self.sender.auto_epoch_id if self.sender.auto_enabled and self.receipt_after_epoch(envelope) else None
 
     def auto_eligibility(self, suggestion_id, *, epoch_id=None, operation=False):
         """Server-owned authorization. AI's legacy advisory false grants nothing.
@@ -198,7 +248,8 @@ class WindowsManualDeliveryService(ManualDeliveryService):
                 review = self.suggestions.view(suggestion_id, self.context())
                 e, approval = review.envelope, review.approval
                 if not approval: reason = 'approval_required'
-                elif (s.auto_enabled_monotonic is None or e._created_monotonic is None or approval._approved_monotonic is None or
+                elif (e._registered_auto_epoch_id != s.auto_epoch_id or not self.receipt_after_epoch(e) or
+                      s.auto_enabled_monotonic is None or e._created_monotonic is None or approval._approved_monotonic is None or
                       e._created_monotonic < s.auto_enabled_monotonic or approval._approved_monotonic < s.auto_enabled_monotonic or
                       s.auto_watermark is None or e._created_sequence is None or approval._approved_sequence is None or
                       e._created_sequence <= s.auto_watermark or approval._approved_sequence <= s.auto_watermark): reason = 'before_epoch'
@@ -206,7 +257,7 @@ class WindowsManualDeliveryService(ManualDeliveryService):
                 elif e.username.casefold() == (e.target_account or '').casefold(): reason = 'own_comment'
                 elif (s.state not in ({'ARMED', 'FILLING', 'FILLED', 'SENDING'} if operation else {'ARMED'}) or
                       not self.device_ready(self.context()) or not s._context_ok()): reason = 'not_armed'
-                elif not operation and self.journal and self.journal.has_envelope_operation(e): reason = 'unused_required'
+                elif not operation and self.consumed(e): reason = 'unused_required'
             except Exception: reason = 'manual_ineligible'
         return AutoDeliveryEligibility(eligible=reason == 'eligible', reason=reason, epoch_id=s.auto_epoch_id)
 
@@ -234,12 +285,12 @@ class WindowsManualDeliveryService(ManualDeliveryService):
             for e in tuple(self.suggestions.groups['live'].values()): self.approved(e.suggestion_id)
 
     def recent(self):
-        if self.journal is None: return ()
         from app.delivery.service import DeliveryHistoryEntry
         try:
-            return tuple(DeliveryHistoryEntry(operation_id=o.operation_id, suggestion_id=o.suggestion_id, time=o.created_at,
-                username=o.target_account, device=None, result='unknown' if o.status == 'reserved' else o.status,
-                reason='interrupted' if o.status == 'reserved' else o.reason, mode=o.mode) for o in self.journal.recent())
+            with self.read_journal() as journal:
+                return tuple(DeliveryHistoryEntry(operation_id=o.operation_id, suggestion_id=o.suggestion_id, time=o.created_at,
+                    username=o.target_account, device=None, result='unknown' if o.status == 'reserved' else o.status,
+                    reason='interrupted' if o.status == 'reserved' else o.reason, mode=o.mode) for o in journal.recent()) if journal else ()
         except Exception:
             self.paused = True; return ()
 

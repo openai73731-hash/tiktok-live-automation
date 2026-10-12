@@ -252,7 +252,7 @@ async def test_untrusted_stale_or_duplicate_echo_never_confirms(rig, bad):
         s.observe(c, 'other' if bad == 'session' else s.session, 'other' if bad == 'account' else 'own')
     n.on_enter = emit
     assert (await s.send(request())).status == 'unknown'
-    assert s.state == 'NEED_OPERATOR' and s.composer == 'UNKNOWN' and n.enters == 1
+    assert s.state == ('DISARMED' if s.clock_verification == 'unstable' else 'NEED_OPERATOR') and s.composer == 'UNKNOWN' and n.enters == 1
     if bad in {'handle_missing','server_missing'}: assert s.verification == 'WEAK'
     assert not s.auto_enabled and (await s.send(request())).status == 'needs_operator'
     assert n.enters == 1
@@ -286,6 +286,8 @@ async def new_approved(r, message_id='124', *, account='own', session=None, runt
     from app.admin.service import record_for
     from app.delivery.models import ApprovalInput
     comment = Comment(username='viewer', text='Is it automatic?', message_id=message_id)
+    comment.bind_ingestion(account, session or r.context.live_session_id,
+        runtime or r.context.active_runtime_revision, '123')
     result = await r.processor.process(comment)
     e = r.store.register(record_for(comment, result, 'tiktok', 2, uuid4().hex), comment, r.processor,
         runtime or r.context.active_runtime_revision, session_id=session or r.context.live_session_id, target_account=account)
@@ -605,6 +607,7 @@ async def test_auto_serial_queue_waits_cooldown_before_first_attempt(service):
     n.on_enter = receipt
     assert (await s._execute(delivery_body(r),'auto', auto_epoch_id=s.sender.auto_epoch_id)).status == 'confirmed'
     comment = Comment(username='viewer2',text='Is it automatic?',message_id='125')
+    comment.bind_ingestion('own', r.context.live_session_id, r.context.active_runtime_revision, '123')
     reply = await r.processor.process(comment)
     e = r.store.register(record_for(comment,reply,'tiktok',2,uuid4().hex),comment,r.processor,
         r.context.active_runtime_revision,session_id=r.context.live_session_id,target_account='own')

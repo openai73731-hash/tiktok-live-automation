@@ -5,6 +5,7 @@ from app.android.models import DeviceInspection, AndroidOutcome
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, PrivateAttr
 
 from app.ai.models import ReplySuggestion
+from app.live.models import IngestionReceipt
 
 OpaqueId = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
 Revision = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -21,6 +22,8 @@ class SuggestionEnvelope(ReplySuggestion):
     _created_monotonic: float | None = PrivateAttr(default=None)
     _created_sequence: int | None = PrivateAttr(default=None)
     _source_message_id: str | None = PrivateAttr(default=None)
+    _ingestion_receipt: IngestionReceipt | None = PrivateAttr(default=None)
+    _registered_auto_epoch_id: str | None = PrivateAttr(default=None)
     suggestion_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     suggestion_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     source: Literal["tiktok", "fake", "replay", "playground"]
@@ -94,6 +97,7 @@ class SuggestionView(FrozenModel):
     physical_send_allowed: bool = False
     text_entry_supported: bool = False
     auto_delivery: "AutoDeliveryEligibility | None" = None
+    consumed: bool = False
 
 
 class AutoDeliveryEligibility(FrozenModel):

@@ -101,7 +101,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
   $("operator-reset").addEventListener("click", () => action("/api/admin/operator/reset", {expected_saved_revision: view.saved_config_revision}));
   document.querySelectorAll("[data-live-action]").forEach((button) => button.addEventListener("click", () => {
     action("/api/admin/live/" + button.dataset.liveAction,
-      button.dataset.liveAction === "connect" ? {username: value("username")} : {expected_live_session_id: state.status.live.live_session_id});
+      button.dataset.liveAction === "connect" ? {username: value("username"), expected_active_runtime_revision: view.active_runtime_revision} : {expected_live_session_id: state.status.live.live_session_id});
   }));
   return {render, controls};
 };

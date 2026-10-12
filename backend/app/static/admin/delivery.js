@@ -8,7 +8,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     const windows = next.transport === "windows_live_studio";
     $("device-panel-title").textContent = windows ? "Windows LIVE Studio" : "Android / TikTok UI";
     $("device-panel-note").textContent = windows
-      ? "PC-SEND-2A · оператор сам фокусирует пустой composer. AUTO принимает только новые комментарии и approvals после включения epoch."
+      ? "PC-SEND-2B · оператор сам фокусирует пустой composer. AUTO принимает только новые receipts и approvals после включения epoch."
       : "Явная проверка и capture не запускают LIVE/AI, не вводят текст и не отправляют сообщения.";
     $("android-settings").hidden = windows;
     $("windows-panel").hidden = !windows;
@@ -26,7 +26,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       ["Stage", w.stage], ["State", w.state], ["Target PID", w.target_process_id],
       ["Target instance", w.target_instance],
       ["Armed age (s)", w.armed_age_seconds], ["Foreground guard", w.foreground_guard ? "OK" : "FAIL"],
-      ["Composer", w.composer], ["Last send", w.last_send_status], ["Verification", w.verification],
+      ["Composer", w.composer], ["Last send", w.last_send_status], ["Verification", w.clock_verification === "unstable" ? "UNAVAILABLE" : w.verification],
       ["Clock verification", w.clock_verification], ["AUTO epoch state", w.auto_epoch_state],
       ["AUTO epoch", w.auto_epoch_id], ["Approval watermark", w.auto_watermark], ["One-shot acceptance", w.acceptance_status],
       ["Physical Enter gate", next.physical_delivery_enabled ? "ON" : "OFF"], ["Reason", w.reason],
@@ -44,12 +44,15 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       const row = node("div"); row.append(node("dt", "", label), node("dd", "mono", String(value ?? "—"))); return row;
     }));
     if (windows) {
+      $("windows-unknown").hidden = !next.delivery_uncertain;
       $("windows-instruction").textContent = w.state === "ARMING"
-        ? w.watch_ready ? `Click the TikTok LIVE Studio comment field within ${w.watch_seconds} seconds. Ensure it is empty. Focus watch READY.` : "Preparing focus watch…"
-        : "Ensure the comment field is empty before arming. Focus loss disarms; UNKNOWN forbids retry.";
+        ? w.watch_ready ? `ARM READY — CLICK COMPOSER NOW · ${w.watch_seconds} seconds · ensure it is empty.` : "WAITING FOR COMPOSER FOCUS · preparing watch…"
+        : w.state === "ARMED" ? "COMPOSER ARMED · focus must remain in Studio."
+        : "WAITING FOR COMPOSER FOCUS · confirm empty, ARM, then click the Studio composer.";
+      $("windows-instruction").className = "focus-instruction";
       $("windows-arm").disabled = busy || next.busy || !state.connected;
       $("windows-disarm").disabled = !state.connected;
-      $("windows-accept-empty").disabled = !state.connected || w.last_send_status !== "SENT_CONFIRMED";
+      $("windows-accept-empty").disabled = !state.connected || w.last_send_status !== "SENT_CONFIRMED" || w.clock_verification === "unstable";
       $("windows-auto").checked = Boolean(w.auto_enabled);
       $("windows-auto").disabled = !state.connected || !next.physical_delivery_enabled || !w.empty_after_verified_confirmed || w.acceptance_status === "SPENT";
       refreshCards(); return;
@@ -72,7 +75,8 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     refreshCards();
   }
   async function windowsAction(path, payload) {
-    try { render(await api(`/api/admin/windows/${path}`, payload)); }
+    ++version;
+    try { render(await api(`/api/admin/windows/${path}`, payload)); await refresh(); }
     catch (error) { toast(error.message); }
   }
   $("windows-arm").addEventListener("click", () => {
@@ -136,9 +140,10 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     const review = record.delivery_review, e = review?.envelope;
     const approved = review?.approval_state === "approved" && review.approval;
     const live = e?.source === "tiktok";
-    const allowed = Boolean(approved && live && e.status === "ready");
+    const allowed = Boolean(approved && live && e.status === "ready" && !review?.consumed);
     if (view?.transport === "windows_live_studio") {
       const auto = review?.auto_delivery;
+      if (review?.consumed) actions.append(node("span", "badge danger", "CONSUMED / NO RETRY"));
       actions.append(node("span", "badge neutral", `Server AUTO: ${auto?.eligible ? "ELIGIBLE" : "BLOCKED"} · ${auto?.reason || "unavailable"}`));
       send.textContent = "Fill approved reply";
       send.disabled = !allowed || !review?.text_entry_supported || view.busy || busy || !state.connected || Date.now() >= Date.parse(e?.expires_at);

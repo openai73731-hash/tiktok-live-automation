@@ -1,4 +1,47 @@
-# PC-first migration: architecture audit and PC-SEND-2
+# PC-first migration: architecture audit and PC-SEND-2B
+
+## CURRENT WINDOWS RELEASE STATE — PC-SEND-2B / release hardening
+
+Current contract: own LIVE only, one operator, one Studio, EN, manual approval,
+limited load and one-shot acceptance. AUTO and physical gates default OFF. Trust
+boundary is the local Windows VM, fixed startup handle/UID and loopback Admin.
+SendInput retains an OS race; strong own echo correlation is not cryptographic proof.
+Offline validation does not run LIVE, input, accessibility discovery or UAC.
+M7 logging retention, M8 FR/DE timeouts and M9 sustained-load work remain limitations.
+
+Trusted ingestion is captured before queue/AI, bound to account/UID/session/runtime
+and SDK ID, retained privately through the real processor/store, and checked against
+the AUTO epoch at registration, enqueue, reservation and emission preflight. The
+first-receipt ledger is bounded without eviction across reconnect/APPLY; its full
+condition denies new AUTO provenance. Store creation time alone is insufficient.
+Approval still follows the epoch. DeliveryCoordinator reserves durable SDK identity
+in SQLite before input; no AI/browser value grants physical authority.
+
+Clock failure is sticky per attempt: later good echoes cannot recover VERIFIED or
+confirmed. Possible input settles UNKNOWN, OFF/DISARM and no retry; one-shot SPENT
+survives cancellation. Windows CONNECT rejects foreign handles/stale runtime tokens
+before mutation. Applied settings invalidate previous sender authority.
+
+Launcher separates bounded elevated preparation from persistent backend lifetime.
+Per-attempt atomic PENDING/READY/FAILED/CANCELLED evidence precedes UAC and includes
+revision/process creation identities. Admin requires current HEAD and both process
+instances before showing PRE-LIVE PREPARED. Cleanup only targets captured owned
+process identities; occupied foreign 8000 fails. UI retains UNKNOWN/consumed state,
+disables repeat actions, and distinguishes REPLY READY from amber ARM READY.
+See [current operator guide](PC_SEND_2.md) for exact constraints and startup policy.
+
+The final readiness recovery pass separates current `latest.json` from the reusable
+candidate `last-ready.json`. Cancellation preserves the candidate without declaring
+readiness. Reuse verifies current process/Studio identities, HEAD, ancestry, health
+and the backend's immutable startup configuration fingerprint and launch nonce;
+the new attempt publishes its own READY with reuse provenance. One publication
+lock orders generation changes and both atomic artifacts. Superseded children
+cannot publish current READY or overwrite a newer reusable candidate.
+Connected Admin pages receive changed preparation projections through existing SSE,
+with read-only checks at a bounded two-second interval per page. They invalidate
+PREPARED on PENDING/FAILED/CANCELLED and on loss of backend connectivity.
+
+## Historical migration audit (baseline before PC-SEND-2)
 
 The current operator-intent keyboard transport supersedes this document's older
 discovery-only sender restrictions. See [PC-SEND-2](PC_SEND_2.md) for the exact

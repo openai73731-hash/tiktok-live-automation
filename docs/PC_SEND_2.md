@@ -1,4 +1,34 @@
-# PC-SEND-2A: pre-LIVE hardening of guarded Windows delivery
+# PC-SEND-2B: release hardening of guarded Windows delivery
+
+## CURRENT WINDOWS RELEASE STATE
+
+Release scope: own LIVE only, one operator, one Studio instance, EN validated path,
+manual review/approval, one-shot acceptance and limited load. AUTO defaults OFF;
+physical gates default OFF. The launcher explicitly opts into the single operator
+acceptance profile. Local Windows VM and its filesystem are trusted; Admin stays
+loopback-only. The OS focus-check/SendInput race remains. Echo correlation is not
+cryptographic proof. Real LIVE and physical input are NOT part of offline validation.
+Long-running log retention, FR/DE model timeouts and sustained-load/stale AI work
+remain scoped limitations (audit M7–M9), not claims of production validation.
+
+PC-SEND-2B supersedes the 2A findings below. Mandatory audit H1/H2 and M1–M6 are
+addressed by ingestion provenance, terminal clock failure, own-account binding,
+per-attempt preparation evidence and consumed/UNKNOWN UI. Historical validation
+counts later in this guide describe their named stages only.
+
+Final readiness recovery: `latest.json` is the only current attempt authority;
+`last-ready.json` is an untrusted-as-readiness reusable candidate. UAC cancellation
+preserves the candidate but publishes current CANCELLED. A later attempt revalidates
+process PID/start/executable/command/ancestry, port ownership, HEAD, Studio identity,
+current integrity, health/account/gates and the backend startup fingerprint/nonce.
+It publishes a new READY with `reused_backend=true` and `reused_from_launch_id`.
+Dead/incompatible candidates are invalidated; foreign port owners are untouched.
+One bounded publication lock orders generation changes and atomic latest/last-ready
+updates; late or cancelled children cannot overwrite a newer generation.
+An open Admin receives changed `preparation_status` via existing SSE, with read-only
+checks at most once per two seconds per connected page. PENDING/FAILED/CANCELLED
+remove PREPARED without reload; disconnect also removes it. `last-ready` alone can
+never show PREPARED. There is no browser polling or inference on this refresh.
 
 This is a production-oriented implementation, **not a real-device acceptance claim**.
 All development validation is offline. No real LIVE, Studio click, SendInput or
@@ -123,9 +153,22 @@ rows. For legacy rows, the journal recomputes the old SDK hash using each stored
 session/account and the incoming SDK ID. Matching old reservations remain blocking;
 no source IDs or reply text are persisted by the migration.
 
-AUTO OFF -> ON creates an opaque epoch ID, monotonic activation time and a private
-store sequence watermark. Both suggestion creation and approval must follow that
-watermark; the sequence also handles equal monotonic readings on Windows. Idempotent
+AUTO OFF -> ON creates an opaque epoch ID, monotonic activation time, a trusted
+ingestion watermark and a store/approval watermark. Listener conversion stamps the
+private monotonic receipt and ingestion sequence BEFORE queue/AI. The owned receipt
+callback binds configured account, numeric broadcaster UID, LIVE session, runtime
+and SDK message ID. The immutable private receipt travels with Comment through the
+real processor into SuggestionStore; JSON cannot supply or serialize it. Registration
+admits it only to the then-current epoch when receipt time and sequence follow that
+epoch. Enqueue, post-lock/cooldown reservation checks and every physical preflight
+revalidate the receipt, registration epoch and current scope. Delayed AI cannot turn
+a pre-epoch comment into a fresh one. Equal clock readings are ordered by the shared
+trusted sequence. Creation and approval must also follow their store watermark.
+The runtime retains first receipts by account/UID/SDK ID across APPLY and full
+reconnect. This ledger never evicts: at 10,000 identities, new IDs lose AUTO eligibility
+while manual review remains available. No-ID comments cannot obtain AUTO provenance.
+This is bounded process-local provenance; consumed dedup is separately durable.
+Idempotent
 re-approval cannot freshen an old approval. ARM may scan the bounded group, but filters
 all pre-epoch suggestions/approvals. Queued tasks carry their original epoch and are
 rechecked after lock/cooldown waits; OFF -> ON, full reconnect, APPLY or restart never
@@ -139,7 +182,8 @@ reserve/type/send. Only the bounded observer/watch remains during VERIFYING; inp
 authority is unavailable. On settlement, DISARM occurs regardless of VERIFIED,
 UNKNOWN, error or cancellation. No subsequent ARM, session or AUTO toggle replenishes
 the budget. A backend restart requires fresh manual acceptance and a fresh epoch.
-Default false retains continuous mode with the same new-approval epoch policy.
+Default false retains continuous mode with the same new-approval epoch policy;
+continuous production AUTO is outside this release's validated one-shot scope.
 
 ## Startup configuration (PowerShell)
 
@@ -177,6 +221,44 @@ true and restarting the backend; this does not arm or enable AUTO. Connect remai
 explicit operator action for the own handle. Serve only loopback; existing Host,
 same-origin, CSRF and sanitized UI/SSE guards remain in force.
 
+Windows CONNECT requires the applied own handle to equal trusted startup
+`TIKTOK_USERNAME` (launcher profile: `d3pp1s`, UID `7412662672502555649`). Whitespace,
+optional leading @ and ASCII handle case are normalized. Browser CONNECT also
+requires the current `expected_active_runtime_revision`. Foreign handles and stale
+tabs return 409 before listener/processor/session mutation. Changing the applied
+account invalidates ARM/AUTO; CONNECT stays blocked if it conflicts with startup
+identity. Account changes require a reviewed matching startup handle/UID pair.
+
+### Launcher result and ownership contract
+
+`scripts/start-acceptance.ps1 [-NoBrowser] [-PreparationTimeoutSeconds 300]` is the
+single operator entry point. Clean `feature/windows-live-studio` is permitted for
+pre-release acceptance; clean reviewed `main` is permitted after integration. Other
+branches and detached commits are rejected. The script never merges, commits or
+resets a journal. It never starts LIVE, connects, arms or emits input.
+
+Before UAC, each attempt creates a unique ID and PENDING at ignored
+`work/acceptance/startup/<id>.json` and `latest.json`. Atomic temp/replace publication
+records start/finish UTC, HEAD/branch, Studio/backend PID and creation FILETIME strings,
+integrity, local model/health, own account, numeric-UID presence, AUTO OFF, one-shot
+availability and physical gate. Results are PENDING/READY/FAILED/CANCELLED with a
+static sanitized failure reason. UAC cancel supersedes prior READY. Terminal results
+cannot be revived by late child completion. Parent waits for the preparation result
+only, bounded by the chosen timeout, never backend descendants. A timed-out child
+checks cancellation before backend spawn and READY and cleans its owned backend.
+
+Existing 8000 is reused only with the prior READY matching HEAD and both process
+instances, expected repo venv ancestry and idle Admin state. Otherwise `port_in_use`
+fails without stopping that owner. Cleanup rechecks only captured processes created
+by this attempt: exact PID/start, image, command and parent. No cleanup scans a port
+and kills whichever Python it finds. PocketWin 9000/9002/9003 remain untouched.
+
+Admin status/SSE includes an allowlisted preparation projection. PRE-LIVE PREPARED
+requires latest READY, current on-disk AND backend-loaded HEAD, backend launch ID,
+and current Studio/backend PID/start/image. Restart or revision change invalidates
+old evidence. Missing/stale/PENDING means NOT PREPARED; FAILED/CANCELLED means
+PREPARATION FAILED. This evidence proves preparation, not ARM, LIVE activity or send.
+
 ## Admin workflow
 
 The Windows panel shows state, instance/PID, armed age, foreground guard, composer,
@@ -186,7 +268,9 @@ one-shot status and Enter gate. Each card shows server-side AUTO eligibility/rea
 **Disarm** stops the lease and AUTO. For an approved LIVE card, **Fill approved reply**
 queues that immutable identity and starts its own explicit ARM watch. Clicking Admin
 necessarily takes focus away from Studio, so Fill does not reuse an old ARM.
-After Focus watch READY, click the empty composer within the displayed interval.
+After amber **ARM READY — CLICK COMPOSER NOW**, click the empty composer within the
+displayed interval. Otherwise the panel says **WAITING FOR COMPOSER FOCUS**. The AI
+card's green **REPLY READY** grants no focus or delivery authority.
 Fill inserts text only. **Guarded send once** uses the same workflow plus one Enter
 and bounded echo verification; it requires the startup gate and own UID.
 
@@ -195,6 +279,20 @@ replies** requires that acceptance and the Enter gate. Toggle ON FIRST, then rec
 and approve a NEW comment, then use fresh manual ARM and click the empty composer.
 Approving while disarmed cannot type; ARM schedules only post-epoch work. No automatic
 re-arm occurs. Switching back to Admin disarms; inspect after bounded verification.
+
+UNKNOWN/timeout/uncertain consumed results retain a prominent **STOP — DELIVERY
+RESULT UNKNOWN / DO NOT RETRY THIS REPLY** banner. Durable journal reads restore it
+after UI/backend restart without creating/migrating the DB on GET. Cards expose
+CONSUMED / NO RETRY and disable Fill, Guarded send and reapproval; AUTO's durable
+unused-identity check rejects them too. Another ARM or approval never unlocks them.
+Historical MANUAL UNKNOWN stays visible and consumed: inspect those replies
+manually and use fresh identities for a later authorized acceptance.
+
+CLOCK_UNSTABLE is terminal for the pending attempt. Its sticky latch clears verified,
+revokes AUTO/ARM immediately and ignores all later otherwise-perfect echoes. After
+possible input, coordinator/journal settle UNKNOWN (or reserved-safe on storage
+failure); verification never returns VERIFIED. Cancellation does not release dedup
+or replenish an AUTO one-shot SPENT budget. A clock bridge failure is never retried.
 
 ## One acceptance LIVE, performed only by the operator
 
@@ -387,3 +485,89 @@ Additional discovery LIVE required: NO. Real acceptance is still operator-only.
 - `docs/PC_SEND_2.md`
 - `scripts/test-fast.ps1`
 - `scripts/test-pc.ps1`
+
+## PC-SEND-2B delta-review evidence — 2026-10-12
+
+Baseline audited HEAD: `e33fc6b87f36b3f00bc98ace1033829fb9365147`.
+The delta stays on `feature/windows-live-studio`; main is not merged or modified.
+Development validation uses `ENABLE_PHYSICAL_WINDOWS_SEND=false`,
+`ENABLE_PHYSICAL_TIKTOK_SEND=false`, `RUN_LIVE_STUDIO_E2E=0`. Tests inject virtual
+native boundaries; no real LIVE, SendInput, Enter, Send, messages, accessibility
+discovery or UAC was run. Actual elevated launcher preparation remains an operator
+action; these tests do not claim that the current VM is PRE-LIVE PREPARED.
+
+New regressions (55 cases) live in `test_windows_release_hardening.py` and
+`test_acceptance_launcher.py`, alongside the existing production sender suites:
+
+| Finding | Exact exercised path / assertion |
+| --- | --- |
+| H1 A/B | Real SDK event conversion → LiveService consumer → delayed real CommentProcessor → store/approval → fresh ARM → real coordinator/SQLite/virtual native. Pre-epoch: zero AUTO reservation, Unicode or Enter; post-epoch: eligible and confirmed |
+| H1 C/D | Equal monotonic readings ordered by trusted ingestion sequence; old receipts blocked after serial lock/cooldown and after a new epoch while waiting |
+| H1 E/F | Full reconnect/APPLY replay of the same SDK ID retains first receipt; scope cannot be rebound; bounded ledger never evicts; browser cannot supply provenance/epoch; serialized envelope loses private authority |
+| H2 | Unstable receipt before deadline → one/multiple perfect echoes, with/without cancellation, in MANUAL and AUTO one-shot. Never VERIFIED/confirmed; journal UNKNOWN, no retry, OFF/DISARM, AUTO SPENT; normal strong echo still confirms |
+| M1 | Actual Admin API accepts normalized d3pp1s/@/case/whitespace, binds UID/session/runtime; foreign/stale/missing-token CONNECT leaves runtime untouched; APPLY revokes ARM/AUTO and old token; existing echo-mismatch tests remain |
+| M2–M5 | Stock PowerShell mocks test branch policy, PENDING before mocked UAC cancel, latest/per-attempt CANCELLED, immutable terminal failure against late READY, bounded wait, exact cleanup identities/PID reuse/ancestry races, and occupied foreign 8000 without stop |
+| M3/M6 | Preparation projection requires current loaded/on-disk HEAD and exact Studio/backend instances; failed/cancelled/restarted evidence cannot show PREPARED. Read-only durable journal restores UNKNOWN/consumed; owned pending verification is not UNKNOWN. Node checks persistent STOP, disabled Fill/Guarded, CONSUMED badge, distinct focus state and no VERIFIED with unstable clock |
+
+Validation totals: focused critical **332 passed**; Tier A **365 passed / 1 skipped**;
+Tier B **727 passed / 1 skipped**; FULL **1454 passed / 1 skipped**. The skip is the
+explicit real Studio E2E opt-in. Two existing SDK/websockets deprecation warnings
+remain. `pip check`, finite fake CLI, `git diff --check` and secret/runtime scan pass.
+An earlier VM timing interruption caused a Node subprocess timeout with a negative
+remaining timeout; isolated and complete reruns passed without changing test limits.
+
+### PC-SEND-2B changed files
+
+- Contract/runtime: `backend/app/live/models.py`, `backend/app/delivery/models.py`,
+  `backend/app/delivery/suggestions.py`, `backend/app/delivery/journal.py`,
+  `backend/app/delivery/service.py`, `backend/app/admin/models.py`,
+  `backend/app/admin/router.py`, `backend/app/admin/runtime.py`, `backend/app/admin/service.py`.
+- Windows: `backend/app/windows/sender.py`, `backend/app/windows/service.py`,
+  `backend/app/windows/preparation.py`.
+- UI: `backend/app/static/admin/app.js`, `delivery.js`, `operator.js`, `index.html`, `styles.css`.
+- Launcher/validation: `scripts/start-acceptance.ps1`, `scripts/acceptance-launch-helpers.ps1`,
+  `scripts/test-fast.ps1`, `scripts/test-pc.ps1`.
+- Tests: `backend/tests/test_windows_sender.py`, `backend/tests/test_windows_release_hardening.py`,
+  `backend/tests/test_acceptance_launcher.py`.
+- Documentation: `.env.example`, `README.md`, `docs/PC_SEND_2.md`,
+  `docs/PC_LIVE_STUDIO_ARCHITECTURE.md`.
+
+## Final readiness recovery fix — 2026-10-12
+
+M1 (stale preparation in an open Admin page) and M2 (backend reuse after UAC
+cancel) are closed by the offline regression paths below. The earlier totals
+above describe the preceding hardening review; the final totals include this fix.
+
+- M1: the existing SSE connection checks the authoritative preparation projection
+  at most once every two seconds. The same open page handles PENDING, CANCELLED,
+  FAILED and a subsequent READY without reload; connection loss clears PREPARED.
+- M2: `latest.json` records only the current attempt. `last-ready.json` retains a
+  reuse candidate across cancellation, but cannot establish readiness. A fresh
+  attempt revalidates process creation identity, executable/command/venv ancestry,
+  repository/HEAD, port owner, health, current Studio identity and integrity,
+  account/UID and immutable physical startup configuration before publishing its
+  own READY with `reused_backend` and `reused_from_launch_id`.
+- The shared publication lock orders generation changes and atomic writes.
+  Terminal attempts cannot revive; late children and stale candidate invalidation
+  cannot overwrite a newer generation. Unknown port owners are never stopped.
+
+Added 25 offline cases: 20 launcher cases covering A READY → B CANCELLED → C
+revalidation, 15 invalid runtime/contract bindings, late-child generations, mocked
+parent UAC cancellation and concurrent PowerShell workers; five preparation/UI
+cases covering the actual SSE stream, the same browser document and three startup
+fingerprint changes. No test timeout limits were increased.
+
+Final validation: launcher/Admin focused **131 passed**; critical Windows
+**176 passed**; Tier A **390 passed / 1 skipped**; Tier B **752 passed / 1 skipped**;
+FULL **1479 passed / 1 skipped**. H1 receipt-before-epoch, H2 CLOCK_UNSTABLE
+bad-to-good, account binding and UNKNOWN/consumed regressions pass. The opt-in real
+Studio discovery test remains skipped; two existing SDK/websockets deprecation
+warnings remain. `pip check`, finite fake CLI, diff whitespace and secret/runtime
+checks pass. Sender, listener, AI and delivery implementation hashes match the
+start of this narrow pass.
+
+Validation environment: `RUN_LIVE_STUDIO_E2E=0`,
+`ENABLE_PHYSICAL_WINDOWS_SEND=false`, `ENABLE_PHYSICAL_TIKTOK_SEND=false`,
+`ADMIN_LIVE_ENABLED=false`. LIVE NOT RUN. PHYSICAL INPUT NOT RUN. Real UAC and
+accessibility discovery NOT RUN. The commit remains on
+`feature/windows-live-studio`; main is neither changed nor merged.

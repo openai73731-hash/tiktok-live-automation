@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.ai.models import ReplySuggestion
 from app.admin.operator_config import OperatorOverlay
 from app.delivery.models import SuggestionView
+from app.windows.preparation import PreparationStatus
 
 
 class UIModel(BaseModel):
@@ -99,6 +100,7 @@ class AdminStatus(UIModel):
     delivery: Literal["NOT CONFIGURED"] = "NOT CONFIGURED"
     reply_policy: Literal["focused", "friendly"] = "focused"
     temperature: float = 0
+    preparation: PreparationStatus = Field(default_factory=PreparationStatus)
 
 
 class PublicSettings(UIModel):
@@ -158,3 +160,4 @@ class DisconnectInput(UIModel):
 
 class ConnectInput(UIModel):
     username: str = Field(min_length=1, max_length=25)
+    expected_active_runtime_revision: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')

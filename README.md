@@ -1,6 +1,24 @@
 # tiktok-live-automation
 
-## PC-first: Windows LIVE Studio, этап PC-SEND-2A
+## CURRENT WINDOWS RELEASE STATE — PC-SEND-2B / release hardening
+
+Текущий release scope: **собственный LIVE, один оператор, одна Studio instance,
+EN, ручной review/approval, one-shot acceptance, ограниченная нагрузка**.
+AUTO по умолчанию OFF, physical gates по умолчанию OFF. Это локальная доверенная
+Windows VM; Admin не предназначен для публикации в сеть. SendInput сохраняет
+остаточную гонку ОС между последней проверкой focus и вводом; echo correlation
+не является криптографическим доказательством доставки. Реальный LIVE и ввод
+не входят в offline release validation. FR/DE timeout, длительная нагрузка и
+политика хранения всех AI/comment logs остаются вне подтверждённого release scope.
+
+PC-SEND-2B закрывает audit blockers: trusted ingestion до queue/AI с sequence и
+account/session/runtime/UID/SDK ID; старый receipt не получает AUTO после долгого AI,
+APPLY или reconnect. CLOCK_UNSTABLE необратим для текущей попытки: UNKNOWN,
+AUTO OFF, DISARM, consumed identity без retry. CONNECT принимает только нормализованный
+startup own handle и актуальный runtime token. Admin сохраняет STOP / DO NOT RETRY
+и CONSUMED / NO RETRY; AI **REPLY READY** отделён от amber **ARM READY — CLICK COMPOSER NOW**.
+
+### Windows LIVE Studio transport
 
 Добавлен Windows transport: явный operator ARM → ручной клик пустого composer →
 guarded Unicode Fill → опциональный один Enter → подтверждение по собственному
@@ -46,14 +64,35 @@ application smoke **Is bot trading automatically?** с обязательным 
 Затем запускает backend **из корня repo** с `--app-dir backend` на `127.0.0.1:8000`,
 Windows Enter gate ON, Android gate OFF, one-shot AVAILABLE и AUTO OFF; проверяет
 оба admin status API и открывает админку. `-NoBrowser` отключает открытие браузера.
-Настройки startup, PID, результаты и логи сохраняются только в ignored `work/pc/`.
+Настройки startup, PID и логи сохраняются в ignored `work/pc/`; authoritative result
+каждой попытки — `work/acceptance/startup/<launch_id>.json` и `latest.json`.
+PENDING записывается до UAC; отказ — CANCELLED, bounded preparation timeout — FAILED.
+`latest.json` описывает только текущую попытку. `last-ready.json` отдельно хранит
+кандидата на reuse; CANCELLED/FAILED его не превращают в текущий READY. При reuse
+повторно проверяются HEAD, PID/start/command/ancestry, Studio, integrity, health,
+own account и fingerprint фактической startup-конфигурации backend. Результат
+получает новый launch_id и поля `reused_backend` / `reused_from_launch_id`.
+Умерший или несовместимый кандидат инвалидируется; неизвестный владелец 8000 не завершается.
+Результаты публикуются atomic replace; поздний child не отменяет terminal failure.
+Общий publication lock защищает latest/last-ready и смену generation от позднего child.
+Parent ждёт только preparation result (по умолчанию 300 секунд), не lifetime backend.
+Допустимы clean `feature/windows-live-studio` для pre-release и clean `main` после review;
+другие branches/detached HEAD отклоняются. HEAD и process start identities записываются.
 Порты PocketWin `9000/9002/9003` не меняются.
 
 Studio GUI должен быть уже открыт оператором. Скрипт не начинает LIVE, не подключает
 listener, не делает discovery/ARM/Fill/Send. AI smoke READY **не означает** Windows
-Focus watch READY: он появится только после явного операторского ARM в acceptance.
+**ARM READY — CLICK COMPOSER NOW**: он появится только после явного операторского ARM.
 Повторный запуск до LIVE переиспользует проверенный backend с тем же PID Studio и
-HEAD. Активный listener/sender, SPENT, завершённая фаза, reserved/AUTO journal row
+HEAD и валидным READY artifact. Любой другой владелец 8000, включая прежний backend
+без такой привязки, даёт `FAILED / port_in_use`: launcher его не завершает.
+При failure cleanup завершает только созданные этой попыткой PID с повторной проверкой
+start time, executable, command и ancestry. Admin показывает **PRE-LIVE PREPARED** только
+при READY для текущих HEAD, Studio PID/start и backend PID/start; restart делает его stale.
+Открытая Admin автоматически получает `preparation_status` через существующий SSE:
+backend перепроверяет evidence не чаще раза в две секунды на подключённую страницу.
+PENDING/FAILED/CANCELLED убирают PREPARED без reload; потеря связи тоже убирает его.
+Активный listener/sender, SPENT, завершённая фаза, reserved/AUTO journal row
 блокируют подготовку; журнал и дедупликация не сбрасываются. Прежние MANUAL UNKNOWN
 сохраняются: эти replies нельзя повторять, следующая процедура использует новые
 комментарии. При сбое текущей acceptance — STOP, без перезапуска для повторения фазы.

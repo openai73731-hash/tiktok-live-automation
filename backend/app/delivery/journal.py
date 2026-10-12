@@ -171,5 +171,7 @@ class SQLiteDeliveryOperationStore:
         row = self.connection.execute("SELECT * FROM operations WHERE idempotency_key=?", (key,)).fetchone()
         return self._operation(row) if row is not None else None
 
-    def unresolved(self):
-        return self.connection.execute("SELECT 1 FROM operations WHERE status IN ('reserved','unknown','needs_operator') LIMIT 1").fetchone() is not None
+    def unresolved(self, *, excluding=None):
+        return self.connection.execute("""SELECT 1 FROM operations
+            WHERE status IN ('reserved','unknown','needs_operator')
+            AND (? IS NULL OR operation_id != ?) LIMIT 1""", (excluding, excluding)).fetchone() is not None

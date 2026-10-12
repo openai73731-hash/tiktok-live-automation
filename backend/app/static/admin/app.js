@@ -9,7 +9,7 @@
   let eventRevision = 0;
   const providerName = (name) => ({fake: "Fake · фикстуры", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
   const liveName = (value) => value === "operator_required" ? "NEED_OPERATOR" : String(value).toUpperCase();
-  const statusName = (value) => ({ready: "READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
+  const statusName = (value) => ({ready: "REPLY READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
   const statusClass = (value) => ({ready: "good", skipped: "neutral", needs_operator: "warning"}[value] || "neutral");
   const sourceName = (value) => ({playground: "Playground · тест", fake: "Fake · демонстрация", replay: "Replay · фикстура", tiktok: "TikTok LIVE"}[value] || value);
   const time = (value) => value ? new Date(value).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "—";
@@ -58,6 +58,7 @@
   }
   function setConnected(value) {
     state.connected = value;
+    if (!value) text('startup-preparation', 'PRE-LIVE NOT PREPARED · backend connection unavailable');
     $("backend-dot").className = `dot ${value ? "good" : "warning"}`;
     text("backend-label", value ? "Работает" : "Нет связи");
     text("dash-backend", value ? "RUNNING" : "Нет связи");
@@ -99,7 +100,11 @@
     text("ai-status-message", message); text("ai-label", label);
     $("ai-dot").className = `dot ${color === "neutral" ? "muted" : color === "info" ? "info" : color}`;
   }
+  function renderPreparation(value) {
+    text('startup-preparation', `${value?.state || 'PRE-LIVE NOT PREPARED'}${value?.result && value.result !== 'READY' ? ' · ' + value.result : ''}`);
+  }
   function renderStatus(value) {
+    renderPreparation(value.preparation);
     state.status = value; renderLiveStatus(value.live); renderAI(value.ai); renderMetrics(value.metrics);
     text("playground-count", value.playground_processed);
     text("dash-policy", value.reply_policy.toUpperCase()); text("dash-temperature", value.temperature);
@@ -188,7 +193,7 @@
       card.append(node("p", "subtle mono", `ID ${envelope.suggestion_id} · runtime ${envelope.active_runtime_revision.slice(0, 8)} · session ${envelope.live_session_id?.slice(0, 8) || "Playground"}`),
         node("p", "subtle", `Approval: ${review.approval_state} · Delivery: NOT CONFIGURED · ${review.eligibility.reason}`));
       const approve = node("button", "button secondary-button", "APPROVE · без отправки");
-      approve.type = "button"; approve.disabled = item.status !== "ready" || review.approval_state !== "missing";
+      approve.type = "button"; approve.disabled = item.status !== "ready" || review.approval_state !== "missing" || review.consumed;
       let translationCheck = null;
       if (item.translation_requires_review) {
         const label = node("label", "field-label", "Я проверил перевод ответа");
@@ -204,7 +209,7 @@
         } catch (error) {
           toast(error.message);
           try { record.delivery_review = await api(`/api/admin/suggestions/${envelope.suggestion_id}`); card.replaceWith(replyCard(record)); }
-          catch { approve.disabled = false; }
+          catch { approve.disabled = Boolean(review.consumed); }
         }
       });
       actions.prepend(approve);
@@ -290,6 +295,7 @@
     stream.onopen = () => { text("dash-sse", "CONNECTED"); refresh().catch(() => setConnected(false)); };
     stream.onerror = () => setConnected(false);
     receive("snapshot", renderStatus);
+    receive('preparation_status', renderPreparation);
     receive("quality_update", quality.apply);
     receive("operator_settings", (value) => { operator.render(value); refreshReviews().catch(() => setConnected(false)); });
     receive("suggestion_approval", () => { refresh().catch(() => setConnected(false)); });

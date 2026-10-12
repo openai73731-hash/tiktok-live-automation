@@ -20,6 +20,7 @@ from app.windows.target import TargetRejected
 
 router = APIRouter()
 ASSETS = Path(__file__).resolve().parents[1] / "static" / "admin"
+PREPARATION_POLL_SECONDS = 2
 
 
 class EmptyInput(UIModel):
@@ -141,9 +142,9 @@ async def operator_settings(request: Request):
     return request.app.state.operator_runtime.view()
 
 
-async def runtime_action(action, *args):
+async def runtime_action(action, *args, **kwargs):
     try:
-        return await action(*args)
+        return await action(*args, **kwargs)
     except RuntimeConflict as exc:
         raise HTTPException(409, detail=str(exc)) from None
     except SuggestionConflict:
@@ -171,7 +172,8 @@ async def reset_settings(request: Request, body: ResetSettingsInput):
 
 @router.post("/api/admin/live/connect", status_code=202)
 async def live_connect(request: Request, body: ConnectInput):
-    return await runtime_action(request.app.state.operator_runtime.live.connect, body.username)
+    return await runtime_action(request.app.state.operator_runtime.live.connect, body.username,
+        expected_active_runtime_revision=body.expected_active_runtime_revision)
 
 
 @router.post("/api/admin/live/disconnect")
@@ -298,14 +300,30 @@ async def events(request: Request):
 
     async def stream():
         try:
-            yield "retry: 3000\n" + sse_message("snapshot", admin.status().model_dump(mode="json"))
+            snapshot = admin.status().model_dump(mode="json")
+            preparation = snapshot['preparation']
+            windows = admin.settings.tiktok_transport == 'windows_live_studio'
+            loop = asyncio.get_running_loop()
+            next_preparation_check = loop.time() + PREPARATION_POLL_SECONDS
+            yield "retry: 3000\n" + sse_message("snapshot", snapshot)
             while True:
                 if await request.is_disconnected():
                     return
                 try:
-                    async with asyncio.timeout(15):
+                    async with asyncio.timeout(max(.001, next_preparation_check - loop.time()) if windows else 15):
                         event = await subscriber.queue.get()
                 except TimeoutError:
+                    event = False
+                # Artifact changes originate outside the backend. A bounded
+                # low-frequency refresh also works while the stream is quiet.
+                # Read-only projection revalidates current process identities.
+                if windows and loop.time() >= next_preparation_check:
+                    next_preparation_check = loop.time() + PREPARATION_POLL_SECONDS
+                    current = admin.preparation.view().model_dump(mode='json')
+                    if current != preparation:
+                        preparation = current
+                        yield sse_message('preparation_status', current)
+                if event is False:
                     yield ": heartbeat\n\n"
                     continue
                 if event is None:

@@ -12,13 +12,14 @@ from pydantic import Field
 from app.delivery.models import DeliveryResult, FrozenModel
 from app.windows.native_input import NativeInput, unicode_events
 from app.windows.target import TargetRejected, focused, resolve
+from app.live.models import ingestion_boundary
 
 
 def normalized(text): return unicodedata.normalize('NFC', text).strip()
 
 
 class WindowsSenderStatus(FrozenModel):
-    stage: str = 'PC-SEND-2'
+    stage: str = 'PC-SEND-2B'
     state: Literal['DISARMED', 'ARMING', 'ARMED', 'FILLING', 'FILLED', 'SENDING', 'VERIFYING', 'NEED_OPERATOR', 'ERROR'] = 'DISARMED'
     discovery: str = 'operator_arm_required'
     prepare_available: bool = False
@@ -64,6 +65,7 @@ class WindowsLiveStudioReplySender:
         self.auto_enabled = False
         self.auto_epoch_id = self.auto_enabled_monotonic = None
         self.auto_watermark = None
+        self.ingestion_watermark = None
         self.acceptance_spent = False
         self.accepted_target = self.confirmed_target = None
         self.confirmed_at = None
@@ -155,6 +157,15 @@ class WindowsLiveStudioReplySender:
         delta = mono - anchor[0]
         return delta >= 0 and abs((wall - anchor[1]).total_seconds() - delta) <= .25
 
+    def fail_clock(self):
+        # Terminal for this attempt. Revoke authority synchronously before any
+        # subsequent receipt callback, including callbacks in the same SDK turn.
+        if self.pending:
+            self.pending['clock_failed'] = True
+            self.pending['verified'] = False
+        self.clock_verification, self.verification = 'unstable', 'UNAVAILABLE'
+        self.invalidate('clock_unstable', operator=True)
+
     def _event(self, kind, generation=None):
         if generation is not None and generation != self.generation: return
         if kind in {'destroyed', 'failed'}:
@@ -229,7 +240,8 @@ class WindowsLiveStudioReplySender:
             acceptance_one_shot=self.config.acceptance_one_shot,
             acceptance_status='DISABLED' if not self.config.acceptance_one_shot else 'SPENT' if self.acceptance_spent else 'AVAILABLE',
             clock_verification=self.clock_verification,
-            verification=self.verification, last_send_status=self.last_send_status, reason=self.reason,
+            verification='UNAVAILABLE' if self.clock_verification == 'unstable' else self.verification,
+            last_send_status=self.last_send_status, reason=self.reason,
             watch_seconds=self.config.focus_watch_seconds, empty_after_verified_confirmed=self.empty_after_verified_confirmed,
             watch_ready=self.watch_ready, target_process_id=self.target.pid if self.target else None,
             target_instance=self.target.instance if self.target else None)
@@ -243,13 +255,12 @@ class WindowsLiveStudioReplySender:
         self.seen[key] = True
         while len(self.seen) > 1000: self.seen.popitem(last=False)
         pending = self.pending
-        if not pending or session_id != self.session or account != pending['account']: return
+        if not pending or pending['clock_failed'] or session_id != self.session or account != pending['account']: return
         if comment.user_id != self.config.broadcaster_user_id or normalized(comment.text) != pending['text']: return
         attempt = (pending['mono'], pending['wall'])
         if (not self.clock_stable(comment._received_monotonic, comment.timestamp, attempt) or
                 not self.clock_stable(self.clock(), self.wall_clock(), attempt)):
-            self.clock_verification = 'unstable'
-            pending['wake'].set(); self.changed(); return
+            self.fail_clock(); return
         if not comment.author_handle or comment.server_created_at is None:
             self.verification = 'WEAK'; self.changed(); return
         if comment.author_handle.casefold() != account.casefold(): return
@@ -297,17 +308,20 @@ class WindowsLiveStudioReplySender:
                 self.state = 'SENDING'
                 attempt_mono, attempt_wall = self.clock(), self.wall_clock()
                 if not self.clock_stable(attempt_mono, attempt_wall, self.clock_anchor):
-                    self.clock_verification = 'unstable'
+                    self.fail_clock()
                     raise TargetRejected('clock_unstable')
                 self.pending = {'account': request.target_account, 'text': normalized(request.text),
                     'mono': attempt_mono, 'wall': attempt_wall, 'deadline': attempt_mono + self.config.verification_seconds,
-                    'wake': asyncio.Event(), 'verified': False}
+                    'wake': asyncio.Event(), 'verified': False, 'clock_failed': False}
                 self.verification = 'VERIFYING'
                 await self.native.enter(guard)
                 self.state = 'VERIFYING'
                 self.changed()
                 await asyncio.wait_for(self.pending['wake'].wait(), self.config.verification_seconds)
-                if not self.pending['verified'] or not self.check(): raise TargetRejected('verification_failed')
+                if not self.clock_stable(self.clock(), self.wall_clock(), (attempt_mono, attempt_wall)):
+                    self.fail_clock()
+                if self.pending['clock_failed'] or not self.pending['verified'] or not self.check():
+                    raise TargetRejected('verification_failed')
                 self.last_send_status, self.verification = 'SENT_CONFIRMED', 'VERIFIED'
                 self.confirmed_target, self.confirmed_at = self.target, self.clock()
                 self.composer = 'EMPTY_ATTESTED' if self.empty_after_verified_confirmed else 'UNKNOWN'
@@ -317,7 +331,8 @@ class WindowsLiveStudioReplySender:
                 self.last_send_status = 'SEND_UNKNOWN' if physical else 'NOT_SENT'
                 if self.verification != 'WEAK':
                     self.verification = 'TIMEOUT' if isinstance(exc, TimeoutError) else 'UNAVAILABLE'
-                self.invalidate('delivery_unknown' if physical else 'sender_exception')
+                self.invalidate('delivery_unknown' if physical else 'sender_exception',
+                    operator=self.clock_verification == 'unstable')
                 if isinstance(exc, asyncio.CancelledError): raise
                 return DeliveryResult(status='unknown' if physical else 'needs_operator', reason='timeout' if isinstance(exc, TimeoutError) else 'operator_required')
             finally:
@@ -341,7 +356,8 @@ class WindowsLiveStudioReplySender:
         if enabled and self.config.acceptance_one_shot and self.acceptance_spent:
             raise TargetRejected('acceptance_spent')
         if enabled and not self.auto_enabled:
-            self.auto_epoch_id, self.auto_enabled_monotonic = uuid4().hex, self.clock()
+            self.auto_epoch_id = uuid4().hex
+            self.auto_enabled_monotonic, self.ingestion_watermark = ingestion_boundary(self.clock)
             self.auto_watermark = watermark
         self.auto_enabled = enabled; self.changed()
 
