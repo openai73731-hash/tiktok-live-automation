@@ -17,8 +17,8 @@ from app.ai.models import ReplySuggestion
 from app.ai.processor import CommentProcessor
 from app.live.models import Comment, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
-from app.delivery.models import DeliveryContext
-from app.delivery.suggestions import SuggestionStore, digest, policy_revision, comment_identity
+from app.delivery.models import ApprovalEvent, DeliveryContext
+from app.delivery.suggestions import SuggestionStore, SuggestionConflict, digest, policy_revision, comment_identity
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -158,10 +158,26 @@ class AdminService:
     def review_record(self, record):
         return record.model_copy(update={"delivery_review": self.review_view(record.id)})
 
+    def is_consumed(self, envelope):
+        return bool(self.delivery and hasattr(self.delivery, 'consumed') and self.delivery.consumed(envelope))
+
+    def approve_suggestion(self, suggestion_id, body):
+        envelope = self.suggestions.get(suggestion_id)
+        context = self.delivery_context()
+        # No event-loop handoff between the durable check and approval mutation.
+        # Delivery's SQLite reservation still guards against external writers.
+        if self.is_consumed(envelope):
+            raise SuggestionConflict('Suggestion already consumed and cannot be approved again.')
+        self.suggestions.approve(suggestion_id, body, context)
+        self.events.publish('suggestion_approval', ApprovalEvent(suggestion_id=suggestion_id))
+        if self.delivery and hasattr(self.delivery, 'approved'):
+            self.delivery.approved(suggestion_id)
+        return self.review_view(suggestion_id)
+
     def review_view(self, suggestion_id):
         review = self.suggestions.view(suggestion_id, self.delivery_context())
         return review.model_copy(update={"physical_send_allowed": bool(self.delivery and self.delivery.can_send(review)),
-            "consumed": bool(self.delivery and hasattr(self.delivery, 'consumed') and self.delivery.consumed(review.envelope)),
+            "consumed": self.is_consumed(review.envelope),
             "auto_delivery": self.delivery.auto_eligibility(suggestion_id) if self.delivery and hasattr(self.delivery, 'auto_eligibility') else None,
             "text_entry_supported": bool(self.delivery and self.delivery.text_supported(review.envelope.suggested_reply))})
 

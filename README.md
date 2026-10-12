@@ -17,6 +17,9 @@ APPLY или reconnect. CLOCK_UNSTABLE необратим для текущей 
 AUTO OFF, DISARM, consumed identity без retry. CONNECT принимает только нормализованный
 startup own handle и актуальный runtime token. Admin сохраняет STOP / DO NOT RETRY
 и CONSUMED / NO RETRY; AI **REPLY READY** отделён от amber **ARM READY — CLICK COMPOSER NOW**.
+Windows consumed identity также отклоняется сервером при approval: HTTP 409 до
+изменения approval, публикации события и delivery callback. Проверка использует
+тот же durable consumed source, что карточка и delivery, включая reconnect/restart.
 
 ### Windows LIVE Studio transport
 

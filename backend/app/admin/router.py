@@ -13,7 +13,7 @@ from app.admin.models import (AnalyzeInput, UIModel, ConnectInput, SaveSettingsI
     ApplySettingsInput, ResetSettingsInput, DisconnectInput)
 from app.admin.runtime import RuntimeConflict
 from app.admin.service import PaidRequestNotConfirmed, PlaygroundBusy, PRESETS
-from app.delivery.models import ApprovalInput, ApprovalEvent, ManualDeliveryInput
+from app.delivery.models import ApprovalInput, ManualDeliveryInput
 from app.delivery.suggestions import SuggestionConflict
 from app.android.diagnostics import CaptureError
 from app.windows.target import TargetRejected
@@ -269,13 +269,9 @@ async def suggestion_view(request: Request, suggestion_id: str):
 async def approve_suggestion(request: Request, suggestion_id: str, body: ApprovalInput):
     admin = request.app.state.admin
     try:
-        admin.suggestions.approve(suggestion_id, body, admin.delivery_context())
+        return admin.approve_suggestion(suggestion_id, body)
     except SuggestionConflict as exc:
         raise HTTPException(409, detail=str(exc)) from None
-    admin.events.publish("suggestion_approval", ApprovalEvent(suggestion_id=suggestion_id))
-    delivery = request.app.state.delivery
-    if hasattr(delivery, "approved"): delivery.approved(suggestion_id)
-    return admin.review_view(suggestion_id)
 
 
 @router.post("/api/admin/playground/analyze")

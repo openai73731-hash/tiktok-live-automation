@@ -571,3 +571,51 @@ Validation environment: `RUN_LIVE_STUDIO_E2E=0`,
 `ADMIN_LIVE_ENABLED=false`. LIVE NOT RUN. PHYSICAL INPUT NOT RUN. Real UAC and
 accessibility discovery NOT RUN. The commit remains on
 `feature/windows-live-studio`; main is neither changed nor merged.
+
+## Consumed identity approval guard — 2026-10-12
+
+`POST /api/admin/suggestions/{suggestion_id}/approve` delegates approval to
+`AdminService.approve_suggestion`. The service reads the same authoritative
+`delivery.consumed(envelope)` source as the review/card, immediately before
+approval mutation. A consumed identity returns HTTP 409 with a static detail;
+the store, approval timestamp/revision, `suggestion_approval` event and
+`delivery.approved` callback remain untouched. SQLite errors fail closed through
+the existing consumed service. Android approval behavior is unchanged.
+
+The check and mutation are synchronous on the application event loop, with no
+`await` between them. There is no shared transaction between the in-memory
+approval store and an external SQLite writer. Such a writer can commit after the
+check; the existing transactional delivery reservation and durable identity
+dedup still reject another delivery before input. Sender/AUTO and journal logic
+are unchanged, including the two-real-connection duplicate reservation regression.
+
+Twelve new offline production API cases cover UNKNOWN, filled_only, confirmed
+and reserved identities replayed after reconnect; fresh unused approval; rejection
+without refreshing an existing approval; full application lifespan restart with
+UNKNOWN/reserved rows in current and migrated legacy journals; rejected browser
+overrides; and unreadable-journal rejection. Reject tests spy on the mutation,
+event and delivery callback, and assert zero native watches/input batches.
+The original UNKNOWN/reconnect case reproduced HTTP 200 before the fix.
+
+Validation: focused approval/Admin/consumed **185 passed**; critical Windows
+**188 passed**; Tier A **402 passed / 1 skipped**; final Tier B
+**764 passed / 1 skipped**; FULL **1491 passed / 1 skipped**. H1 ingestion,
+H2 CLOCK_UNSTABLE, account binding, launcher/reuse, readiness SSE, consumed UI and
+durable dedup regressions pass. Two existing SDK/websockets deprecation warnings
+remain; the skipped test requires explicit real Studio discovery opt-in.
+
+The first Tier B run failed: its shared fake C#/PowerShell fixture timed out at
+30 seconds, causing 157 setup errors. It is not counted as PASS. The unchanged
+isolated harness passed 184 cases in 4.74 seconds, then the full Tier B and FULL
+runs passed without increasing timeout limits or changing harness code.
+`pip check`, finite fake CLI, `git diff --check` and the 148-file secret/runtime
+scan pass. The scan's literal rejected-localhost-credentials test fixture was
+reviewed; no publishable secret or runtime artifact was found.
+
+Only `backend/app/admin/router.py`, `backend/app/admin/service.py`,
+`backend/tests/test_windows_release_hardening.py`, `README.md` and this guide
+changed. Hash checks confirm no change to Android, sender/AUTO, listener, AI,
+delivery/journal or launcher implementation. Validation used
+`RUN_LIVE_STUDIO_E2E=0`, `ENABLE_PHYSICAL_WINDOWS_SEND=false`,
+`ENABLE_PHYSICAL_TIKTOK_SEND=false`, `ADMIN_LIVE_ENABLED=false`.
+LIVE NOT RUN. PHYSICAL INPUT NOT RUN. Real UAC/accessibility discovery NOT RUN.

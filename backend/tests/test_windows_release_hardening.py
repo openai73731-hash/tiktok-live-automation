@@ -1,10 +1,12 @@
 """PC-SEND-2B: production pipeline/coordinator/SQLite, mocked OS and SDK transport."""
 import asyncio
+from contextlib import asynccontextmanager
 import ctypes
 from datetime import timedelta
 import json
 import os
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import uuid4
 
 import httpx
@@ -12,7 +14,8 @@ import pytest
 from TikTokLive.events import CommentEvent
 
 from app.admin.service import record_for
-from app.delivery.models import ApprovalInput, ManualDeliveryInput, SuggestionEnvelope
+from app.delivery.journal import SQLiteDeliveryOperationStore
+from app.delivery.models import ApprovalInput, DeliveryRequest, DeliveryResult, ManualDeliveryInput, SuggestionEnvelope
 from app.live.listener import LiveListener
 from app.live.models import Comment, LiveStatus
 from app.live.service import LiveService
@@ -203,7 +206,7 @@ async def test_clock_failure_then_perfect_echoes_is_terminal_in_coordinator_jour
 
 
 @pytest.fixture
-async def windows_api(settings, tmp_path, monkeypatch):
+def windows_api_factory(settings, tmp_path, monkeypatch):
     # Real LiveService/owned consumer and real SDK adapter; no SDK client/network.
     async def transport(self):
         self.status = LiveStatus(username=self.settings.tiktok_username, mode='real', state='connected')
@@ -213,6 +216,11 @@ async def windows_api(settings, tmp_path, monkeypatch):
     monkeypatch.setattr(LiveListener, 'run', transport)
     config = settings.model_copy(update={'tiktok_transport':'windows_live_studio', 'tiktok_username':'d3pp1s',
         'windows':configuration().windows, 'state_dir':tmp_path/'state', 'log_dir':tmp_path/'logs'})
+    return lambda: open_windows_api(config)
+
+
+@asynccontextmanager
+async def open_windows_api(config):
     app = create_app(config)
     async with app.router.lifespan_context(app):
         native = FakeNative(config.windows); app.state.delivery.sender.native = native
@@ -220,6 +228,12 @@ async def windows_api(settings, tmp_path, monkeypatch):
             c.headers['X-Admin-CSRF'] = (await c.get('/api/admin/session')).json()['csrf_token']
             c.headers['Origin'] = 'http://127.0.0.1:8000'
             yield app, c, native
+
+
+@pytest.fixture
+async def windows_api(windows_api_factory):
+    async with windows_api_factory() as value:
+        yield value
 
 
 @pytest.mark.parametrize('handle', ['d3pp1s', '@d3pp1s', ' @D3PP1S '])
@@ -519,3 +533,173 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
 '''
     result=subprocess.run([node,'-e',source],capture_output=True,text=True,timeout=10)
     assert result.returncode==0,result.stderr
+
+
+async def api_suggestion(app, client, message_id='124'):
+    runtime = app.state.operator_runtime
+    response = await client.post('/api/admin/live/connect', json={'username':'d3pp1s',
+        'expected_active_runtime_revision':runtime.active_runtime_revision})
+    assert response.status_code == 202
+    await until(lambda: app.state.admin.live_status.state == 'connected')
+    previous = set(app.state.admin.suggestions.groups['live'])
+    sdk_comment(runtime.live.service.listener, message_id)
+    await until(lambda: bool(set(app.state.admin.suggestions.groups['live']) - previous))
+    return next(reversed(app.state.admin.suggestions.groups['live'].values()))
+
+
+async def api_approve(client, envelope, **extra):
+    return await client.post(f'/api/admin/suggestions/{envelope.suggestion_id}/approve',
+        json={'expected_suggestion_revision':envelope.suggestion_revision, **extra})
+
+
+def consume_api_suggestion(app, envelope, outcome):
+    """Persist the production journal result without invoking any input path."""
+    approval = app.state.admin.suggestions.approvals[envelope.suggestion_id]
+    request = DeliveryRequest(operation_id=uuid4().hex, idempotency_key=uuid4().hex,
+        suggestion_id=envelope.suggestion_id, suggestion_revision=envelope.suggestion_revision,
+        comment_identity=envelope.comment_identity, durable_delivery_key=envelope.durable_delivery_key,
+        source_kind=envelope.source, source_message_id=envelope._source_message_id,
+        approval_id=approval.approval_id, suggested_reply_hash=envelope.suggested_reply_hash,
+        text=envelope.suggested_reply, live_session_id=envelope.live_session_id,
+        target_account=envelope.target_account, active_runtime_revision=envelope.active_runtime_revision,
+        expires_at=envelope.expires_at)
+    journal = SQLiteDeliveryOperationStore(app.state.admin.settings.state_dir/'windows-delivery.sqlite3')
+    try:
+        operation, created = journal.reserve(request)
+        assert created
+        if outcome != 'reserved':
+            journal.finish(operation.operation_id, DeliveryResult(
+                status='not_sent' if outcome == 'filled_only' else outcome,
+                reason='filled_only' if outcome == 'filled_only' else 'echo_verified' if outcome == 'confirmed' else 'timeout'))
+        return request
+    finally:
+        journal.close()
+
+
+def approval_spies(app, monkeypatch):
+    admin = app.state.admin
+    spies = [Mock(wraps=method) for method in
+        (admin.suggestions.approve, admin.events.publish, app.state.delivery.approved)]
+    monkeypatch.setattr(admin.suggestions, 'approve', spies[0])
+    monkeypatch.setattr(admin.events, 'publish', spies[1])
+    monkeypatch.setattr(app.state.delivery, 'approved', spies[2])
+    return spies
+
+
+async def assert_consumed_approval_rejected(app, client, native, envelope, monkeypatch):
+    admin = app.state.admin
+    before = (dict(admin.suggestions.approvals), admin.suggestions.sequence)
+    mutate, publish, approved = approval_spies(app, monkeypatch)
+    response = await api_approve(client, envelope)
+    assert response.status_code == 409
+    assert response.json() == {'detail':'Suggestion already consumed and cannot be approved again.'}
+    assert before == (admin.suggestions.approvals, admin.suggestions.sequence)
+    mutate.assert_not_called()
+    assert not any(call.args[0] == 'suggestion_approval' for call in publish.call_args_list)
+    approved.assert_not_called()
+    assert not native.watches and not native.batches
+    review = (await client.get(f'/api/admin/suggestions/{envelope.suggestion_id}')).json()
+    assert review['consumed'] is True
+    assert app.state.delivery.journal is None  # Guard uses the existing read-only durable source.
+    return review
+
+
+@pytest.mark.parametrize('outcome', ['unknown', 'filled_only', 'confirmed', 'reserved'])
+async def test_api_consumed_same_sdk_id_after_reconnect_rejects_before_approval(windows_api, monkeypatch, outcome):
+    app, client, native = windows_api
+    first = await api_suggestion(app, client)
+    assert (await api_approve(client, first)).status_code == 200
+    consume_api_suggestion(app, first, outcome)
+    runtime = app.state.operator_runtime
+    await runtime.live.disconnect(runtime.live.session_id)
+    second = await api_suggestion(app, client)
+    assert second.suggestion_id != first.suggestion_id and second.live_session_id != first.live_session_id
+    assert second.comment_identity != first.comment_identity and second.durable_delivery_key == first.durable_delivery_key
+    review = (await client.get(f'/api/admin/suggestions/{second.suggestion_id}')).json()
+    assert review['consumed'] and review['approval_state'] == 'missing'
+    review = await assert_consumed_approval_rejected(app, client, native, second, monkeypatch)
+    assert review['approval_state'] == 'missing' and review['approval'] is None
+
+
+async def test_api_fresh_unused_approval_still_publishes_and_notifies(windows_api, monkeypatch):
+    app, client, native = windows_api
+    envelope = await api_suggestion(app, client)
+    mutate, publish, approved = approval_spies(app, monkeypatch)
+    response = await api_approve(client, envelope)
+    assert response.status_code == 200
+    assert response.json()['approval_state'] == 'approved' and not response.json()['consumed']
+    mutate.assert_called_once()
+    events = [call for call in publish.call_args_list if call.args[0] == 'suggestion_approval']
+    assert len(events) == 1 and events[0].args[1].suggestion_id == envelope.suggestion_id
+    approved.assert_called_once_with(envelope.suggestion_id)
+    assert not native.watches and not native.batches
+    assert not (app.state.admin.settings.state_dir/'windows-delivery.sqlite3').exists()
+
+
+async def test_api_consumed_existing_approval_is_not_refreshed(windows_api, monkeypatch):
+    app, client, native = windows_api
+    envelope = await api_suggestion(app, client)
+    response = await api_approve(client, envelope)
+    assert response.status_code == 200
+    old = app.state.admin.suggestions.approvals[envelope.suggestion_id]
+    old_binding = (old.model_dump(), old._approved_monotonic, old._approved_sequence)
+    consume_api_suggestion(app, envelope, 'unknown')
+    review = await assert_consumed_approval_rejected(app, client, native, envelope, monkeypatch)
+    current = app.state.admin.suggestions.approvals[envelope.suggestion_id]
+    assert current is old and old_binding == (current.model_dump(), current._approved_monotonic, current._approved_sequence)
+    assert review['approval'] == response.json()['approval']
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+@pytest.mark.parametrize('outcome', ['unknown', 'reserved'])
+async def test_api_backend_restart_and_migrated_legacy_sdk_identity_stay_consumed(windows_api_factory, monkeypatch, legacy, outcome):
+    import sqlite3
+    async with windows_api_factory() as (app, client, native):
+        first = await api_suggestion(app, client)
+        assert (await api_approve(client, first)).status_code == 200
+        consume_api_suggestion(app, first, outcome)
+        path = app.state.admin.settings.state_dir/'windows-delivery.sqlite3'
+        old_runtime = app.state.operator_runtime.active_runtime_revision
+    if legacy:
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute('DROP INDEX durable_delivery_key_unique')
+            connection.execute('ALTER TABLE operations DROP COLUMN durable_delivery_key')
+            connection.commit()
+        finally:
+            connection.close()
+        migrated = SQLiteDeliveryOperationStore(path)
+        try: assert migrated.recent()[0].durable_delivery_key is None
+        finally: migrated.close()
+    async with windows_api_factory() as (app, client, native):
+        assert app.state.operator_runtime.active_runtime_revision != old_runtime
+        second = await api_suggestion(app, client)
+        assert second.durable_delivery_key == first.durable_delivery_key and second.comment_identity != first.comment_identity
+        review = await assert_consumed_approval_rejected(app, client, native, second, monkeypatch)
+        assert review['approval_state'] == 'missing'
+
+
+async def test_api_browser_body_cannot_override_consumed_identity(windows_api, monkeypatch):
+    app, client, native = windows_api
+    first = await api_suggestion(app, client)
+    assert (await api_approve(client, first)).status_code == 200
+    consume_api_suggestion(app, first, 'unknown')
+    runtime = app.state.operator_runtime
+    await runtime.live.disconnect(runtime.live.session_id)
+    second = await api_suggestion(app, client)
+    mutate, publish, approved = approval_spies(app, monkeypatch)
+    for extra in ({'consumed':False}, {'approval_state':'approved'}, {'durable_delivery_key':None}):
+        assert (await api_approve(client, second, **extra)).status_code == 422
+    mutate.assert_not_called()
+    approved.assert_not_called()
+    assert not any(call.args[0] == 'suggestion_approval' for call in publish.call_args_list)
+    await assert_consumed_approval_rejected(app, client, native, second, monkeypatch)
+
+
+async def test_api_consumed_journal_read_failure_rejects_without_mutation(windows_api, monkeypatch):
+    app, client, native = windows_api
+    envelope = await api_suggestion(app, client)
+    path = app.state.admin.settings.state_dir/'windows-delivery.sqlite3'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'invalid sqlite journal')
+    await assert_consumed_approval_rejected(app, client, native, envelope, monkeypatch)
