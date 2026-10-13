@@ -175,7 +175,10 @@ class AdminService:
         return self.review_view(suggestion_id)
 
     def review_view(self, suggestion_id):
-        review = self.suggestions.view(suggestion_id, self.delivery_context())
+        context = self.delivery_context()
+        if self.delivery and self.settings.tiktok_transport == "android" and getattr(self.delivery, "mode", None) == "MANUAL":
+            context = self.delivery.fill_context()
+        review = self.suggestions.view(suggestion_id, context)
         return review.model_copy(update={"physical_send_allowed": bool(self.delivery and self.delivery.can_send(review)),
             "fill_allowed": bool(self.delivery and self.settings.tiktok_transport == "android" and self.delivery.can_fill(review)),
             "auto_eligibility": self.delivery.auto_verdict(review.envelope) if self.delivery and self.settings.tiktok_transport == "android" else review.auto_eligibility,

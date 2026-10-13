@@ -81,6 +81,15 @@ ASCII text; the operator presses Send on the phone. No programmatic activation
 occurs in MANUAL even when the startup physical gate is true. Unsupported Unicode
 uses COPY. Positive read-only feed evidence is required for confirmation.
 
+MANUAL readiness uses a fresh (90-second) reviewed focused-composer inspection
+bound to the exact verified account/device/installation and current listener
+session. Approval/runtime/session ownership is rechecked before every input action.
+It does not require the physical SEND gate, a Send candidate, or the programmatic
+UI host-LIVE lease, and never sets `live_verified` merely to allow typing. Status
+shows `FILL READY` for this capability; programmatic SEND/AUTO retain their separate
+physical, LIVE and Send-control guards. Missing or conflicting composer/security
+evidence still rejects input. MANUAL fills only the immutable approved server text.
+
 Supported readiness is still the reviewed Xiaomi M2101K9G / Android 13 / TikTok
 You 46.8.3 installation/profile. Device selection is discovered, not hardcoded by
 the acceptance script. Other devices/installations stop at NEED OPERATOR until a

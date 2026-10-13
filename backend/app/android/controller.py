@@ -6,7 +6,7 @@ from uuid import uuid4
 from hashlib import sha256
 from app.android.adb import AdbTransport, AdbCommand, AdbError, PACKAGES, parse_devices, DUMP_PATH
 from app.android.models import ClientVariant, DeviceInspection, ScreenState, AndroidOutcome
-from app.android.tiktok_ui import (foreground, inspect_hierarchy, exact_input, observed_variant, package_version,
+from app.android.tiktok_ui import (foreground, inspect_hierarchy, exact_input, unique_node, observed_variant, package_version,
     TIKTOK_YOU_4683, profile_account)
 from app.android.diagnostics import CaptureError, save_capture
 
@@ -33,6 +33,7 @@ class ADBAndroidController:
     def invalidate_trust(self):
         self._account_binding = self._send_binding = self._candidate_key = self._candidate_token = None
         self._live_evidence = None
+        self._manual_fill_evidence = None
         self._installation = None
         self._host_snapshot = None
 
@@ -51,11 +52,11 @@ class ADBAndroidController:
         return True
 
     def fill_ready_for(self, session_id, account):
-        if not self.last.fill_ready: return False
         if self._profile and self._profile.live_markers:
-            return bool(self._live_evidence and monotonic() - self._live_evidence[3] < 90
-                and self._live_evidence[:3] == (self._installation, account, session_id))
-        return True
+            return bool(self.last.manual_fill_candidate and self._manual_fill_evidence
+                and monotonic() - self._manual_fill_evidence[3] < 90
+                and self._manual_fill_evidence[:3] == (self._installation, account, session_id))
+        return self.last.fill_ready
 
     @staticmethod
     def installation(info):
@@ -68,6 +69,7 @@ class ADBAndroidController:
 
     async def _inspect(self, target=None):
         self._profile, self._xml = None, ""
+        self._manual_fill_evidence = None
         if self.closed or self.transport.executable is None:
             self.last = DeviceInspection(reason="adb_unavailable")
             return self.last
@@ -151,6 +153,15 @@ class ADBAndroidController:
             parsed["interaction_available"] = self.actions is not None and profile is not None
             if parsed["reason"] == "ready" and self.actions is not None: values["device"] = "READY"
             self.last = DeviceInspection(**values, **parsed)
+            if profile and profile.live_markers and self.last.manual_fill_candidate and session:
+                entry = unique_node(xml, profile.input_id, profile.package)
+                if (entry is not None and entry.get("class") == "android.widget.EditText"
+                        and all(entry.get(k) == "true" for k in ("enabled", "clickable", "focusable", "focused"))
+                        and entry.get("password") != "true"):
+                    # MANUAL typing relies on the owned listener session (checked
+                    # by the delivery guard), exact Profile/install trust and a
+                    # fresh reviewed composer. It does not assert UI LIVE proof.
+                    self._manual_fill_evidence = (key, account, session, monotonic())
         except AdbError:
             self._live_evidence = None
             self.last = DeviceInspection(**values, reason="adb_failed")
@@ -220,7 +231,7 @@ class ADBAndroidController:
             if state.security_state: return AndroidOutcome(status="needs_operator", reason="security_ui")
             if state.screen == ScreenState.TRANSIENT_OVERLAY:
                 return AndroidOutcome(status="not_sent", reason="transient_overlay")
-            if not state.fill_ready:
+            if not self.fill_ready_for(request.target.live_session_id, request.target.account):
                 reason = "open_phone_composer" if state.screen == ScreenState.LIVE_READY and state.live_verified and state.account_verified else state.reason
                 if reason not in {"open_phone_composer", "account_unverified", "live_unverified", "profile_unverified"}: reason = "unknown_screen"
                 return AndroidOutcome(status="needs_operator", reason=reason)
@@ -237,7 +248,8 @@ class ADBAndroidController:
                 final = await self._inspect(request.target)
             except (TextEntryError, AdbError):
                 return AndroidOutcome(status="needs_operator", reason="rejected")
-            if (not guard() or entered != request.text or not final.fill_ready or self._profile != profile
+            if (not guard() or entered != request.text or
+                    not self.fill_ready_for(request.target.live_session_id, request.target.account) or self._profile != profile
                     or final.serial != state.serial or not exact_input(self._xml, profile, request.text)):
                 return AndroidOutcome(status="needs_operator", reason="rejected")
             return AndroidOutcome(status="filled", reason="filled_waiting_user_send")

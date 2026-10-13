@@ -110,10 +110,17 @@ class ManualDeliveryService:
 
     def view(self):
         inspected = self.controller.last
+        ctx = self.context()
+        manual_ready = bool(self.mode == "MANUAL" and not self.closed and not self.paused and not self.cooldown
+            and not self.pending_fill and ctx.connected and ctx.active
+            and (self.controller.fill_ready_for(ctx.live_session_id, ctx.target_account)
+                 if hasattr(self.controller, "fill_ready_for") else inspected.fill_ready))
         ready = (not self.closed and not self.paused and not self.cooldown and getattr(self.controller, "current_ready", inspected.ready) and
                  self.context().device_available and self.settings.enable_physical_tiktok_send and self.mode == "AUTOMATIC")
         reason = "delivery_paused" if self.closed or self.paused else "cooldown" if self.cooldown else (
             "physical_delivery_disabled" if not self.settings.enable_physical_tiktok_send else "ready" if ready else "device_unavailable")
+        if self.mode == "MANUAL" and not self.closed and not self.paused and not self.cooldown:
+            reason = "ready" if manual_ready else "device_unavailable"
         auto_ctx = self.auto_context()
         auto_reason = self.auto_reason
         sending = self.workflow in {"AUTO_RESERVED", "AUTO SENDING", "POST_SEND_VERIFY"}
@@ -122,9 +129,9 @@ class ManualDeliveryService:
             elif not auto_ctx.device_available: auto_reason = "device_unavailable"
             elif self.cooldown: auto_reason = "cooldown"
         return DeliveryView(instance_id=self.settings.instance_id, account_label=self.settings.account_label, inspection=inspected, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
-            physical_ready=ready, fill_ready=inspected.fill_ready,
+            physical_ready=ready, fill_ready=manual_ready if self.mode == "MANUAL" else inspected.fill_ready,
             mobile_one_shot="DISABLED" if not self.settings.mobile_acceptance_one_shot else "SPENT" if self.acceptance_spent else "AVAILABLE",
-            delivery="DRY RUN READY" if inspected.ready else "NOT READY",
+            delivery="FILL READY" if manual_ready else "DRY RUN READY" if inspected.ready else "NOT READY",
             paused=self.paused, busy=self.busy, reason=reason, mode=self.mode,
             auto_state="AUTO OFF" if self.mode == "MANUAL" else "AUTO PAUSED" if self.paused else
                 "AUTO SENDING" if sending else
@@ -390,7 +397,7 @@ class ManualDeliveryService:
                 if state.screen.value == "TRANSIENT_OVERLAY":
                     self.workflow = "WAITING FOR PHONE INPUT"
                     return DeliveryResult(status="not_sent", reason="transient_overlay")
-                if not state.fill_ready:
+                if not self.controller.fill_ready_for(target.live_session_id, target.account):
                     self.workflow = "WAITING FOR PHONE INPUT"
                     reason = "open_phone_composer" if state.live_verified and state.account_verified else "unknown_screen"
                     return DeliveryResult(status="needs_operator", reason=reason)

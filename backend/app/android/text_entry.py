@@ -29,7 +29,8 @@ class ASCIITextEntryBackend:
         c = self.controller
         state = await c._inspect(self.target)
         entry = unique_node(c._xml, c._profile.input_id) if c._profile else None
-        if (not self.guard() or not (state.ready if self.require_send else state.fill_ready) or state.serial != serial or entry is None or
+        ready = state.ready if self.require_send else c.fill_ready_for(self.target.live_session_id, self.target.account)
+        if (not self.guard() or not ready or state.serial != serial or entry is None or
                 focused and entry.get("focused") != "true"):
             raise TextEntryError()
         return entry

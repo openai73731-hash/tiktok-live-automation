@@ -71,6 +71,14 @@ class DeviceInspection(DeviceModel):
                 self.account_verified and self.live_verified and self.profile_verified and
                 self.interaction_available and not self.security_state)
 
+    @property
+    def manual_fill_candidate(self):
+        # Field recognition is not programmatic SEND/LIVE authority. The
+        # controller additionally binds this candidate to the current session.
+        return (self.device in {"CONNECTED", "READY"} and self.screen == ScreenState.COMMENT_INPUT_READY
+                and self.comment_input_found and self.account_verified and self.profile_verified
+                and self.interaction_available and not self.security_state)
+
 
 class TextEntryBackend(Protocol):
     """Explicit character capability and exact readback, including future Unicode adapters."""

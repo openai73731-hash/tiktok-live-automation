@@ -347,3 +347,130 @@ async def test_mobile_full_admin_pipeline_uses_unified_registry_and_positive_ver
     assert verified.status_code == 200 and verified.json()["status"] == "confirmed"
     assert service.journal.lookup(body["idempotency_key"]).status == "confirmed"
     assert transport.activations == 0 and service.mode == "MANUAL"
+
+
+@pytest.fixture
+async def manual_fill_api(settings, tmp_path, monkeypatch):
+    from test_tiktok_you import empty_reviewed_composer
+    import xml.etree.ElementTree as ET
+    cfg = settings.model_copy(update={"tiktok_username": ACCOUNT, "tiktok_transport": "android",
+        "state_dir": tmp_path / "state", "log_dir": tmp_path / "logs",
+        "enable_physical_tiktok_send": False, "enable_physical_windows_send": False})
+    monkeypatch.setattr("app.main.LiveService", MockLive)
+    app = create_app(cfg)
+    async with app.router.lifespan_context(app):
+        service, transport = app.state.delivery, Transport()
+        service.controller = ADBAndroidController(transport, physical_enabled=False)
+        service.controller.on_stage = service._stage
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8000") as client:
+            client.headers["X-Admin-CSRF"] = app.state.admin.csrf_token
+            assert (await client.post("/api/admin/device/verify-account", json={})).status_code == 200
+            assert (await client.post("/api/admin/live/connect", json={"username": ACCOUNT})).status_code == 202
+            runtime = app.state.operator_runtime
+            await runtime.live.service.started.wait()
+            comment = Comment(username="viewer", text="Is it automatic?", message_id="4321")
+            runtime.live.service.on_receipt(comment)
+            record = await runtime.live.service.on_comment(comment)
+            envelope = app.state.admin.suggestions.get(record.id)
+            approved = await client.post(f"/api/admin/suggestions/{record.id}/approve",
+                json={"expected_suggestion_revision": envelope.suggestion_revision})
+            assert approved.status_code == 200
+            transport.xml = ET.tostring(empty_reviewed_composer(), encoding="unicode")
+            status = await client.post("/api/admin/device/inspect", json={})
+            assert status.status_code == 200
+            body = {"suggestion_id": record.id, "expected_suggestion_revision": envelope.suggestion_revision,
+                "approval_id": approved.json()["approval"]["approval_id"], "idempotency_key": "manual_gate_false"}
+            yield app, client, service, transport, envelope, body
+
+
+async def test_manual_fill_api_gate_false_without_ui_live_or_send_authority(manual_fill_api):
+    from app.android.tiktok_ui import unique_node, rid
+    app, client, service, transport, envelope, body = manual_fill_api
+    status = (await client.get("/api/admin/delivery/status")).json()
+    assert not status["physical_delivery_enabled"] and not status["physical_ready"]
+    assert status["mode"] == "MANUAL" and status["auto_state"] == "AUTO OFF"
+    assert status["fill_ready"] and status["delivery"] == "FILL READY" and status["reason"] == "ready"
+    assert status["inspection"]["account_verified"] and not status["inspection"]["live_verified"]
+    assert status["inspection"]["send_control_state"] == "UNAVAILABLE"
+    assert service.controller._live_evidence is None
+    binding = service.controller._manual_fill_evidence
+    assert not service.controller.fill_ready_for("f" * 32, ACCOUNT)
+    assert not service.controller.fill_ready_for(envelope.live_session_id, "other")
+    service.controller._manual_fill_evidence = (*binding[:3], binding[3] - 91)
+    assert not service.controller.fill_ready_for(envelope.live_session_id, ACCOUNT)
+    service.controller._manual_fill_evidence = binding
+    review = (await client.get(f"/api/admin/suggestions/{envelope.suggestion_id}")).json()
+    assert review["fill_allowed"] and review["eligibility"]["eligible"]
+    assert not review["physical_send_allowed"] and not app.state.admin.settings.enable_physical_windows_send
+    def reserved_before_input(command):
+        if command in {AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TEXT}:
+            assert service.journal.lookup(body["idempotency_key"]).status == "reserved"
+        return asyncio.sleep(0)
+    transport.after = reserved_before_input
+    response = await client.post("/api/admin/delivery/fill", json=body)
+    assert response.status_code == 200 and response.json() == {"status":"filled", "reason":"filled_waiting_user_send"}
+    assert unique_node(transport.xml, rid("h4k")).get("text") == envelope.suggested_reply
+    entries = [args["text"] for command, args in transport.calls if command == AdbCommand.TEXT]
+    assert entries == [envelope.suggested_reply]
+    assert not {AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE} & {c for c, _ in transport.calls}
+    assert transport.activations == 0 and service.controller._live_evidence is None
+    assert service.controller.last.screen.value == "COMMENT_INPUT_READY" and not service.controller.last.live_verified
+    assert service.journal.lookup(body["idempotency_key"]).status == "filled"
+    baseline = len(entries)
+    assert (await client.post("/api/admin/delivery/fill", json=body)).json()["status"] != "filled"
+    assert len([c for c, _ in transport.calls if c == AdbCommand.TEXT]) == baseline
+
+
+async def test_manual_capability_never_enables_programmatic_send_or_auto(manual_fill_api):
+    app, client, service, transport, _, body = manual_fill_api
+    transport.calls.clear()
+    result = await client.post("/api/admin/delivery/send", json=body)
+    assert result.status_code == 200 and result.json()["reason"] == "physical_delivery_disabled"
+    runtime = app.state.operator_runtime
+    automatic = await client.post("/api/admin/delivery/mode", json={"mode":"AUTOMATIC",
+        "expected_live_session_id":runtime.live.session_id, "expected_active_runtime_revision":runtime.active_runtime_revision})
+    assert automatic.status_code == 409 and service.mode == "MANUAL"
+    assert not transport.calls and service.controller._live_evidence is None
+
+
+@pytest.mark.parametrize("field", ["text", "suggested_reply", "device_serial"])
+async def test_manual_fill_api_rejects_browser_text_or_device_substitution(manual_fill_api, field):
+    _, client, _, transport, _, body = manual_fill_api
+    transport.calls.clear()
+    response = await client.post("/api/admin/delivery/fill", json=body | {field:"arbitrary"})
+    assert response.status_code == 422 and not transport.calls
+
+
+@pytest.mark.parametrize("failure", ["unknown", "security", "account", "device", "install", "version",
+    "stale", "session", "runtime", "unapproved", "consumed", "focus"])
+async def test_manual_fill_api_keeps_all_pre_input_guards(manual_fill_api, failure):
+    app, client, service, transport, envelope, body = manual_fill_api
+    if failure == "unknown": transport.xml = '<hierarchy><node package="com.zhiliaoapp.musically"/></hierarchy>'
+    elif failure == "security": transport.xml = transport.xml.replace("Введите сообщение...", "captcha")
+    elif failure == "account": service.controller._account_binding = (service.controller._installation, "other")
+    elif failure == "device": transport.serial = "other"
+    elif failure == "install": transport.info = transport.info.replace("10:00:00", "11:00:00")
+    elif failure == "version": transport.info = transport.info.replace("46.8.3", "46.8.4")
+    elif failure == "stale": body = body | {"expected_suggestion_revision":"f" * 64}
+    elif failure == "session":
+        runtime = app.state.operator_runtime
+        await runtime.live.disconnect(runtime.live.session_id)
+        await runtime.live.connect(ACCOUNT)
+        await runtime.live.service.started.wait()
+    elif failure == "runtime": app.state.operator_runtime.active_runtime_revision = "f" * 32
+    elif failure == "unapproved": app.state.admin.suggestions.approvals.clear()
+    elif failure == "consumed":
+        journal = service.journal_factory()
+        try:
+            approval = app.state.admin.suggestions.approvals[envelope.suggestion_id]
+            operation, reserved = journal.reserve(request(envelope, approval, key="consumed_manual"))
+            assert reserved
+            journal.finish(operation.operation_id, DeliveryResult(status="unknown", reason="timeout"))
+        finally: journal.close()
+    elif failure == "focus": transport.xml = transport.xml.replace('focused="true"', 'focused="false"')
+    transport.calls.clear()
+    response = await client.post("/api/admin/delivery/fill", json=body)
+    assert response.status_code in {200,409}
+    if response.status_code == 200: assert response.json()["status"] != "filled"
+    assert not {AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TEXT, AdbCommand.TAP_SEND,
+        AdbCommand.TAB, AdbCommand.ACTIVATE} & {c for c, _ in transport.calls}
