@@ -67,7 +67,7 @@ def profile_account(xml, expected):
 def composer_shape(root):
     ids = {n.get("resource-id") for n in root.iter() if n.get("resource-id")}
     allowed = {"android:id/content", "android:id/navigationBarBackground", *(rid(n) for n in
-        ("f0t", "l_8", "view_shadow", "l_6", "lbz", "yo8", "lcm", "h4k", "qde", "qcv", "vp8", "vpl", "l_7"))}
+        ("f0t", "l_8", "view_shadow", "l_6", "lbz", "yo8", "lcm", "h4k", "h4t", "qde", "qcv", "vp8", "vpl", "l_7"))}
     required = {rid(n) for n in ("l_8", "view_shadow", "l_6", "lbz", "yo8", "lcm", "h4k", "vp8", "vpl")}
     if not required <= ids or not ids <= allowed: return False
     # The reviewed composer is a separate window, not the host hierarchy behind it.
@@ -76,6 +76,18 @@ def composer_shape(root):
     if len(anonymous) != 2 or any(n.get("class") != "android.widget.FrameLayout" or
             n.get("clickable") != "false" or n.get("text") or n.get("content-desc") for n in anonymous): return False
     if any(sum(n.get("resource-id") == identity for n in root.iter()) != 1 for identity in ids): return False
+    if rid("h4t") in ids:
+        entry = next(n for n in root.iter() if n.get("resource-id") == rid("h4k"))
+        placeholder = next(n for n in root.iter() if n.get("resource-id") == rid("h4t"))
+        container = next(n for n in root.iter() if n.get("resource-id") == rid("lcm"))
+        # Observed empty-composer variant: a noninteractive sibling of the exact
+        # focused input. Localized placeholder wording grants no authority.
+        if (entry not in list(container) or placeholder not in list(container) or
+                entry.get("package") != PACKAGE or entry.get("class") != "android.widget.EditText" or
+                any(entry.get(k) != "true" for k in ("enabled", "clickable", "focusable", "focused")) or
+                entry.get("password") == "true" or placeholder.get("package") != PACKAGE or
+                placeholder.get("class") != "android.widget.TextView" or placeholder.get("enabled") != "true" or
+                any(placeholder.get(k) != "false" for k in ("clickable", "focusable", "focused"))): return False
     def chain(names):
         nodes = [root]
         for name in names:
@@ -101,28 +113,27 @@ def foreground(output):
         record = re.fullmatch(r"[ \t]*[=:][ \t]*" + kind + r"\{([^{}\r\n]*)\}(?:[ \t]+t[0-9]{1,10}\})?[ \t]*", value)
         components = re.findall(r"(?:^|[ \t])([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)(?=[ \t]|$)", record[1]) if record else []
         bare = re.fullmatch(r"[ \t]*[=:][ \t]*([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)[ \t]*", value)
-        if bare and marker[1] != "mCurrentFocus": components = [(bare[1], bare[2])]
+        if bare: components = [(bare[1], bare[2])]
         component = components[0] if len(components) == 1 and len(components[0][1]) <= 200 else None
-        records.setdefault(marker[1], set()).add(component)
+        records.setdefault(marker[1], []).append(component)
     selected = None
     for name in ("topResumedActivity", "mResumedActivity", "ResumedActivity", "mFocusedApp"):
         if name in records:
             candidates = records[name]
             # Conflicting/malformed authoritative records cannot fall back to history.
-            if None in candidates or len(candidates) != 1: return None, None
-            selected = next(iter(candidates))
+            if None in candidates or len({c[0] for c in candidates}) != 1: return None, None
+            selected = candidates[0]
             break
     if selected is None:
-        candidates = records.get("mCurrentFocus", set())
-        return next(iter(candidates)) if len(candidates) == 1 and None not in candidates else (None, None)
-    def expanded(component):
-        package, activity = component
-        return package, package + activity if activity.startswith(".") else activity
+        candidates = records.get("mCurrentFocus", [])
+        return candidates[0] if candidates and None not in candidates and len({c[0] for c in candidates}) == 1 else (None, None)
     focused = records.get("mFocusedApp", set())
-    if None in focused or any(expanded(c) != expanded(selected) for c in focused): return None, None
+    # Activity/alias namespaces need not match their application package. Two
+    # activities of the same package are not conflicting foreground apps.
+    if None in focused or any(c[0] != selected[0] for c in focused): return None, None
     # Componentless AOD/missing window focus must not override reliable app
     # evidence. A concrete conflicting window component still blocks readiness.
-    if any(c is not None and expanded(c) != expanded(selected) for c in records.get("mCurrentFocus", ())):
+    if any(c is not None and c[0] != selected[0] for c in records.get("mCurrentFocus", ())):
         return None, None
     # Preserve Android relative activity spelling, including the leading dot.
     return selected
@@ -228,8 +239,14 @@ def reviewed_hierarchy(root, nodes, profile, result, account_bound, live_bound, 
         for identity, klass in profile.live_markers)
     composer = composer_shape(root)
     result.update(profile_verified=True, account_verified=account_bound, live_verified=live or composer and live_bound)
-    if not result["live_verified"]: return result | dict(reason="live_unverified")
     entry, send, child = one(profile.input_id), one(profile.send_id), one(rid("vpl"))
+    if (composer and entry is not None and entry.get("class") == "android.widget.EditText" and
+            all(entry.get(k) == "true" for k in ("enabled", "clickable", "focusable", "focused")) and
+            entry.get("password") != "true"):
+        # Recognizing the field is independent of granting the account/session
+        # lease. Missing LIVE proof still blocks fill, confirmation and send.
+        result.update(screen=ScreenState.COMMENT_INPUT_READY, comment_input_found=True)
+    if not result["live_verified"]: return result | dict(reason="live_unverified")
     if entry is not None or groups.get(profile.input_id):
         if (not composer or entry is None or entry.get("class") != "android.widget.EditText" or
                 any(entry.get(k) != "true" for k in ("enabled", "focusable")) or entry.get("password") == "true"):

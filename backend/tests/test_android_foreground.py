@@ -167,8 +167,7 @@ async def test_package_installer_foreground_is_not_tiktok():
     assert AdbCommand.DUMP not in transport.calls
 
 
-@pytest.mark.parametrize("after", [MIUI_INSTALLER, "", LEGACY_COLON,
-    TIKTOK_ANDROID_13 + "\n" + f"topResumedActivity: ActivityRecord{{def u0 {PACKAGE}/.DifferentActivity t2}}"])
+@pytest.mark.parametrize("after", [MIUI_INSTALLER, ""])
 async def test_foreground_changes_or_becomes_ambiguous_during_inspection_fail_closed(after):
     state = await ADBAndroidController(InspectionTransport(TIKTOK_ANDROID_13, after)).inspect()
     assert state.device == "CONNECTED" and state.screen == ScreenState.UNKNOWN_SCREEN
@@ -202,7 +201,6 @@ async def test_miui_aod_or_missing_window_focus_keeps_connected_tiktok_foregroun
     "", AOD, "mCurrentFocus=null",
     RESUMED_TIKTOK + f"\nmFocusedApp=ActivityRecord{{abc u0 {INSTALLER}/.ScanActivity t1}}\n" + AOD,
     f"ResumedActivity: ActivityRecord{{abc u0 {INSTALLER}/.ScanActivity t1}}\n" + FOCUSED_TIKTOK,
-    RESUMED_TIKTOK + f"\nmFocusedApp=ActivityRecord{{abc u0 {PACKAGE}/.OtherActivity t1}}",
     RESUMED_TIKTOK + f"\nmCurrentFocus=Window{{abc u0 {INSTALLER}/.ScanActivity}}",
     FOCUSED_TIKTOK + f"\nmFocusedApp=ActivityRecord{{abc u0 {INSTALLER}/.ScanActivity t2}}",
 ])
@@ -292,3 +290,31 @@ async def test_miui_aod_preserves_reviewed_profile_and_explicit_exact_handle_ver
     assert not controller.last.ready and not controller.physical_enabled
     assert not any(command in {AdbCommand.TEXT, AdbCommand.DELETE, AdbCommand.SELECT_ALL,
         AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE} for command, _ in transport.calls)
+
+
+@pytest.mark.parametrize("marker", ["topResumedActivity", "ResumedActivity", "mFocusedApp", "mCurrentFocus"])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_activity_alias_namespace_is_not_the_application_package(marker, wrapped):
+    component = f"{PACKAGE}/com.windukk.mod.icon.default"
+    kind = "Window" if marker == "mCurrentFocus" else "ActivityRecord"
+    value = f"{kind}{{abc u0 {component}}}" if wrapped else "\n  " + component
+    assert foreground(marker + "=" + value) == (PACKAGE, "com.windukk.mod.icon.default")
+
+
+@pytest.mark.parametrize("signals", [
+    RESUMED_TIKTOK + f"\nmFocusedApp={PACKAGE}/com.windukk.mod.icon.default\n" + AOD,
+    f"topResumedActivity={PACKAGE}/com.windukk.mod.icon.default\n" + FOCUSED_TIKTOK,
+    RESUMED_TIKTOK + f"\nResumedActivity={PACKAGE}/com.windukk.mod.icon.default\n" + FOCUSED_TIKTOK,
+])
+async def test_different_activity_classes_in_same_package_are_not_foreground_conflicts(signals):
+    assert foreground(signals)[0] == PACKAGE
+    state = await ADBAndroidController(InspectionTransport(signals, signals)).inspect()
+    assert state.device == "CONNECTED" and state.package == PACKAGE
+    assert state.reason == "profile_unverified" and not state.ready
+
+
+@pytest.mark.parametrize("after", [LEGACY_COLON, f"ResumedActivity={PACKAGE}/com.windukk.mod.icon.default"])
+async def test_same_package_activity_transition_during_inspection_is_not_device_failure(after):
+    state = await ADBAndroidController(InspectionTransport(TIKTOK_ANDROID_13, after)).inspect()
+    assert state.device == "CONNECTED" and state.package == PACKAGE
+    assert state.reason == "profile_unverified" and not state.ready

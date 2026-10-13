@@ -8,6 +8,7 @@ import stat
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -16,6 +17,7 @@ from app.android.controller import ADBAndroidController
 from app.android.diagnostics import CaptureError
 from app.android.models import ClientVariant, DeviceInspection, ScreenState
 from app.android.tiktok_ui import ScreenProfile, foreground, observed_variant, package_version
+from app.android.tiktok_ui import TIKTOK_YOU_4683, rid, inspect_hierarchy, resolved_send_point
 from app.admin.events import sse_message
 from test_predelivery_hardening import panel
 from test_operator_runtime import MockLive, post_action, BASE
@@ -323,6 +325,116 @@ async def test_username_save_apply_connect_independent_of_android_not_ready(pane
     assert MockLive.instances[0].settings.tiktok_username == USER[1:]
     assert app.state.comment_processor.engine.name == "lmstudio"
     assert not app.state.delivery.settings.enable_physical_tiktok_send and app.state.delivery.journal is None
+
+
+def empty_reviewed_composer():
+    """Artificial variant of the existing fixture, matching the local capture's
+    h4k/h4t siblings and inert vpl icon; no raw capture or private text is copied.
+    """
+    from test_manual_send_rc import xml
+    root = ET.fromstring(xml("composer"))
+    entry = next(n for n in root.iter() if n.get("resource-id") == rid("h4k"))
+    entry.set("text", "")
+    container = next(n for n in root.iter() if n.get("resource-id") == rid("lcm"))
+    ET.SubElement(container, "node", {"package": PACKAGE, "resource-id": rid("h4t"),
+        "class": "android.widget.TextView", "enabled": "true", "clickable": "false",
+        "focusable": "false", "focused": "false", "text": "Введите сообщение..."})
+    icon = next(n for n in root.iter() if n.get("resource-id") == rid("vpl"))
+    icon.set("clickable", "false"); icon.set("focusable", "false")
+    return root
+
+
+@pytest.mark.parametrize("placeholder", ["Введите сообщение...", "Enter a message..."])
+@pytest.mark.parametrize("account_bound,live_bound", [(False, False), (True, False), (True, True)])
+def test_reviewed_empty_composer_is_recognized_without_localized_text_authority(placeholder, account_bound, live_bound):
+    root = empty_reviewed_composer()
+    next(n for n in root.iter() if n.get("resource-id") == rid("h4t")).set("text", placeholder)
+    hierarchy = ET.tostring(root, encoding="unicode")
+    state = inspect_hierarchy(hierarchy, PACKAGE, "fixture", TIKTOK_YOU_4683,
+        account_bound=account_bound, live_bound=live_bound, send_confirmed=True)
+    assert state["screen"] == ScreenState.COMMENT_INPUT_READY and state["comment_input_found"]
+    assert state["profile_verified"] and state["account_verified"] is account_bound
+    assert state["live_verified"] is live_bound
+    assert state.get("send_control_state", "UNAVAILABLE") == "UNAVAILABLE" and not state["send_button_found"]
+    assert resolved_send_point(hierarchy, TIKTOK_YOU_4683) is None
+    if not live_bound: assert state["reason"] == "live_unverified"
+
+
+@pytest.mark.parametrize("marker", ["captcha", "verification required", "log in", "security check"])
+def test_empty_composer_never_overrides_security_detection(marker):
+    root = empty_reviewed_composer()
+    next(n for n in root.iter() if n.get("resource-id") == rid("h4t")).set("text", marker)
+    state = inspect_hierarchy(ET.tostring(root, encoding="unicode"), PACKAGE, "fixture", TIKTOK_YOU_4683,
+        account_bound=True, live_bound=True, send_confirmed=True)
+    assert state["security_state"] and state["reason"] == "security_ui"
+    assert not state["comment_input_found"] and not state["send_button_found"]
+
+
+@pytest.mark.parametrize("change", ["wrong_parent", "duplicate", "clickable_placeholder", "wrong_class", "unfocused_input", "foreign"])
+def test_empty_composer_variant_requires_exact_reviewed_structure(change):
+    root = empty_reviewed_composer()
+    placeholder = next(n for n in root.iter() if n.get("resource-id") == rid("h4t"))
+    entry = next(n for n in root.iter() if n.get("resource-id") == rid("h4k"))
+    if change == "wrong_parent":
+        next(n for n in root.iter() if placeholder in list(n)).remove(placeholder)
+        root.append(placeholder)
+    elif change == "duplicate": root.append(ET.fromstring(ET.tostring(placeholder)))
+    elif change == "clickable_placeholder": placeholder.set("clickable", "true")
+    elif change == "wrong_class": placeholder.set("class", "android.widget.ImageView")
+    elif change == "unfocused_input": entry.set("focused", "false")
+    elif change == "foreign": placeholder.set("package", "other.app")
+    state = inspect_hierarchy(ET.tostring(root, encoding="unicode"), PACKAGE, "fixture", TIKTOK_YOU_4683,
+        account_bound=True, live_bound=True, send_confirmed=True)
+    assert not state["comment_input_found"] and not state["send_button_found"]
+    assert state["screen"] == ScreenState.UNKNOWN_SCREEN and state["reason"] != "ready"
+
+
+@pytest.mark.parametrize("change", ["extra_image", "replace_send_icon"])
+def test_unknown_clickable_image_is_never_promoted_to_send(change):
+    root = empty_reviewed_composer()
+    if change == "replace_send_icon":
+        icon = next(n for n in root.iter() if n.get("resource-id") == rid("vpl"))
+        icon.set("resource-id", rid("unknown_image")); icon.set("clickable", "true")
+    else:
+        ET.SubElement(root, "node", {"resource-id": rid("unknown_image"), "package": PACKAGE,
+            "class": "android.widget.ImageView", "enabled": "true", "clickable": "true"})
+    hierarchy = ET.tostring(root, encoding="unicode")
+    state = inspect_hierarchy(hierarchy, PACKAGE, "fixture", TIKTOK_YOU_4683,
+        account_bound=True, live_bound=True, send_confirmed=True)
+    assert not state["send_button_found"] and state.get("send_control_state", "UNAVAILABLE") == "UNAVAILABLE"
+    assert resolved_send_point(hierarchy, TIKTOK_YOU_4683) is None
+
+
+async def test_empty_composer_controller_keeps_account_session_and_send_confirmation_guards():
+    from test_manual_send_rc import Transport, target, xml
+    transport = Transport()
+    controller = ADBAndroidController(transport, physical_enabled=False)
+    dest = target()
+    assert await controller.verify_account(dest)
+    transport.xml = xml("live_idle")
+    assert (await controller.inspect(dest)).live_verified
+    root = empty_reviewed_composer()
+    transport.xml = ET.tostring(root, encoding="unicode")
+    state = await controller.inspect(dest)
+    assert state.screen == ScreenState.COMMENT_INPUT_READY and state.comment_input_found
+    assert state.account_verified and state.live_verified and state.profile_verified
+    assert state.fill_ready and not state.ready and state.send_confirmation_token is None
+    assert controller._send_binding is None and not controller.physical_enabled
+    # Only the existing reviewed vp8/vpl interactive shape can offer confirmation.
+    icon = next(n for n in root.iter() if n.get("resource-id") == rid("vpl"))
+    icon.set("clickable", "true"); icon.set("focusable", "true")
+    transport.xml = ET.tostring(root, encoding="unicode")
+    candidate = await controller.inspect(dest)
+    assert candidate.send_control_state == "SEND_CONTROL_CANDIDATE" and candidate.send_confirmation_token
+    assert not candidate.send_button_found and controller._send_binding is None
+    assert not await controller.confirm_send(dest, "0" * 32)
+    other_session = await controller.inspect(target(session="b" * 32))
+    assert other_session.comment_input_found and not other_session.live_verified and not other_session.fill_ready
+    restarted = await ADBAndroidController(transport).inspect(dest)
+    assert restarted.comment_input_found and not restarted.account_verified and not restarted.live_verified
+    assert not restarted.fill_ready and restarted.send_confirmation_token is None
+    assert not any(command in {AdbCommand.TEXT, AdbCommand.SELECT_ALL, AdbCommand.DELETE,
+        AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE} for command, _ in transport.calls)
 
 
 def test_operator_and_capture_browser_regressions():

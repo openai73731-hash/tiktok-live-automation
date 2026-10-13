@@ -123,7 +123,7 @@ class ADBAndroidController:
                 # Metadata is part of this exact device profile, not just a display hint.
                 if model != "M2101K9G" or android != "13": profile = None
             after = await self.transport.run(AdbCommand.FOREGROUND, serial=selected.serial)
-            if foreground(after) != (package, activity): raise ValueError("Foreground changed")
+            if foreground(after)[0] != package: raise ValueError("Foreground package changed")
             account = getattr(target, "account", None)
             if self._account_binding is not None and self._account_binding[1] != account:
                 self.invalidate_trust()
@@ -203,7 +203,7 @@ class ADBAndroidController:
                 if not re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", android): raise CaptureError()
                 info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=state.serial, package=state.package)
                 after = await self.transport.run(AdbCommand.FOREGROUND, serial=state.serial)
-                if (foreground(after) != (state.package, state.foreground_activity)
+                if (foreground(after)[0] != state.package
                         or package_version(info) != (state.version, state.version_code)): raise CaptureError()
                 return save_capture(self._xml, state, model, android)
             except (AdbError, OSError, ValueError):
