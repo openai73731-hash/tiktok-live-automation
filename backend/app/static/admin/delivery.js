@@ -11,6 +11,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("stream-mode").textContent = windows ? "PC" : "MOBILE";
     const stopped = next.paused || next.delivery_uncertain || next.workflow === "UNKNOWN" || next.inspection?.security_state;
     $("delivery-summary").textContent = stopped ? "STOP" : next.physical_ready || (!windows && next.fill_ready) ? "READY" : "NEED OPERATOR";
+    if (!windows && next.paused) $("delivery-summary").textContent = "DELIVERY PAUSED — RE-PREPARE REQUIRED";
     $("auto-summary").textContent = (windows ? next.windows_sender?.auto_enabled : next.mode === "AUTOMATIC") ? "ON" : "OFF";
     $("device-panel-title").textContent = windows ? "Windows LIVE Studio" : "Android / TikTok UI";
     $("device-panel-note").textContent = windows
@@ -22,7 +23,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("legacy-delivery-settings").hidden = windows;
     $("dash-delivery-mode").textContent = windows ? next.windows_sender?.auto_enabled ? "AUTO · operator approved" : "MANUAL" : next.mode;
     $("android-capture-note").hidden = windows;
-    ["inspect-device", "capture-device", "verify-account", "confirm-send"].forEach((id) => {
+    ["inspect-device", "capture-device", "verify-account", "confirm-send", "prepare-mobile"].forEach((id) => {
       $(id).hidden = windows;
       $(id).disabled = windows || busy || !state.connected;
     });
@@ -77,6 +78,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("inspect-device").disabled = busy || !state.connected;
     $("capture-device").disabled = busy || !state.connected;
     $("verify-account").disabled = busy || !state.connected;
+    $("prepare-mobile").disabled = busy || next.busy || !state.connected || next.mode !== "MANUAL" || Boolean(next.live_session_id);
     $("confirm-send").disabled = busy || !state.connected || !d.send_confirmation_token;
     $("delivery-mode").value = next.mode || "MANUAL";
     $("delivery-mode").disabled = busy || !state.connected;
@@ -137,6 +139,15 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     busy = true;
     try { render(await api("/api/admin/device/verify-account", {})); toast("Аккаунт проверен. Откройте host LIVE и проверьте устройство, затем откройте composer вручную."); }
     catch (error) { toast(error.message); }
+    finally { busy = false; await refresh(); }
+  });
+  $("prepare-mobile").addEventListener("click", async () => {
+    if (busy || !state.connected || view?.transport === "windows_live_studio") return;
+    busy = true;
+    try {
+      render(await api("/api/admin/delivery/prepare", {}));
+      toast("Mobile prepared. Новая runtime revision; старые consumed ответы повторять нельзя. AUTO OFF.");
+    } catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
   });
   $("confirm-send").addEventListener("click", async () => {

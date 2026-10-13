@@ -208,6 +208,12 @@ async def inspect_device(request: Request, body: UIModel):
 
 @router.post("/api/admin/delivery/prepare")
 async def prepare_delivery(request: Request, body: UIModel):
+    if request.app.state.admin.settings.tiktok_transport == "android":
+        from app.android.preparation import prepare_mobile
+        try:
+            return await prepare_mobile(request.app.state.delivery, request.app.state.operator_runtime)
+        except (SuggestionConflict, RuntimeConflict) as exc:
+            raise HTTPException(409, detail=str(exc)) from None
     return request.app.state.delivery.prepare()
 
 

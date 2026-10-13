@@ -39,7 +39,7 @@ class DeliveryView(FrozenModel):
         "AUTO_RESERVED", "AUTO SENDING", "POST_SEND_VERIFY", "SENT CONFIRMED", "AUTO BLOCKED", "UNKNOWN"] = "READY"
     live_session_id: str | None = None
     active_runtime_revision: str = "unavailable"
-    delivery: Literal["NOT READY", "DRY RUN READY", "FILL READY"]
+    delivery: Literal["NOT READY", "DRY RUN READY", "FILL READY", "DELIVERY PAUSED — RE-PREPARE REQUIRED"]
     paused: bool
     busy: bool
     reason: Literal["physical_delivery_disabled", "device_unavailable", "ready", "delivery_paused", "cooldown", "not_configured"]
@@ -66,6 +66,7 @@ class ManualDeliveryService:
         self.tasks = set()
         self.lock = asyncio.Lock()
         self.closed = self.paused = False
+        self._verified_runtime_revision = None
         self.last_attempt = float("-inf")
         self.history = deque(maxlen=50)
         self.on_idle = lambda: None
@@ -78,6 +79,15 @@ class ManualDeliveryService:
         self.pending_fill = None
         self.acceptance_spent = False
         self.controller.on_stage = self._stage
+
+    @property
+    def paused(self): return self._paused
+
+    @paused.setter
+    def paused(self, value):
+        self._paused = bool(value)
+        self._pause_reason = "operator_required" if value else None
+        if value: self._verified_runtime_revision = None
 
     def _stage(self, stage):
         self.workflow = stage
@@ -131,7 +141,8 @@ class ManualDeliveryService:
         return DeliveryView(instance_id=self.settings.instance_id, account_label=self.settings.account_label, inspection=inspected, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
             physical_ready=ready, fill_ready=manual_ready if self.mode == "MANUAL" else inspected.fill_ready,
             mobile_one_shot="DISABLED" if not self.settings.mobile_acceptance_one_shot else "SPENT" if self.acceptance_spent else "AVAILABLE",
-            delivery="FILL READY" if manual_ready else "DRY RUN READY" if inspected.ready else "NOT READY",
+            delivery="DELIVERY PAUSED — RE-PREPARE REQUIRED" if self.paused else
+                "FILL READY" if manual_ready else "DRY RUN READY" if inspected.ready else "NOT READY",
             paused=self.paused, busy=self.busy, reason=reason, mode=self.mode,
             auto_state="AUTO OFF" if self.mode == "MANUAL" else "AUTO PAUSED" if self.paused else
                 "AUTO SENDING" if sending else
@@ -176,6 +187,7 @@ class ManualDeliveryService:
                     account=account, device_serial=self.controller.serial)
                 valid = await self.controller.verify_account(target) if verify else await self.controller.confirm_send(target, token)
                 if not valid: raise SuggestionConflict("Проверка не выполнена. Проверьте Profile, LIVE и reviewed composer.")
+                if verify: self._verified_runtime_revision = ctx.active_runtime_revision
                 return self.view()
         return await self._owned(run)
 
@@ -225,7 +237,11 @@ class ManualDeliveryService:
         if self.journal is None:
             try:
                 self.journal = self.journal_factory()
-                if self.journal.unresolved(): self.paused = True
+                if self.journal.unresolved():
+                    self.paused = True
+                    from app.android.preparation import recovery_blocked
+                    if not recovery_blocked(self.journal, self.settings.state_dir):
+                        self._pause_reason = "manual_rejected"
             except Exception: self.paused = True
         return self.view()
 
@@ -422,6 +438,7 @@ class ManualDeliveryService:
                 before = getattr(self.controller, "_host_snapshot", None)
                 self.workflow = "FILLING"
                 self.on_idle()
+                result = None
                 try:
                     result = await coordinator.execute(body.suggestion_id, body.approval_id,
                         body.expected_suggestion_revision, body.idempotency_key, timeout=60, device_serial=target.device_serial)
@@ -437,6 +454,8 @@ class ManualDeliveryService:
                 finally:
                     self.paused = self.paused or coordinator.failed
                     await coordinator.aclose()
+                    if result and result.status == "needs_operator" and result.reason == "rejected":
+                        self._pause_reason = "manual_rejected"
         return await self._owned(run)
 
     async def verify_fill(self):

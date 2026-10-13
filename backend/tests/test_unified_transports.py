@@ -242,10 +242,14 @@ const window={};vm.runInNewContext(fs.readFileSync('backend/app/static/admin/del
 const controls=window.createDeliveryControls({api(){throw Error('No IO on render')},node:()=>el(),toast(){},state:{connected:true},refreshCards(){}});
 controls.render({transport:'windows_live_studio',windows_sender:{},physical_delivery_enabled:false});
 assert(!els.get('windows-panel').hidden);assert(els.get('manual-mode-panel').hidden);assert(els.get('inspect-device').hidden);
+assert(els.get('prepare-mobile').hidden);
 assert(els.get('active-transport').textContent==='PC / LIVE STUDIO');assert(els.get('auto-summary').textContent==='OFF');
 controls.render({transport:'android',inspection:{devices:[]},mode:'MANUAL',physical_delivery_enabled:false});
 assert(els.get('windows-panel').hidden);assert(!els.get('manual-mode-panel').hidden);assert(!els.get('inspect-device').hidden);
 assert(els.get('active-transport').textContent==='MOBILE / ANDROID');
+controls.render({transport:'android',paused:true,inspection:{devices:[]},mode:'MANUAL',physical_delivery_enabled:false});
+assert(els.get('delivery-summary').textContent==='DELIVERY PAUSED — RE-PREPARE REQUIRED');
+assert(!els.get('prepare-mobile').hidden && !els.get('prepare-mobile').disabled);
 '''
     result = subprocess.run([node, "-e", source], capture_output=True, text=True, encoding="utf-8", timeout=15)
     assert result.returncode == 0, result.stderr

@@ -138,6 +138,25 @@ After backend restart, verify the exact own Profile again, then open/focus the
 composer and CHECK DEVICE. Missing account trust blocks with `account_unverified`;
 `COMMENT_INPUT_READY` recognizes a field and cannot substitute for account proof.
 
+MANUAL `REJECTED` pauses delivery: Admin shows **DELIVERY PAUSED — RE-PREPARE
+REQUIRED**. Neither VERIFY/Profile, reconnect nor new comments clear it. Disconnect
+the listener, open exact own Profile, VERIFY ACCOUNT, then use **PREPARE MOBILE /
+RECOVER** or `prepare-mobile.ps1`. The existing `/api/admin/delivery/prepare` checks
+AUTO OFF, idle native/coordinator work, no pending fill, fresh current-runtime
+Profile/account/device/install trust and all current/legacy journals. Only a
+settled MANUAL rejection on the reviewed Android device is recoverable. UNKNOWN/reserved/filled, other pause
+causes or unreadable journals fail with `operator_paused / recovery required`.
+Successful preparation creates a new runtime revision, retains every consumed
+row and the acceptance one-shot latch, and keeps AUTO OFF. The script rechecks
+final pause and revision; it cannot report success while paused. Start a new
+listener session and use a new comment/approval; never retry the old identity.
+
+MANUAL entry emits `android_manual_text_entry` in `logs/app.jsonl` with structural
+target/focus, command category/exit code, output-presence flags and exact rejection
+codes/readback outcome. It never includes reply, stdout or stderr bodies. Stderr
+alone is not failure; nonzero exit, timeout, invalid output and unsafe readback
+still reject. No text insertion is retried.
+
 ## Windows acceptance
 
 Windows keeps release provenance, own-account/UID binding, sticky clock failure

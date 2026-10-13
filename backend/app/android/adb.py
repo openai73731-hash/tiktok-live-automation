@@ -64,6 +64,7 @@ class AdbTransport:
         self.timeout = timeout
         self.processes = set()
         self.closed = False
+        self.last_command_result = None
 
     def argv(self, command, *, serial=None, package=None, text=None, point=None):
         if not isinstance(command, AdbCommand) or self.executable is None: raise AdbError()
@@ -102,6 +103,10 @@ class AdbTransport:
         return args + commands[command]
 
     async def run(self, command, *, serial=None, package=None, text=None, point=None, guard=None):
+        result = dict(command=command.value if isinstance(command, AdbCommand) else "invalid",
+            category="transport_error", exit_code=None, stdout_present=False, stderr_present=False,
+            stderr_miui_uiautomator_noise=False)
+        self.last_command_result = result
         if self.closed: raise AdbError()
         args = self.argv(command, serial=serial, package=package, text=text, point=point)
         # Do not forward API keys, proxy settings or remote ADB server overrides.
@@ -113,32 +118,49 @@ class AdbTransport:
         try:
             async with asyncio.timeout(self.timeout):
                 async def start():
-                    if guard is not None and not guard(): raise AdbError()
+                    if guard is not None and not guard():
+                        result["category"] = "guard_rejected"
+                        raise AdbError()
                     return await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.DEVNULL, env=env,
                         **({"creationflags": 0x08000000} if os.name == "nt" else {}))
                 spawn = asyncio.create_task(start())
                 process = await asyncio.shield(spawn)
                 self.processes.add(process)
-                async def read(stream, limit):
+                async def read(stream, limit, name):
                     chunks, total = [], 0
                     while chunk := await stream.read(65536):
+                        result[name + "_present"] = True
                         total += len(chunk)
                         if total > limit: raise AdbError()
                         chunks.append(chunk)
                     return b"".join(chunks)
-                readers = [asyncio.create_task(read(process.stdout, 524288)),
-                           asyncio.create_task(read(process.stderr, 8192)), asyncio.create_task(process.wait())]
-                stdout, _, code = await asyncio.gather(*readers)
-                if code != 0: raise AdbError()
+                readers = [asyncio.create_task(read(process.stdout, 524288, "stdout")),
+                           asyncio.create_task(read(process.stderr, 8192, "stderr")), asyncio.create_task(process.wait())]
+                stdout, stderr, code = await asyncio.gather(*readers)
+                result.update(exit_code=code, stdout_present=bool(stdout), stderr_present=bool(stderr))
+                # Recognize only linker WARNING lines in uiautomator diagnostics.
+                # This label never overrides exit status or exact UI readback.
+                lines = stderr.decode("utf-8", errors="replace").splitlines()
+                result["stderr_miui_uiautomator_noise"] = (command == AdbCommand.DUMP and bool(lines)
+                    and all(line.startswith("WARNING: linker:") for line in lines))
+                if code != 0:
+                    result["category"] = "exit_nonzero"
+                    raise AdbError()
+                result["category"] = "output_invalid"
                 output = stdout.decode("utf-8", errors="strict")
+                result["category"] = "success"
                 if command == AdbCommand.FOREGROUND:
                     # MIUI's focused window can be AOD while the resumed/focused
                     # application is TikTok. Collect both within this timeout.
                     output += "\n" + await self.run(AdbCommand.FOREGROUND_WINDOW, serial=serial)
                 return output
         except asyncio.CancelledError:
+            result["category"] = "cancelled"
             raise
+        except TimeoutError:
+            result["category"] = "timeout"
+            raise AdbError() from None
         except Exception:
             raise AdbError() from None
         finally:
@@ -155,6 +177,7 @@ class AdbTransport:
                         if not task.done(): task.cancel()
                     await asyncio.gather(*readers, return_exceptions=True)
                     await process.wait()
+                    result["exit_code"] = process.returncode
                     self.processes.discard(process)
                 await finish_owned(asyncio.create_task(cleanup(), name="owned-adb-cleanup"))
 

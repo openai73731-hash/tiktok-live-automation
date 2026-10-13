@@ -291,12 +291,18 @@ class ADBAndroidController:
             try:
                 entered = await self.actions.prepare_exact(state.serial, profile.input_id, request.text)
                 final = await inspection.read()
-            except (TextEntryError, AdbError):
+            except (TextEntryError, AdbError) as exc:
+                self.actions.report(exc.reason if isinstance(exc, TextEntryError) else "adb_failed")
                 inspection.block("rejected")
                 return AndroidOutcome(status="needs_operator", reason="rejected")
-            if (not guard() or entered != request.text or
-                    not self.fill_ready_for(request.target.live_session_id, request.target.account) or self._profile != profile
-                    or final.serial != state.serial or not exact_input(self._xml, profile, request.text)):
+            rejection = ("final_guard_rejected" if not guard() else
+                "text_readback_mismatch" if entered != request.text else
+                "final_evidence_rejected" if not self.fill_ready_for(request.target.live_session_id, request.target.account) else
+                "profile_changed" if self._profile != profile else
+                "device_mismatch" if final.serial != state.serial else
+                "final_readback_mismatch" if not exact_input(self._xml, profile, request.text) else None)
+            if rejection:
+                self.actions.report(rejection)
                 inspection.block("rejected")
                 return AndroidOutcome(status="needs_operator", reason="rejected")
             return AndroidOutcome(status="filled", reason="filled_waiting_user_send")

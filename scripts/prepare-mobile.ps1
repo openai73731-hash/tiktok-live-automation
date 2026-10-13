@@ -1,4 +1,4 @@
-# Read-only preparation against an already running loopback backend.
+# Explicit safe MANUAL preparation against an already running loopback backend.
 # Never starts LIVE/listener, selects AUTO, fills, taps or sends.
 [CmdletBinding()]
 param(
@@ -22,11 +22,12 @@ function Invoke-MobileRequest([string]$Path, [switch]$Post) {
     Invoke-RestMethod @options
 }
 
-function Assert-MobileIdle($Status, $Delivery) {
+function Assert-MobileIdle($Status, $Delivery, [switch]$AllowRecovery) {
     if ($Status.active_transport -cne 'android') { throw 'Apply Mobile / Android before preparation.' }
-    if ($Status.live.connection_owned -or $Status.live.state -notin @('disconnected','stopped')) { throw 'Disconnect listener first.' }
+    if ($Status.live.connection_owned -or $Status.live.state -notin @('disconnected','stopped')) { throw 'operator_paused / recovery required: disconnect listener first.' }
     if ($Status.automatic_enabled -or $Delivery.mode -cne 'MANUAL') { throw 'AUTO must be OFF.' }
-    if ($Delivery.busy -or $Delivery.paused) { throw 'Delivery busy/paused: operator required; never retry UNKNOWN.' }
+    if ($Delivery.busy) { throw 'Delivery busy: recovery required; wait for cleanup.' }
+    if ($Delivery.paused -and -not $AllowRecovery) { throw 'operator_paused / recovery required; never retry UNKNOWN.' }
     if ([bool]$Delivery.physical_delivery_enabled -ne ($ExpectedPhysicalGate -ceq 'ON')) { throw 'Startup physical gate differs from explicit expected value.' }
 }
 
@@ -36,7 +37,7 @@ if ($operator.pending -or $operator.config_error -or $operator.active_transport 
 if ($operator.username.ToLowerInvariant() -cne $Username.TrimStart('@').ToLowerInvariant()) { throw 'Applied own username differs from expected account.' }
 $status = Invoke-MobileRequest '/api/admin/status'
 $delivery = Invoke-MobileRequest '/api/admin/delivery/status'
-Assert-MobileIdle $status $delivery
+Assert-MobileIdle $status $delivery -AllowRecovery
 $delivery = Invoke-MobileRequest '/api/admin/device/inspect' -Post
 $device = $delivery.inspection
 $devices = @($device.devices)
@@ -46,9 +47,14 @@ if ($device.serial -cne $devices[0].serial -or $device.security_state) { throw '
 Write-Host 'Checking own Profile. Open your own TikTok Profile before running this script.'
 $verified = Invoke-MobileRequest '/api/admin/device/verify-account' -Post
 if (-not $verified.inspection.account_verified -or -not $verified.inspection.profile_verified -or $verified.inspection.security_state) { throw 'Own account/reviewed installation not verified: NEED OPERATOR.' }
-# Recheck revisions after read-only awaits; preparation grants no delivery authority.
+# Explicit recovery creates a new runtime revision; journals/consumed rows remain intact.
+$beforePrepare = Invoke-MobileRequest '/api/admin/operator/settings'
+if ($beforePrepare.active_runtime_revision -cne $operator.active_runtime_revision -or $beforePrepare.pending -or
+    $beforePrepare.username.ToLowerInvariant() -cne $Username.TrimStart('@').ToLowerInvariant()) { throw 'Runtime/account changed before preparation. Prepare again.' }
+$prepared = Invoke-MobileRequest '/api/admin/delivery/prepare' -Post
+if ($prepared.paused) { throw 'operator_paused / recovery required: preparation did not clear the safety pause.' }
 $finalOperator = Invoke-MobileRequest '/api/admin/operator/settings'
-if ($finalOperator.active_runtime_revision -cne $operator.active_runtime_revision -or $finalOperator.pending) { throw 'Runtime changed during preparation. Prepare again.' }
+if ($finalOperator.active_runtime_revision -cne $prepared.active_runtime_revision -or $finalOperator.pending) { throw 'Runtime changed during preparation. Prepare again.' }
 Assert-MobileIdle (Invoke-MobileRequest '/api/admin/status') (Invoke-MobileRequest '/api/admin/delivery/status')
 Write-Host 'PREPARE MOBILE complete. AUTO OFF. No input or delivery performed.'
 Write-Host 'START LIVE ON PHONE manually -> CONNECT LISTENER -> NEW TEST COMMENT -> AI REPLY -> APPROVE.'
