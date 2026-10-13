@@ -92,13 +92,17 @@ class ADBAndroidController:
             installed = {line.removeprefix("package:").strip() for line in listed.splitlines() if line.startswith("package:")}
             before = await self.transport.run(AdbCommand.FOREGROUND, serial=selected.serial)
             package, activity = foreground(before)
+            if package is None:
+                self.invalidate_trust()
+                self.last = DeviceInspection(**values, screen=ScreenState.UNKNOWN_SCREEN, reason="unknown_screen")
+                return self.last
             if package not in PACKAGES or package not in installed:
                 self.invalidate_trust()
                 self.last = DeviceInspection(**values, screen=ScreenState.TIKTOK_NOT_RUNNING, reason="tiktok_not_running")
                 return self.last
             values.update(package=package, foreground_activity=activity)
             dumped = await self.transport.run(AdbCommand.DUMP, serial=selected.serial)
-            if DUMP_PATH not in dumped: raise AdbError()
+            if DUMP_PATH not in dumped: raise ValueError("Hierarchy unavailable")
             xml = await self.transport.run(AdbCommand.HIERARCHY, serial=selected.serial)
             info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=selected.serial, package=package)
             version, code = package_version(info)
@@ -119,7 +123,7 @@ class ADBAndroidController:
                 # Metadata is part of this exact device profile, not just a display hint.
                 if model != "M2101K9G" or android != "13": profile = None
             after = await self.transport.run(AdbCommand.FOREGROUND, serial=selected.serial)
-            if foreground(after) != (package, activity): raise AdbError()
+            if foreground(after) != (package, activity): raise ValueError("Foreground changed")
             account = getattr(target, "account", None)
             if self._account_binding is not None and self._account_binding[1] != account:
                 self.invalidate_trust()
@@ -147,9 +151,12 @@ class ADBAndroidController:
             parsed["interaction_available"] = self.actions is not None and profile is not None
             if parsed["reason"] == "ready" and self.actions is not None: values["device"] = "READY"
             self.last = DeviceInspection(**values, **parsed)
-        except (AdbError, ValueError):
+        except AdbError:
             self._live_evidence = None
             self.last = DeviceInspection(**values, reason="adb_failed")
+        except ValueError:
+            self.invalidate_trust()
+            self.last = DeviceInspection(**values, screen=ScreenState.UNKNOWN_SCREEN, reason="unknown_screen")
         return self.last
 
     async def inspect(self, target=None):

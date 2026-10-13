@@ -23,6 +23,7 @@ class AdbCommand(StrEnum):
     DEVICES = "devices"
     PACKAGES = "packages"
     FOREGROUND = "foreground"
+    FOREGROUND_WINDOW = "foreground_window"
     DUMP = "dump"
     HIERARCHY = "hierarchy"
     PACKAGE_INFO = "package_info"
@@ -77,6 +78,7 @@ class AdbTransport:
         commands = {
             AdbCommand.PACKAGES: ["shell", "pm", "list", "packages"],
             AdbCommand.FOREGROUND: ["shell", "dumpsys", "activity", "activities"],
+            AdbCommand.FOREGROUND_WINDOW: ["shell", "dumpsys", "window", "windows"],
             AdbCommand.DUMP: ["shell", "uiautomator", "dump", DUMP_PATH],
             AdbCommand.HIERARCHY: ["exec-out", "cat", DUMP_PATH],
             AdbCommand.DEVICE_MODEL: ["shell", "getprop", "ro.product.model"],
@@ -129,7 +131,12 @@ class AdbTransport:
                            asyncio.create_task(read(process.stderr, 8192)), asyncio.create_task(process.wait())]
                 stdout, _, code = await asyncio.gather(*readers)
                 if code != 0: raise AdbError()
-                return stdout.decode("utf-8", errors="strict")
+                output = stdout.decode("utf-8", errors="strict")
+                if command == AdbCommand.FOREGROUND:
+                    # MIUI's focused window can be AOD while the resumed/focused
+                    # application is TikTok. Collect both within this timeout.
+                    output += "\n" + await self.run(AdbCommand.FOREGROUND_WINDOW, serial=serial)
+                return output
         except asyncio.CancelledError:
             raise
         except Exception:

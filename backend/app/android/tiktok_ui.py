@@ -86,25 +86,46 @@ def composer_shape(root):
 
 
 def foreground(output):
-    """Read only resumed records, preferring the current top marker over history."""
+    """Resolve current app evidence; an inert AOD window grants no authority."""
     records = {}
-    for line in output.splitlines():
-        marker = re.fullmatch(r"[ \t]*(topResumedActivity|mResumedActivity|ResumedActivity)(?=[ \t=:]|$)(.*)", line)
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        marker = re.fullmatch(r"[ \t]*(topResumedActivity|mResumedActivity|ResumedActivity|mFocusedApp|mCurrentFocus)(?=[ \t=:]|$)(.*)", line)
         if marker is None: continue
+        value = marker[2]
+        if re.fullmatch(r"[ \t]*[=:][ \t]*", value) and index + 1 < len(lines):
+            value += lines[index + 1].strip()
         # MIUI can put the numeric task outside the component's closing brace.
         # Accept only that observed suffix, never arbitrary trailing history/text.
-        record = re.fullmatch(r"[ \t]*[=:][ \t]*ActivityRecord\{([^{}\r\n]*)\}(?:[ \t]+t[0-9]{1,10}\})?[ \t]*", marker[2])
+        kind = "Window" if marker[1] == "mCurrentFocus" else "ActivityRecord"
+        record = re.fullmatch(r"[ \t]*[=:][ \t]*" + kind + r"\{([^{}\r\n]*)\}(?:[ \t]+t[0-9]{1,10}\})?[ \t]*", value)
         components = re.findall(r"(?:^|[ \t])([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)(?=[ \t]|$)", record[1]) if record else []
+        bare = re.fullmatch(r"[ \t]*[=:][ \t]*([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)[ \t]*", value)
+        if bare and marker[1] != "mCurrentFocus": components = [(bare[1], bare[2])]
         component = components[0] if len(components) == 1 and len(components[0][1]) <= 200 else None
         records.setdefault(marker[1], set()).add(component)
-    for name in ("topResumedActivity", "mResumedActivity", "ResumedActivity"):
+    selected = None
+    for name in ("topResumedActivity", "mResumedActivity", "ResumedActivity", "mFocusedApp"):
         if name in records:
             candidates = records[name]
             # Conflicting/malformed authoritative records cannot fall back to history.
             if None in candidates or len(candidates) != 1: return None, None
-            # Preserve Android relative activity spelling, including the leading dot.
-            return next(iter(candidates))
-    return None, None
+            selected = next(iter(candidates))
+            break
+    if selected is None:
+        candidates = records.get("mCurrentFocus", set())
+        return next(iter(candidates)) if len(candidates) == 1 and None not in candidates else (None, None)
+    def expanded(component):
+        package, activity = component
+        return package, package + activity if activity.startswith(".") else activity
+    focused = records.get("mFocusedApp", set())
+    if None in focused or any(expanded(c) != expanded(selected) for c in focused): return None, None
+    # Componentless AOD/missing window focus must not override reliable app
+    # evidence. A concrete conflicting window component still blocks readiness.
+    if any(c is not None and expanded(c) != expanded(selected) for c in records.get("mCurrentFocus", ())):
+        return None, None
+    # Preserve Android relative activity spelling, including the leading dot.
+    return selected
 
 
 def observed_variant(package, activity):

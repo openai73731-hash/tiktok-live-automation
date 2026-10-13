@@ -2,11 +2,11 @@
 import asyncio
 from itertools import permutations
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from app.android.adb import AdbCommand, DUMP_PATH
+from app.android.adb import AdbCommand, AdbError, AdbTransport, DUMP_PATH
 from app.android.controller import ADBAndroidController
 from app.android.models import ScreenState
 from app.android.tiktok_ui import foreground
@@ -171,5 +171,124 @@ async def test_package_installer_foreground_is_not_tiktok():
     TIKTOK_ANDROID_13 + "\n" + f"topResumedActivity: ActivityRecord{{def u0 {PACKAGE}/.DifferentActivity t2}}"])
 async def test_foreground_changes_or_becomes_ambiguous_during_inspection_fail_closed(after):
     state = await ADBAndroidController(InspectionTransport(TIKTOK_ANDROID_13, after)).inspect()
-    assert state.reason == "adb_failed" and not state.ready
+    assert state.device == "CONNECTED" and state.screen == ScreenState.UNKNOWN_SCREEN
+    assert state.reason == "unknown_screen" and not state.ready
     assert not any((state.account_verified, state.live_verified, state.comment_input_found, state.send_button_found))
+
+
+FOCUSED_TIKTOK = f"mFocusedApp=ActivityRecord{{abc u0 {PACKAGE}/{ACTIVITY} t1}}"
+AOD = "mCurrentFocus=Window{abc u0 AOD}"
+RESUMED_TIKTOK = f"ResumedActivity: ActivityRecord{{abc u0 {PACKAGE}/{ACTIVITY} t1}}"
+
+
+@pytest.mark.parametrize("dump", [
+    RESUMED_TIKTOK + "\n" + FOCUSED_TIKTOK + "\n" + AOD,
+    RESUMED_TIKTOK,
+    f"ResumedActivity:\n  {PACKAGE}/{ACTIVITY}\n" + FOCUSED_TIKTOK + "\n" + AOD,
+    FOCUSED_TIKTOK + "\n" + AOD,
+    f"mCurrentFocus=Window{{abc u0 {PACKAGE}/{ACTIVITY}}}",
+])
+async def test_miui_aod_or_missing_window_focus_keeps_connected_tiktok_foreground(dump):
+    transport = InspectionTransport(dump, dump)
+    state = await ADBAndroidController(transport).inspect()
+    assert foreground(dump) == (PACKAGE, ACTIVITY)
+    assert state.adb == "AVAILABLE" and state.device == "CONNECTED"
+    assert state.package == PACKAGE and state.foreground_activity == ACTIVITY
+    assert state.screen == ScreenState.UNKNOWN_SCREEN and state.reason == "profile_unverified"
+    assert not state.profile_verified and not state.account_verified and not state.ready
+
+
+@pytest.mark.parametrize("dump", [
+    "", AOD, "mCurrentFocus=null",
+    RESUMED_TIKTOK + f"\nmFocusedApp=ActivityRecord{{abc u0 {INSTALLER}/.ScanActivity t1}}\n" + AOD,
+    f"ResumedActivity: ActivityRecord{{abc u0 {INSTALLER}/.ScanActivity t1}}\n" + FOCUSED_TIKTOK,
+    RESUMED_TIKTOK + f"\nmFocusedApp=ActivityRecord{{abc u0 {PACKAGE}/.OtherActivity t1}}",
+    RESUMED_TIKTOK + f"\nmCurrentFocus=Window{{abc u0 {INSTALLER}/.ScanActivity}}",
+    FOCUSED_TIKTOK + f"\nmFocusedApp=ActivityRecord{{abc u0 {INSTALLER}/.ScanActivity t2}}",
+])
+async def test_missing_or_conflicting_foreground_is_unknown_not_disconnected(dump):
+    transport = InspectionTransport(dump, dump)
+    state = await ADBAndroidController(transport).inspect()
+    assert foreground(dump) == (None, None)
+    assert state.device == "CONNECTED" and state.screen == ScreenState.UNKNOWN_SCREEN
+    assert state.reason == "unknown_screen" and state.package is None
+    assert not state.account_verified and not state.profile_verified and not state.ready
+    assert AdbCommand.DUMP not in transport.calls
+
+
+async def test_other_resumed_and_focused_app_never_establish_tiktok_foreground():
+    dump = MIUI_INSTALLER + f"\nmFocusedApp=ActivityRecord{{abc u0 {INSTALLER}/.activity.ScanActivity t193}}\n" + AOD
+    state = await ADBAndroidController(InspectionTransport(dump, dump)).inspect()
+    assert state.device == "CONNECTED" and state.screen == ScreenState.TIKTOK_NOT_RUNNING
+    assert state.package is None and not state.account_verified and not state.ready
+
+
+@pytest.mark.parametrize("failure", ["offline", "missing", "command"])
+async def test_device_disconnected_requires_device_or_adb_failure(failure):
+    class FailedTransport(InspectionTransport):
+        async def run(self, command, **kwargs):
+            if command == AdbCommand.DEVICES:
+                return "List of devices attached\n" + ("USB_FIXTURE offline\n" if failure == "offline" else "" if failure == "missing" else "USB_FIXTURE device\n")
+            raise AdbError()
+    state = await ADBAndroidController(FailedTransport("", "")).inspect()
+    assert state.screen == ScreenState.DEVICE_DISCONNECTED
+    assert state.reason == {"offline":"offline", "missing":"device_missing", "command":"adb_failed"}[failure]
+    assert not state.account_verified and not state.ready
+
+
+@pytest.mark.parametrize("dump", ["", "ERROR: could not get idle state."])
+async def test_successful_adb_with_unavailable_hierarchy_is_unknown(dump):
+    class NoHierarchyTransport(InspectionTransport):
+        async def run(self, command, **kwargs):
+            if command == AdbCommand.DUMP: return dump
+            return await super().run(command, **kwargs)
+    state = await ADBAndroidController(NoHierarchyTransport(RESUMED_TIKTOK, RESUMED_TIKTOK)).inspect()
+    assert state.device == "CONNECTED" and state.screen == ScreenState.UNKNOWN_SCREEN
+    assert state.reason == "unknown_screen" and not state.account_verified and not state.ready
+
+
+@pytest.mark.parametrize("window_code", [0, 1])
+async def test_production_adb_foreground_collects_both_fixed_read_only_dumps(tmp_path, monkeypatch, window_code):
+    def process(output, code=0):
+        stdout, stderr = asyncio.StreamReader(), asyncio.StreamReader()
+        stdout.feed_data(output.encode()); stdout.feed_eof(); stderr.feed_eof()
+        return Mock(stdout=stdout, stderr=stderr, returncode=code, wait=AsyncMock(return_value=code))
+    spawn = AsyncMock(side_effect=[process(RESUMED_TIKTOK), process(FOCUSED_TIKTOK + "\n" + AOD, window_code)])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    executable = tmp_path / "adb.exe"; executable.touch()
+    transport = AdbTransport(executable)
+    try:
+        if window_code:
+            with pytest.raises(AdbError): await transport.run(AdbCommand.FOREGROUND, serial="USB_FIXTURE")
+        else:
+            output = await transport.run(AdbCommand.FOREGROUND, serial="USB_FIXTURE")
+            assert foreground(output) == (PACKAGE, ACTIVITY)
+            assert all(signal in output for signal in (RESUMED_TIKTOK, FOCUSED_TIKTOK, AOD))
+        assert [call.args[-4:] for call in spawn.call_args_list] == [
+            ("shell", "dumpsys", "activity", "activities"), ("shell", "dumpsys", "window", "windows")]
+        assert not transport.processes
+    finally: await transport.aclose()
+
+
+@pytest.mark.parametrize("identity", ["exact", "wrong_handle", "live_display_name"])
+async def test_miui_aod_preserves_reviewed_profile_and_explicit_exact_handle_verification(identity):
+    from test_manual_send_rc import Transport, target, ACCOUNT
+    from app.android.tiktok_ui import TIKTOK_YOU_4683, rid
+    class ProfileTransport(Transport):
+        async def run(self, command, **kwargs):
+            if command == AdbCommand.FOREGROUND:
+                activity = TIKTOK_YOU_4683.activities[0]
+                return f"ResumedActivity: ActivityRecord{{abc u0 {PACKAGE}/{activity} t1}}\nmFocusedApp=ActivityRecord{{abc u0 {PACKAGE}/{activity} t1}}\n" + AOD
+            return await super().run(command, **kwargs)
+    transport = ProfileTransport()
+    if identity == "live_display_name": transport.xml = transport.xml.replace(rid("sxp"), rid("user_name"))
+    dest = target(account="other" if identity == "wrong_handle" else ACCOUNT)
+    controller = ADBAndroidController(transport, physical_enabled=False)
+    state = await controller.inspect(dest)
+    assert state.device == "CONNECTED" and state.profile_verified and not state.account_verified
+    assert state.version == "46.8.3" and controller._profile is TIKTOK_YOU_4683
+    assert await controller.verify_account(dest) is (identity == "exact")
+    assert controller.last.account_verified is (identity == "exact")
+    assert not controller.last.ready and not controller.physical_enabled
+    assert not any(command in {AdbCommand.TEXT, AdbCommand.DELETE, AdbCommand.SELECT_ALL,
+        AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE} for command, _ in transport.calls)
