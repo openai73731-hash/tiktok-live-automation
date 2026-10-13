@@ -332,7 +332,7 @@ def test_operator_and_capture_browser_regressions():
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),crypto=require('crypto');
 const els=new Map();const el=()=>({value:'',options:[],children:[],listeners:{},append(...v){this.children.push(...v)},replaceChildren(...v){this.children=v},addEventListener(k,f){this.listeners[k]=f}});
 const connect=[el(),el()],disconnect=[el(),el()],reasons=[el(),el()];
-const document={createElement:el,getElementById(id){if(!els.has(id))els.set(id,el());return els.get(id)},querySelectorAll(s){return s==='[data-live-action="connect"]'?connect:s==='[data-live-action="disconnect"]'?disconnect:s==='[data-live-connect-reason]'?reasons:[]}};
+const document={querySelector(){return {value:'android'}},createElement:el,getElementById(id){if(!els.has(id))els.set(id,el());return els.get(id)},querySelectorAll(s){return s==='[data-live-action="connect"]'?connect:s==='[data-live-action="disconnect"]'?disconnect:s==='[data-live-connect-reason]'?reasons:[]}};
 const window={};const state={connected:true,status:{live:{connection_owned:false,state:'disconnected'}},delivery:{inspection:{client_variant:'TIKTOK_YOU',screen:'UNKNOWN_SCREEN'},physical_ready:false}};
 vm.runInNewContext(fs.readFileSync('backend/app/static/admin/operator.js','utf8'),{window,document});
 vm.runInNewContext(fs.readFileSync('backend/app/static/admin/delivery.js','utf8'),{window,document,crypto});

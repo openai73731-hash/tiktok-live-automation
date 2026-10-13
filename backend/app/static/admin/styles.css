@@ -1369,3 +1369,14 @@ summary { cursor: pointer; }
 .operator-grid { margin-bottom: 20px; }
 @media (max-width: 1100px) { .operator-grid { grid-template-columns: 1fr; } .operator-actions, .live-control-panel { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 700px) { .quality-summary, .quality-breakdown { grid-template-columns: 1fr; } }
+.delivery-stop { margin: 16px 0; padding: 18px; border: 3px solid #ff647b; border-radius: 8px; color: #ffdce2; background: #511c2a; font-size: 17px; line-height: 1.6; }
+.delivery-stop[hidden] { display: none; }
+.badge.danger { color: #ffdce2; background: #511c2a; border: 1px solid #ff647b; }
+.focus-instruction { color: #ffcf70; border-left: 4px solid #ffb347; padding: 12px; background: #382b17; font-weight: 700; }
+
+.transport-summary { display:flex; flex-wrap:wrap; align-items:center; gap:24px; margin-bottom:20px; }
+.transport-summary strong { display:block; font-size:20px; margin-top:6px; }
+.transport-cards { display:flex; flex-wrap:wrap; gap:16px; border:0; padding:16px 0; }
+.transport-cards label { display:grid; grid-template-columns:auto 1fr; gap:8px 12px; padding:20px; border:1px solid #495362; border-radius:12px; cursor:pointer; flex:1; min-width:220px; }
+.transport-cards label:has(input:checked) { border-color:#56d4c3; background:#153333; }
+.transport-cards span { grid-column:2; color:#a9b6c9; }

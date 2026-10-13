@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ReplayScenarioName = Literal[
@@ -13,10 +13,23 @@ ReplayScenarioName = Literal[
 ]
 
 
+class WindowsSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    executable_path: Path | None = None
+    process_id: int | None = Field(default=None, gt=0, le=2**31 - 1)
+    broadcaster_user_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]{0,18}$")
+    manual_fill_enabled: bool = True
+    acceptance_one_shot: bool = False
+    arm_ttl_seconds: float = Field(default=600, ge=1, le=1200, allow_inf_nan=False)
+    focus_watch_seconds: float = Field(default=15, ge=1, le=30, allow_inf_nan=False)
+    verification_seconds: float = Field(default=10, ge=0.1, le=15, allow_inf_nan=False)
+    cooldown_seconds: float = Field(default=3, ge=2, le=60, allow_inf_nan=False)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8-sig",
-        extra="ignore", validate_default=True,
+        extra="ignore", validate_default=True, env_nested_delimiter="__",
     )
 
     live_mode: Literal["real", "fake", "replay"] = "fake"
@@ -27,6 +40,14 @@ class Settings(BaseSettings):
     admin_live_enabled: bool = False
     # Trusted startup only. Neither flag/path can be supplied through Admin UI.
     enable_physical_tiktok_send: bool = False
+    enable_physical_windows_send: bool = False
+    mobile_acceptance_one_shot: bool = False
+    windows: WindowsSettings = Field(default_factory=WindowsSettings)
+    # Explicit startup default; the saved operator transport is activated on Apply.
+    tiktok_transport: Literal["android", "windows_live_studio"] = "android"
+    instance_id: str = Field(default="default", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
+    account_label: str = Field(default="", max_length=80, pattern=r"^[^\x00-\x1f\x7f]*$")
+    state_dir: Path = Path("data")
     adb_executable: Path | None = None
     automatic_delivery_min_interval_seconds: float = Field(default=5, ge=3, le=60, allow_inf_nan=False)
     manual_delivery_min_interval_seconds: float = Field(default=3, ge=2, le=60, allow_inf_nan=False)

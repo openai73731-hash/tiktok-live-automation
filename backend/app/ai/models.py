@@ -68,6 +68,9 @@ class ReplySuggestion(BaseModel):
     processing_error: ProcessingError | None = None
     processing_error_detail: ProcessingErrorDetail | None = None
     # Provider output never authorizes delivery. Stage 4B.4 computes AUTO eligibility separately.
+    # Legacy AI advisory: always false, never grants physical delivery authority.
+    # Windows AUTO uses a separate server-owned AutoDeliveryEligibility decision
+    # after explicit epoch activation, policy and operator approval.
     auto_send_eligible: Literal[False] = False
     # A ready suggestion has NEVER been approved or sent.
     requires_approval: Literal[True] = True

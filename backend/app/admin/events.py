@@ -17,6 +17,7 @@ PAYLOAD_TYPES = {
     "operator_settings": OperatorView,
     "suggestion_approval": ApprovalEvent,
     "delivery_status": DeliveryView,
+    "windows_sender_status": DeliveryView,
 }
 
 

@@ -256,10 +256,17 @@ def comment_from_event(event: Any) -> Comment:
     username = user.display_id or user.nickname
     raw_id = user.id
     message_id = getattr(getattr(event, "common", None), "msg_id", None)
+    raw_time = getattr(getattr(event, "common", None), "create_time", None)
+    server_time = None
+    if type(raw_time) is int:
+        seconds = raw_time / 1000 if raw_time >= 1_000_000_000_000 else raw_time
+        if 1_577_836_800 <= seconds <= datetime.now(UTC).timestamp() + 5:
+            server_time = datetime.fromtimestamp(seconds, UTC)
+    handle = user.display_id if user.display_id and re.fullmatch(r"[A-Za-z0-9._]{1,24}", user.display_id) else None
     return Comment(
         username=username, user_id=str(raw_id) if raw_id else None,
         message_id=str(message_id) if type(message_id) is int and 0 < message_id < 2**63 else None,
-        text=event.content,
+        text=event.content, author_handle=handle, server_created_at=server_time,
     )
 
 
@@ -318,6 +325,11 @@ class LiveListener(BaseListener):
             })
             return
         try:
+            observer = getattr(self, "on_receipt", None)
+            if observer:
+                try: observer(comment)
+                except Exception:
+                    logger.warning("receipt_observer_failed")
             self.queue.put_nowait(comment)
         except asyncio.QueueFull:
             self.dropped_comments += 1

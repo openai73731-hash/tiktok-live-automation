@@ -18,6 +18,7 @@ class LocalConfigError(ValueError):
 
 class TikTokOverride(ConfigModel):
     username: str | None = Field(default=None, strict=True)
+    transport: Literal["android", "windows_live_studio"] | None = None
 
     @field_validator("username")
     @classmethod

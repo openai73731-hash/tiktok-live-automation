@@ -7,7 +7,7 @@ from app.admin.models import AIStatus, OperatorView
 from app.admin.operator_config import LocalConfigError, OperatorOverlay, OperatorStore, TikTokOverride
 from app.ai.factory import create_processor
 from app.ai.knowledge import ProjectConfig, load_yaml_model
-from app.live.models import LiveState, LiveStatus
+from app.live.models import IngestionLedger, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
 from app.lifecycle import finish_owned
 from app.quality.service import QualityService
@@ -36,17 +36,26 @@ class AdminLiveController:
         app.state.comment_processor = self.processor
         self.runtime.admin.live_service = self.service
 
-    async def connect(self, username, *, startup=False):
+    async def connect(self, username, *, startup=False, expected_active_runtime_revision=None):
         async with self.runtime.lock:
             username = TikTokOverride(username=username).username
             if not username:
                 raise ValueError("Own TikTok username required")
+            if self.runtime.settings.tiktok_transport == 'windows_live_studio':
+                if not startup and expected_active_runtime_revision != self.runtime.active_runtime_revision:
+                    raise RuntimeConflict('Runtime изменился. Обновите панель перед CONNECT.')
+                configured = TikTokOverride(username=self.runtime.settings.tiktok_username).username.casefold()
+                applied = TikTokOverride(username=self.runtime.username).username.casefold()
+                if not configured or applied != configured or username.casefold() != configured:
+                    raise RuntimeConflict('Windows CONNECT разрешён только для configured own account.')
+                username = configured
             reason = self.runtime.connect_block_reason(username, startup=startup)
             if reason: raise RuntimeConflict(reason)
             config = self.runtime.settings.model_copy(update={"tiktok_username": username,
                 **({} if startup else {"live_mode": "real", "diagnostic": False, "replay_scenario": None})})
             processor = create_processor(config, project=self.runtime.project)
             session_id = uuid4().hex
+            runtime_revision = self.runtime.active_runtime_revision
             async def handle(comment):
                 if self.session_id != session_id:
                     return None
@@ -57,6 +66,12 @@ class AdminLiveController:
                     self.runtime.admin.on_live_state(status)
             try:
                 service = self.factory(config, on_comment=handle, on_status=on_status)
+                def receipt(comment):
+                    delivery = self.runtime.admin.delivery
+                    if self.session_id == session_id and config.live_mode == "real":
+                        self.runtime.ingestion.bind(comment, username, session_id, runtime_revision, config.windows.broadcaster_user_id)
+                        if hasattr(delivery, "observe_comment"): delivery.observe_comment(comment, session_id, username)
+                service.on_receipt = receipt
             except BaseException:
                 await processor.aclose()
                 raise
@@ -143,6 +158,12 @@ class OperatorRuntime:
             logger.error("operator_config_invalid", extra={"fields": {"error_type": "LocalConfigError"}})
         self.project = self.store.validate(self.saved)
         self.username = self.saved.tiktok.username if self.saved.tiktok.username is not None else settings.tiktok_username
+        self.startup_settings = settings
+        self.transport = self.saved.tiktok.transport or settings.tiktok_transport
+        self.settings = settings.model_copy(update={"tiktok_transport": self.transport})
+        admin.settings = self.settings
+        from app.windows.preparation import StartupPreparation
+        admin.preparation = StartupPreparation(self.settings)
         self.android_serial = self.saved.android.device_serial
         self.lock = asyncio.Lock()
         self.applying = False
@@ -150,12 +171,26 @@ class OperatorRuntime:
         self.saved_config_revision = uuid4().hex
         self.active_runtime_revision = uuid4().hex
         self.live = AdminLiveController(self, factory)
+        self.ingestion = IngestionLedger()
+        self.windows_terminal = {"acceptance_spent": False, "clock_unstable": False, "cleanup_failed": False}
+        self.mobile_acceptance_spent = False
 
     @property
     def pending(self):
         username = self.saved.tiktok.username if self.saved.tiktok.username is not None else self.settings.tiktok_username
         return (self.store.validate(self.saved) != self.project or username != self.username or
-                self.saved.android.device_serial != self.android_serial)
+                self.saved.android.device_serial != self.android_serial or
+                (self.saved.tiktok.transport or self.startup_settings.tiktok_transport) != self.transport)
+
+    def install_delivery(self, delivery):
+        self.application.state.delivery = self.admin.delivery = delivery
+        def changed():
+            if self.admin.delivery is not delivery: return
+            self.publish()
+            self.admin.events.publish("delivery_status", delivery.view())
+            if self.transport == "windows_live_studio":
+                self.admin.events.publish("windows_sender_status", delivery.view())
+        delivery.on_idle = changed
 
     def lock_reason(self):
         if getattr(self.admin, "delivery", None) and self.admin.delivery.busy:
@@ -176,6 +211,11 @@ class OperatorRuntime:
     def connect_block_reason(self, username=None, *, startup=False):
         # Listener input is independent of Android readiness/client/profile.
         if self.closed: return "Панель завершает работу."
+        if self.settings.tiktok_transport == 'windows_live_studio':
+            configured = TikTokOverride(username=self.settings.tiktok_username).username.casefold()
+            applied = TikTokOverride(username=self.username).username.casefold()
+            if not configured or applied != configured:
+                return 'Windows own account должен совпадать с trusted startup configuration.'
         reason = self.lock_reason()
         if reason: return reason
         if self.config_error: return "Исправьте или сбросьте локальные настройки перед подключением."
@@ -191,6 +231,8 @@ class OperatorRuntime:
         reason = self.lock_reason()
         connect_reason = self.connect_block_reason()
         return OperatorView(saved=self.saved, active=self.admin.public_settings(),
+            active_transport=self.transport,
+            saved_transport=self.saved.tiktok.transport or self.startup_settings.tiktok_transport,
             desired=self.admin.public_settings(self.store.validate(self.saved)), username=self.username,
             saved_username=self.saved.tiktok.username if self.saved.tiktok.username is not None else self.settings.tiktok_username,
             pending=self.pending, locked=reason is not None, lock_reason=reason, config_error=self.config_error,
@@ -210,7 +252,7 @@ class OperatorRuntime:
         async with self.lock:
             self.require_saved(expected_saved_revision)
             self.ensure_idle()
-            if getattr(self.admin, "delivery", None) and overlay.android.device_serial != self.saved.android.device_serial:
+            if self.transport == "android" and getattr(self.admin, "delivery", None) and overlay.android.device_serial != self.saved.android.device_serial:
                 self.admin.delivery.require_discovered(overlay.android.device_serial)
             self.store.save(overlay)
             self.saved = overlay
@@ -257,6 +299,34 @@ class OperatorRuntime:
                 from app.admin.service import PlaygroundService
                 candidate = QualityService(PlaygroundService(processor, self.admin.events))
                 old_quality, old_processor = self.application.state.quality, playground.processor
+                old_delivery = self.admin.delivery
+                transport = self.saved.tiktok.transport or self.startup_settings.tiktok_transport
+                replacement = None
+                if old_delivery:
+                    # Synchronous revocation precedes publication/retirement awaits.
+                    # Runtime revisions invalidate every old envelope and approval.
+                    old_delivery.revoke_authority()
+                    if self.transport == "windows_live_studio":
+                        sender = old_delivery.sender
+                        self.windows_terminal["acceptance_spent"] |= sender.acceptance_spent
+                        self.windows_terminal["clock_unstable"] |= sender.clock_verification == "unstable"
+                        self.windows_terminal["cleanup_failed"] |= sender.cleanup_failed
+                    else: self.mobile_acceptance_spent |= old_delivery.acceptance_spent
+                if transport != self.transport:
+                    old_delivery.closed = True
+                    from app.delivery.factory import create_delivery_service
+                    settings = self.startup_settings.model_copy(update={"tiktok_transport": transport})
+                    replacement = create_delivery_service(settings, self.admin.suggestions,
+                        self.admin.delivery_context, serial=self.saved.android.device_serial)
+                    if transport == "windows_live_studio":
+                        replacement.sender.acceptance_spent = self.windows_terminal["acceptance_spent"]
+                        if self.windows_terminal["clock_unstable"]:
+                            replacement.sender.fail_clock()
+                            replacement.sender.closed = True
+                        if self.windows_terminal["cleanup_failed"]:
+                            replacement.sender.cleanup_failed = True
+                        replacement.paused = self.windows_terminal["clock_unstable"] or self.windows_terminal["cleanup_failed"]
+                    else: replacement.acceptance_spent = self.mobile_acceptance_spent
                 # No await between publication of all new active references.
                 playground.processor = processor
                 candidate.playground = playground
@@ -265,7 +335,16 @@ class OperatorRuntime:
                 self.active_runtime_revision = uuid4().hex
                 self.username = self.saved.tiktok.username if self.saved.tiktok.username is not None else self.settings.tiktok_username
                 self.android_serial = self.saved.android.device_serial
-                if getattr(self.admin, "delivery", None): self.admin.delivery.set_serial(self.android_serial)
+                if replacement:
+                    self.settings = self.admin.settings = settings
+                    self.transport = transport
+                    from app.windows.preparation import StartupPreparation
+                    self.admin.preparation = StartupPreparation(settings)
+                    self.admin.preparation.runtime_invalidated = True
+                    self.install_delivery(replacement)
+                elif old_delivery:
+                    old_delivery.set_serial(self.android_serial)
+                    self.admin.preparation.runtime_invalidated = True
                 self.admin.ai_status = AIStatus(provider=project.ai.provider, model=project.ai.model,
                     state="available" if project.ai.provider == "fake" else "not_checked",
                     available=True if project.ai.provider == "fake" else None)
@@ -275,9 +354,15 @@ class OperatorRuntime:
                 self.publish()
                 async def retire():
                     try:
-                        await old_quality.aclose()
+                        if replacement: await old_delivery.aclose()
                     finally:
-                        await old_processor.aclose()
+                        if replacement and transport == "android":
+                            sender = old_delivery.sender
+                            self.windows_terminal["acceptance_spent"] |= sender.acceptance_spent
+                            self.windows_terminal["clock_unstable"] |= sender.clock_verification == "unstable"
+                            self.windows_terminal["cleanup_failed"] |= sender.cleanup_failed
+                        try: await old_quality.aclose()
+                        finally: await old_processor.aclose()
                 await finish_owned(asyncio.create_task(retire(), name="retire-playground-runtime"))
             except BaseException:
                 if processor is not None and playground.processor is not processor:
@@ -289,4 +374,5 @@ class OperatorRuntime:
         self.admin.events.publish("ai_status", self.admin.ai_status)
         self.application.state.quality.set_live_enabled(False)
         self.publish()
+        self.admin.delivery.on_idle()
         return self.view()

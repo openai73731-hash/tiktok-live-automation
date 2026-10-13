@@ -29,10 +29,14 @@ where = ["backend"]
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["static/admin/*"]
+app = ["static/admin/*", "windows/*.ps1", "windows/*.cs"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 pythonpath = ["backend"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "windows: offline Windows adapter and native-probe boundary tests",
+  "live_studio: LIVE Studio integration contracts (mocked by default)",
+]

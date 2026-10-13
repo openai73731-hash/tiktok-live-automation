@@ -376,7 +376,7 @@ def test_stage4b3_journal_migration_preserves_reserved_and_unique_keys(tmp_path)
     assert journal.lookup('old').status=='reserved' and journal.unresolved()
     assert journal.has_operation('b'*32,'d'*64)
     assert "'filled'" in journal.connection.execute("SELECT sql FROM sqlite_master WHERE name='operations'").fetchone()[0]
-    with pytest.raises(sqlite3.IntegrityError): journal.connection.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',values)
+    with pytest.raises(sqlite3.IntegrityError): journal.connection.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', values + (None,))
     journal.close()
 
 

@@ -13,12 +13,14 @@ from app.admin.models import (AnalyzeInput, UIModel, ConnectInput, SaveSettingsI
     ApplySettingsInput, ResetSettingsInput, DisconnectInput)
 from app.admin.runtime import RuntimeConflict
 from app.admin.service import PaidRequestNotConfirmed, PlaygroundBusy, PRESETS
-from app.delivery.models import ApprovalInput, ApprovalEvent, ManualDeliveryInput
+from app.delivery.models import ApprovalInput, ManualDeliveryInput
 from app.delivery.suggestions import SuggestionConflict
 from app.android.diagnostics import CaptureError
+from app.windows.target import TargetRejected
 
 router = APIRouter()
 ASSETS = Path(__file__).resolve().parents[1] / "static" / "admin"
+PREPARATION_POLL_SECONDS = 2
 
 
 class EmptyInput(UIModel):
@@ -29,6 +31,70 @@ class DeliveryModeInput(UIModel):
     mode: Literal["MANUAL", "AUTOMATIC"]
     expected_live_session_id: str | None = Field(pattern=r"^[a-f0-9]{32}$")
     expected_active_runtime_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+class WindowsArmInput(UIModel):
+    empty_confirmed: bool = Field(strict=True)
+
+
+class WindowsFillInput(WindowsArmInput):
+    delivery: ManualDeliveryInput
+
+
+class WindowsAutoInput(UIModel):
+    enabled: bool = Field(strict=True)
+
+
+def windows_service(request):
+    service = request.app.state.delivery
+    if service.view().transport != "windows_live_studio": raise HTTPException(409, detail="Windows transport unavailable.")
+    return service
+
+
+def android_service(request):
+    service = request.app.state.delivery
+    if service.view().transport != "android": raise HTTPException(409, detail="Android transport unavailable.")
+    return service
+
+
+@router.post("/api/admin/windows/arm", status_code=202)
+async def arm_windows(request: Request, body: WindowsArmInput):
+    try: return windows_service(request).start_workflow(empty_confirmed=body.empty_confirmed)
+    except SuggestionConflict: raise HTTPException(409, detail="Windows arm unavailable.") from None
+
+
+@router.post("/api/admin/windows/disarm")
+async def disarm_windows(request: Request, body: EmptyInput):
+    return await windows_service(request).disarm()
+
+
+@router.post("/api/admin/windows/fill", status_code=202)
+async def fill_windows(request: Request, body: WindowsFillInput):
+    try: return windows_service(request).start_workflow(empty_confirmed=body.empty_confirmed, body=body.delivery)
+    except SuggestionConflict: raise HTTPException(409, detail="Windows fill unavailable.") from None
+
+
+@router.post("/api/admin/windows/send-once", status_code=202)
+async def send_once_windows(request: Request, body: WindowsFillInput):
+    try: return windows_service(request).start_workflow(empty_confirmed=body.empty_confirmed, body=body.delivery, mode="send_once")
+    except SuggestionConflict: raise HTTPException(409, detail="Windows send gate unavailable.") from None
+
+
+@router.post("/api/admin/windows/accept-empty")
+async def accept_windows_empty(request: Request, body: WindowsArmInput):
+    service = windows_service(request)
+    try:
+        if not body.empty_confirmed: raise TargetRejected("not_confirmed")
+        service.sender.confirm_empty()
+        return service.view()
+    except TargetRejected: raise HTTPException(409, detail="A recent verified send and explicit empty-field review are required.") from None
+
+
+@router.post("/api/admin/windows/auto")
+async def windows_auto(request: Request, body: WindowsAutoInput):
+    service = windows_service(request)
+    try:
+        service.set_auto(body.enabled)
+        return service.view()
+    except TargetRejected: raise HTTPException(409, detail="Windows AUTO requires the startup gate, own identity and verified empty-composer acceptance.") from None
 
 
 class ConfirmSendInput(UIModel):
@@ -86,9 +152,9 @@ async def operator_settings(request: Request):
     return request.app.state.operator_runtime.view()
 
 
-async def runtime_action(action, *args):
+async def runtime_action(action, *args, **kwargs):
     try:
-        return await action(*args)
+        return await action(*args, **kwargs)
     except RuntimeConflict as exc:
         raise HTTPException(409, detail=str(exc)) from None
     except SuggestionConflict:
@@ -116,7 +182,8 @@ async def reset_settings(request: Request, body: ResetSettingsInput):
 
 @router.post("/api/admin/live/connect", status_code=202)
 async def live_connect(request: Request, body: ConnectInput):
-    return await runtime_action(request.app.state.operator_runtime.live.connect, body.username)
+    return await runtime_action(request.app.state.operator_runtime.live.connect, body.username,
+        expected_active_runtime_revision=body.expected_active_runtime_revision)
 
 
 @router.post("/api/admin/live/disconnect")
@@ -160,7 +227,7 @@ async def dry_run(request: Request, body: ManualDeliveryInput):
 @router.post("/api/admin/delivery/mode")
 async def delivery_mode(request: Request, body: DeliveryModeInput):
     try:
-        return request.app.state.delivery.set_mode(body.mode, body.expected_live_session_id,
+        return android_service(request).set_mode(body.mode, body.expected_live_session_id,
             body.expected_active_runtime_revision)
     except SuggestionConflict:
         raise HTTPException(409, detail="AUTO недоступен: проверьте startup SEND gate, текущую сессию, Profile, LIVE/composer и журнал. UNKNOWN повторять нельзя.") from None
@@ -168,12 +235,12 @@ async def delivery_mode(request: Request, body: DeliveryModeInput):
 
 @router.post("/api/admin/delivery/fill")
 async def fill_phone(request: Request, body: ManualDeliveryInput):
-    return await delivery_action(request.app.state.delivery.fill, body)
+    return await delivery_action(android_service(request).fill, body)
 
 
 @router.post("/api/admin/delivery/verify-fill")
 async def verify_fill(request: Request, body: EmptyInput):
-    try: return await request.app.state.delivery.verify_fill()
+    try: return await android_service(request).verify_fill()
     except SuggestionConflict:
         raise HTTPException(409, detail="Нет текущего введённого ответа для проверки.") from None
 
@@ -233,11 +300,9 @@ async def suggestion_view(request: Request, suggestion_id: str):
 async def approve_suggestion(request: Request, suggestion_id: str, body: ApprovalInput):
     admin = request.app.state.admin
     try:
-        admin.suggestions.approve(suggestion_id, body, admin.delivery_context())
+        return admin.approve_suggestion(suggestion_id, body)
     except SuggestionConflict as exc:
         raise HTTPException(409, detail=str(exc)) from None
-    admin.events.publish("suggestion_approval", ApprovalEvent(suggestion_id=suggestion_id))
-    return admin.review_view(suggestion_id)
 
 
 @router.post("/api/admin/playground/analyze")
@@ -262,14 +327,31 @@ async def events(request: Request):
 
     async def stream():
         try:
-            yield "retry: 3000\n" + sse_message("snapshot", admin.status().model_dump(mode="json"))
+            snapshot = admin.status().model_dump(mode="json")
+            preparation = snapshot['preparation']
+            windows = admin.settings.tiktok_transport == 'windows_live_studio'
+            loop = asyncio.get_running_loop()
+            next_preparation_check = loop.time() + PREPARATION_POLL_SECONDS
+            yield "retry: 3000\n" + sse_message("snapshot", snapshot)
             while True:
+                windows = admin.settings.tiktok_transport == 'windows_live_studio'
                 if await request.is_disconnected():
                     return
                 try:
-                    async with asyncio.timeout(15):
+                    async with asyncio.timeout(max(.001, next_preparation_check - loop.time()) if windows else 15):
                         event = await subscriber.queue.get()
                 except TimeoutError:
+                    event = False
+                # Artifact changes originate outside the backend. A bounded
+                # low-frequency refresh also works while the stream is quiet.
+                # Read-only projection revalidates current process identities.
+                if windows and loop.time() >= next_preparation_check:
+                    next_preparation_check = loop.time() + PREPARATION_POLL_SECONDS
+                    current = admin.preparation.view().model_dump(mode='json')
+                    if current != preparation:
+                        preparation = current
+                        yield sse_message('preparation_status', current)
+                if event is False:
                     yield ": heartbeat\n\n"
                     continue
                 if event is None:

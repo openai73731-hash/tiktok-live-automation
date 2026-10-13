@@ -4,11 +4,15 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
   const fields = ["username", "provider", "model", "temperature", "timeout", "policy", "sentences", "chars", "device"];
   let view = null, dirty = false, busy = false, editedRevision = null;
   const value = (name) => $("operator-" + name).value;
+  const transport = () => document.querySelector('input[name="operator-transport"]:checked')?.value || "android";
   function controls() {
     const live = state.status?.live;
     const owned = Boolean(live?.connection_owned);
     const locked = owned || Boolean(view?.locked) || busy || state.busy;
     fields.forEach((name) => { $("operator-" + name).disabled = locked; });
+    document.querySelectorAll('input[name="operator-transport"]').forEach(input => { input.disabled = locked; });
+    $("transport-saved").textContent = view?.saved_transport === "windows_live_studio" ? "PC / LIVE STUDIO" : "MOBILE / ANDROID";
+    $("transport-active").textContent = view?.active_transport === "windows_live_studio" ? "PC / LIVE STUDIO" : "MOBILE / ANDROID";
     $("operator-save").disabled = !view || !state.connected || locked || !dirty || value("provider") === "openai";
     $("operator-apply").disabled = !view?.pending || locked || dirty || !state.connected;
     $("operator-reset").disabled = !view || locked || !state.connected;
@@ -57,6 +61,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
         model: desired.model, temperature: desired.temperature, timeout: desired.timeout_seconds,
         policy: desired.reply_policy, sentences: desired.max_reply_sentences, chars: desired.max_reply_chars, device: state.savedDevice || ""};
       fields.forEach((name) => { $("operator-" + name).value = values[name]; });
+      document.querySelectorAll('input[name="operator-transport"]').forEach(input => { input.checked = input.value === next.saved_transport; });
       dirty = false;
       editedRevision = next.saved_config_revision;
     }
@@ -84,6 +89,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
     finally { busy = false; controls(); }
   }
   fields.forEach((name) => $("operator-" + name).addEventListener("input", () => { dirty = true; controls(); }));
+  document.querySelectorAll('input[name="operator-transport"]').forEach(input => input.addEventListener("change", () => { dirty = true; controls(); }));
   $("operator-policy").addEventListener("change", () => {
     const friendly = value("policy") === "friendly";
     $("operator-sentences").value = friendly ? "3" : "2";
@@ -92,7 +98,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
   });
   $("operator-form").addEventListener("submit", (event) => {
     event.preventDefault(); if ($("operator-save").disabled) return;
-    action("/api/admin/operator/settings", {expected_saved_revision: editedRevision, settings: {tiktok: {username: value("username")},
+    action("/api/admin/operator/settings", {expected_saved_revision: editedRevision, settings: {tiktok: {username: value("username"), transport: transport()},
       ai: {provider: value("provider"), model: value("model"), temperature: Number(value("temperature")), timeout_seconds: Number(value("timeout"))},
       reply: {mode: value("policy"), max_sentences: Number(value("sentences")), max_chars: Number(value("chars"))},
       android: {device_serial: value("device") || null}}});
@@ -101,7 +107,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
   $("operator-reset").addEventListener("click", () => action("/api/admin/operator/reset", {expected_saved_revision: view.saved_config_revision}));
   document.querySelectorAll("[data-live-action]").forEach((button) => button.addEventListener("click", () => {
     action("/api/admin/live/" + button.dataset.liveAction,
-      button.dataset.liveAction === "connect" ? {username: value("username")} : {expected_live_session_id: state.status.live.live_session_id});
+      button.dataset.liveAction === "connect" ? {username: value("username"), expected_active_runtime_revision: view.active_runtime_revision} : {expected_live_session_id: state.status.live.live_session_id});
   }));
   return {render, controls};
 };

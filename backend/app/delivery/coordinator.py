@@ -32,7 +32,7 @@ class DeliveryCoordinator:
             return False
 
     async def execute(self, suggestion_id, approval_id, expected_revision, idempotency_key, *, timeout=5,
-                      device_serial=None):
+                      device_serial=None, mode='MANUAL'):
         if self.closed or self.failed:
             try:
                 operation = self.journal.lookup(idempotency_key)
@@ -47,9 +47,11 @@ class DeliveryCoordinator:
         request = DeliveryRequest(operation_id=uuid4().hex, idempotency_key=idempotency_key,
             suggestion_id=e.suggestion_id, suggestion_revision=e.suggestion_revision,
             comment_identity=e.comment_identity, approval_id=approval_id,
+            durable_delivery_key=e.durable_delivery_key, source_kind=e.source,
+            source_message_id=e._source_message_id,
             suggested_reply_hash=e.suggested_reply_hash, text=e.suggested_reply,
             live_session_id=e.live_session_id, target_account=e.target_account,
-            active_runtime_revision=e.active_runtime_revision, expires_at=e.expires_at, device_serial=device_serial, mode=self.mode)
+            active_runtime_revision=e.active_runtime_revision, expires_at=e.expires_at, device_serial=device_serial, mode=self.mode if mode == "MANUAL" else mode)
         try:
             operation, reserved = self.journal.reserve(request)
         except JournalConflict:

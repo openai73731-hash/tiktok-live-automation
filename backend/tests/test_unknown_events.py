@@ -79,12 +79,13 @@ def test_unknown_metadata_redacts_untrusted_method(method, tmp_path, capsys):
     listener.on_unknown(UnknownEvent(raw=envelope(method, "WebcastChatMessage", is_first=True)))
     raw_log = (tmp_path / "app.jsonl").read_text(encoding="utf-8")
     record = json.loads(raw_log)
-    assert set(record) == {"timestamp", "level", "event", "logger", "unknown_event_count",
+    assert set(record) == {"timestamp", "level", "event", "logger", "instance_id", "unknown_event_count",
                            "unknown_method_candidates", "payload_length", "is_first_response"}
     assert record["unknown_method_candidates"] == ["invalid_or_redacted"]
     assert record["payload_length"] == len(b"PRIVATE_PAYLOAD")
     assert record["is_first_response"] is True
     assert record["unknown_event_count"] == 1
+    assert record['instance_id'] == settings.instance_id
     assert "unknown_method" not in record
     output = raw_log + capsys.readouterr().out
     for secret in ("SECRET", "PRIVATE_", "cookie", "sessionid", "https://", "cursor", "ws_params", "roomId"):
@@ -105,7 +106,8 @@ def test_nondiagnostic_unknown_logs_only_count(tmp_path, capsys):
     listener = LiveListener(settings, asyncio.Queue())
     listener.on_unknown(UnknownEvent(raw=envelope("WebcastUnmapped")))
     record = json.loads((tmp_path / "app.jsonl").read_text(encoding="utf-8"))
-    assert set(record) == {"timestamp", "level", "event", "logger", "unknown_event_count"}
+    assert set(record) == {"timestamp", "level", "event", "logger", "instance_id", "unknown_event_count"}
+    assert record['instance_id'] == settings.instance_id
     assert "WebcastUnmapped" not in capsys.readouterr().out
 
 

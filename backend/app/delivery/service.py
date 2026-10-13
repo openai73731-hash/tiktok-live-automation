@@ -17,12 +17,21 @@ from app.delivery.journal import SQLiteDeliveryOperationStore, JournalConflict, 
 from app.delivery.sender import AndroidTikTokReplySender
 from app.delivery.suggestions import SuggestionConflict
 from app.lifecycle import finish_owned
+from app.windows.sender import WindowsSenderStatus
 
 
 class DeliveryView(FrozenModel):
-    inspection: DeviceInspection
+    transport: Literal["android", "windows_live_studio"] = "android"
+    instance_id: str = "default"
+    account_label: str = ""
+    windows_status: Literal["probe_required", "operator_arm_required"] | None = None
+    windows_sender: WindowsSenderStatus | None = None
+    delivery_uncertain: bool = False
+    inspection: DeviceInspection | None = None
     physical_delivery_enabled: bool
     physical_ready: bool
+    fill_ready: bool = False
+    mobile_one_shot: Literal["DISABLED", "AVAILABLE", "SPENT"] = "DISABLED"
     mode: Literal["MANUAL", "AUTOMATIC"] = "MANUAL"
     auto_state: Literal["AUTO OFF", "AUTO ARMED", "AUTO BLOCKED", "AUTO SENDING", "AUTO PAUSED"] = "AUTO OFF"
     auto_reason: EligibilityReason | DeliveryReason | Literal["queue_full"] = "automatic_mode_required"
@@ -30,10 +39,10 @@ class DeliveryView(FrozenModel):
         "AUTO_RESERVED", "AUTO SENDING", "POST_SEND_VERIFY", "SENT CONFIRMED", "AUTO BLOCKED", "UNKNOWN"] = "READY"
     live_session_id: str | None = None
     active_runtime_revision: str = "unavailable"
-    delivery: Literal["NOT READY", "DRY RUN READY"]
+    delivery: Literal["NOT READY", "DRY RUN READY", "FILL READY"]
     paused: bool
     busy: bool
-    reason: Literal["physical_delivery_disabled", "device_unavailable", "ready", "delivery_paused", "cooldown"]
+    reason: Literal["physical_delivery_disabled", "device_unavailable", "ready", "delivery_paused", "cooldown", "not_configured"]
 
 
 class DeliveryHistoryEntry(FrozenModel):
@@ -42,7 +51,7 @@ class DeliveryHistoryEntry(FrozenModel):
     time: str
     username: str
     device: str | None
-    mode: Literal["MANUAL", "AUTOMATIC"] = "MANUAL"
+    mode: Literal["MANUAL", "AUTOMATIC", "AUTO"] = "MANUAL"
     result: Literal["filled", "confirmed", "not_sent", "unknown", "needs_operator"]
     reason: DeliveryReason | None
 
@@ -52,7 +61,7 @@ class ManualDeliveryService:
         self.settings, self.suggestions, self.context = settings, suggestions, context
         self.controller = controller or ADBAndroidController(AdbTransport(settings.adb_executable),
             serial=serial, physical_enabled=settings.enable_physical_tiktok_send)
-        self.journal_factory = journal_factory or (lambda: SQLiteDeliveryOperationStore(JOURNAL_PATH.resolve()))
+        self.journal_factory = journal_factory or (lambda: SQLiteDeliveryOperationStore((settings.state_dir / JOURNAL_PATH.name).resolve()))
         self.journal = self.coordinator = None
         self.tasks = set()
         self.lock = asyncio.Lock()
@@ -67,6 +76,7 @@ class ManualDeliveryService:
         self.workflow = "READY"
         self.auto_reason = "automatic_mode_required"
         self.pending_fill = None
+        self.acceptance_spent = False
         self.controller.on_stage = self._stage
 
     def _stage(self, stage):
@@ -75,6 +85,24 @@ class ManualDeliveryService:
 
     @property
     def busy(self): return self.lock.locked() or self.controller.lock.locked()
+
+    @property
+    def delivery_available(self): return self.settings.enable_physical_tiktok_send
+
+    def device_ready(self, context):
+        controller = self.controller
+        return (controller.ready_for(context.live_session_id, context.target_account)
+                if hasattr(controller, "ready_for") else controller.last.ready)
+
+    def text_supported(self, text):
+        actions = getattr(self.controller, "actions", None)
+        return bool(text and actions and actions.supports(text))
+
+    def consumed(self, envelope):
+        from app.delivery.registry import consumed
+        try:
+            return bool(self.journal and self.journal.has_envelope_operation(envelope)) or consumed(self.settings.state_dir, envelope)
+        except Exception: return True
 
     @property
     def cooldown(self):
@@ -93,8 +121,10 @@ class ManualDeliveryService:
             if not auto_ctx.delivery_available: auto_reason = "delivery_unavailable"
             elif not auto_ctx.device_available: auto_reason = "device_unavailable"
             elif self.cooldown: auto_reason = "cooldown"
-        return DeliveryView(inspection=inspected, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
-            physical_ready=ready, delivery="DRY RUN READY" if inspected.ready else "NOT READY",
+        return DeliveryView(instance_id=self.settings.instance_id, account_label=self.settings.account_label, inspection=inspected, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
+            physical_ready=ready, fill_ready=inspected.fill_ready,
+            mobile_one_shot="DISABLED" if not self.settings.mobile_acceptance_one_shot else "SPENT" if self.acceptance_spent else "AVAILABLE",
+            delivery="DRY RUN READY" if inspected.ready else "NOT READY",
             paused=self.paused, busy=self.busy, reason=reason, mode=self.mode,
             auto_state="AUTO OFF" if self.mode == "MANUAL" else "AUTO PAUSED" if self.paused else
                 "AUTO SENDING" if sending else
@@ -111,12 +141,21 @@ class ManualDeliveryService:
         if hasattr(self.controller, "invalidate_trust"): self.controller.invalidate_trust()
         self.controller.last = DeviceInspection(reason="not_checked")
 
+    def revoke_authority(self):
+        self.mode, self.armed_binding = "MANUAL", None
+        self.auto_reason = "automatic_mode_required"
+        if self.suggestions is not None: self.suggestions.auto_authorizations.clear()
+        while not self.auto_queue.empty():
+            self.auto_queue.get_nowait(); self.auto_queue.task_done()
+        if self.auto_runner is not None and not self.auto_runner.done(): self.auto_runner.cancel()
+        if hasattr(self.controller, "invalidate_trust"): self.controller.invalidate_trust()
+
     def can_send(self, review):
         if not review.eligibility.eligible or not self.view().physical_ready or self.busy: return False
         actions = getattr(self.controller, "actions", None)
         if actions is None or not actions.supports(review.envelope.suggested_reply): return False
         try:
-            return not self.journal or not self.journal.has_operation(review.envelope.suggestion_id, review.envelope.comment_identity)
+            return not self.journal or not self.journal.has_envelope_operation(review.envelope)
         except Exception:
             return False
 
@@ -240,7 +279,7 @@ class ManualDeliveryService:
     def auto_verdict(self, envelope):
         from app.delivery.automatic import AutomaticEligibility
         try:
-            duplicate = bool(self.journal and self.journal.has_operation(envelope.suggestion_id, envelope.comment_identity))
+            duplicate = self.consumed(envelope)
         except Exception:
             self.paused = True
             duplicate = True
@@ -252,7 +291,7 @@ class ManualDeliveryService:
         e = review.envelope
         if not DeliveryEligibility.evaluate(e, review.approval, self.fill_context()).eligible: return False
         if not self.controller.actions or not self.controller.actions.supports(e.suggested_reply): return False
-        try: return not self.journal or not self.journal.has_operation(e.suggestion_id, e.comment_identity)
+        try: return not self.consumed(e)
         except Exception: return False
 
     def set_mode(self, mode, expected_session, expected_runtime):
@@ -268,6 +307,7 @@ class ManualDeliveryService:
             self.on_idle()
             return self.view()
         if (self.busy or self.closed or self.auto_runner is not None and not self.auto_runner.done()
+                or self.settings.mobile_acceptance_one_shot and self.acceptance_spent
                 or not self.settings.enable_physical_tiktok_send
                 or not ctx.connected or not ctx.active or not ctx.device_available or self.pending_fill):
             raise SuggestionConflict("Automatic mode unavailable")
@@ -436,6 +476,8 @@ class ManualDeliveryService:
                     except Exception: self.paused = True
                 if self.paused or self.closed or self.journal is None:
                     return DeliveryResult(status="needs_operator", reason="delivery_paused")
+                if self.settings.mobile_acceptance_one_shot and self.acceptance_spent:
+                    return DeliveryResult(status="not_sent", reason="auto_ineligible")
                 delay = self.settings.automatic_delivery_min_interval_seconds
                 if monotonic() - self.last_attempt < delay: return DeliveryResult(status="not_sent", reason="cooldown")
                 e = self.suggestions.get(body.suggestion_id)
@@ -452,6 +494,7 @@ class ManualDeliveryService:
                     request.device_serial == (self.controller.serial or self.controller.last.serial))
                 try:
                     self.last_attempt = monotonic()
+                    if self.settings.mobile_acceptance_one_shot: self.acceptance_spent = True
                     self.workflow = "AUTO_RESERVED"
                     self.on_idle()
                     result = await coordinator.execute(body.suggestion_id, body.approval_id,
@@ -467,6 +510,10 @@ class ManualDeliveryService:
                 finally:
                     self.paused = self.paused or coordinator.failed
                     await coordinator.aclose()
+                    if self.settings.mobile_acceptance_one_shot and self.acceptance_spent:
+                        self.mode, self.armed_binding = "MANUAL", None
+                        while not self.auto_queue.empty():
+                            self.auto_queue.get_nowait(); self.auto_queue.task_done()
         return await self._owned(run)
 
     def recent(self):
@@ -483,6 +530,7 @@ class ManualDeliveryService:
 
     async def aclose(self):
         self.closed = True
+        self.revoke_authority()
         await finish_owned(asyncio.create_task(self._close(), name="manual-delivery-shutdown"))
 
     async def _close(self):

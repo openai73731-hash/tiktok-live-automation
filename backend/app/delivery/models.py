@@ -5,6 +5,7 @@ from app.android.models import DeviceInspection, AndroidOutcome
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, PrivateAttr
 
 from app.ai.models import ReplySuggestion
+from app.live.models import IngestionReceipt
 
 OpaqueId = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
 Revision = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -20,11 +21,17 @@ class SuggestionEnvelope(ReplySuggestion):
     _monotonic_deadline: float | None = PrivateAttr(default=None)
     _auto_content_verified: bool = PrivateAttr(default=False)
     _auto_content_binding: str | None = PrivateAttr(default=None)
+    _created_monotonic: float | None = PrivateAttr(default=None)
+    _created_sequence: int | None = PrivateAttr(default=None)
+    _source_message_id: str | None = PrivateAttr(default=None)
+    _ingestion_receipt: IngestionReceipt | None = PrivateAttr(default=None)
+    _registered_auto_epoch_id: str | None = PrivateAttr(default=None)
     suggestion_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     suggestion_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     source: Literal["tiktok", "fake", "replay", "playground"]
     comment_identity: str = Field(pattern=r"^[a-f0-9]{64}$")
     comment_identity_kind: Literal["sdk_message_id", "fingerprint"]
+    durable_delivery_key: Revision | None = None
     created_at: AwareDatetime
     expires_at: AwareDatetime
     live_session_id: OpaqueId | None
@@ -41,6 +48,8 @@ class ApprovalInput(FrozenModel):
 
 
 class Approval(FrozenModel):
+    _approved_monotonic: float | None = PrivateAttr(default=None)
+    _approved_sequence: int | None = PrivateAttr(default=None)
     approval_id: OpaqueId
     suggestion_id: OpaqueId
     suggestion_revision: Revision
@@ -92,6 +101,17 @@ class SuggestionView(FrozenModel):
     text_entry_supported: bool = False
     fill_allowed: bool = False
     auto_eligibility: Eligibility = Eligibility(eligible=False, reason="automatic_mode_required")
+    auto_delivery: "AutoDeliveryEligibility | None" = None
+    consumed: bool = False
+
+
+class AutoDeliveryEligibility(FrozenModel):
+    """Trusted delivery policy, never parsed from AI output or browser input."""
+    eligible: bool = False
+    reason: Literal["eligible", "auto_off", "epoch_mismatch", "before_epoch", "approval_required",
+        "manual_ineligible", "own_comment", "unused_required", "physical_gate", "not_armed",
+        "composer_acceptance", "acceptance_spent", "delivery_paused"] = "auto_off"
+    epoch_id: OpaqueId | None = None
 
 
 class ApprovalEvent(FrozenModel):
@@ -106,7 +126,7 @@ DeliveryReason = Literal["mock_confirmed", "not_configured", "rejected", "timeou
     "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
     "journal_unavailable", "delivery_paused", "cooldown", "dry_run", "shutdown",
     "filled_waiting_user_send", "feed_confirmed", "open_phone_composer", "transient_overlay",
-    "confirmation_ambiguous", "automatic_mode_required", "auto_ineligible", "waiting_user_send"]
+    "confirmation_ambiguous", "automatic_mode_required", "auto_ineligible", "waiting_user_send", "filled_only", "echo_verified"]
 
 
 class DeliveryResult(FrozenModel):
@@ -120,6 +140,9 @@ class DeliveryRequest(FrozenModel):
     suggestion_id: OpaqueId
     suggestion_revision: Revision
     comment_identity: Revision
+    durable_delivery_key: Revision | None = None
+    source_kind: Literal["tiktok", "fake", "replay", "playground"] | None = None
+    source_message_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]{0,18}$")
     approval_id: OpaqueId
     suggested_reply_hash: Revision
     text: str = Field(min_length=1, max_length=400)
@@ -127,7 +150,7 @@ class DeliveryRequest(FrozenModel):
     target_account: Account
     active_runtime_revision: OpaqueId
     expires_at: AwareDatetime
-    mode: Literal["MANUAL", "AUTOMATIC"] = "MANUAL"
+    mode: Literal["MANUAL", "AUTOMATIC", "AUTO"] = "MANUAL"
     device_serial: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 

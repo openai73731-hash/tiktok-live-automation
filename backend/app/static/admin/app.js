@@ -9,7 +9,7 @@
   let eventRevision = 0;
   const providerName = (name) => ({fake: "Fake · фикстуры", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
   const liveName = (value) => value === "operator_required" ? "NEED_OPERATOR" : String(value).toUpperCase();
-  const statusName = (value) => ({ready: "READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
+  const statusName = (value) => ({ready: "REPLY READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
   const statusClass = (value) => ({ready: "good", skipped: "neutral", needs_operator: "warning"}[value] || "neutral");
   const sourceName = (value) => ({playground: "Playground · тест", fake: "Fake · демонстрация", replay: "Replay · фикстура", tiktok: "TikTok LIVE"}[value] || value);
   const time = (value) => value ? new Date(value).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "—";
@@ -58,6 +58,7 @@
   }
   function setConnected(value) {
     state.connected = value;
+    if (!value) text('startup-preparation', 'PRE-LIVE NOT PREPARED · backend connection unavailable');
     $("backend-dot").className = `dot ${value ? "good" : "warning"}`;
     text("backend-label", value ? "Работает" : "Нет связи");
     text("dash-backend", value ? "RUNNING" : "Нет связи");
@@ -84,6 +85,7 @@
     operator?.controls();
   }
   function renderAI(ai) {
+    text("ai-summary", ai.state === "available" && ai.model_found !== false ? "READY" : "unavailable");
     text("dash-provider", providerName(ai.provider)); text("dash-model", ai.model);
     text("ai-panel-title", ai.provider === "lmstudio" ? "Локальный LM Studio" : providerName(ai.provider));
     text("ai-configured-model", ai.model);
@@ -99,7 +101,11 @@
     text("ai-status-message", message); text("ai-label", label);
     $("ai-dot").className = `dot ${color === "neutral" ? "muted" : color === "info" ? "info" : color}`;
   }
+  function renderPreparation(value) {
+    text('startup-preparation', `${value?.state || 'PRE-LIVE NOT PREPARED'}${value?.result && value.result !== 'READY' ? ' · ' + value.result : ''}`);
+  }
   function renderStatus(value) {
+    renderPreparation(value.preparation);
     state.status = value; renderLiveStatus(value.live); renderAI(value.ai); renderMetrics(value.metrics);
     text("playground-count", value.playground_processed);
     text("dash-policy", value.reply_policy.toUpperCase()); text("dash-temperature", value.temperature);
@@ -166,14 +172,14 @@
     [["INTENT", item.intent], ["SHOULD REPLY", String(item.should_reply)], ["FACT IDS", item.fact_ids.join(", ") || "—"],
       ["PROVIDER / MODEL", `${providerName(item.provider)} / ${item.model || "фикстуры"}`], ["ВРЕМЯ АНАЛИЗА", `${record.duration_ms} мс`],
       ["PROCESSING ERROR", item.processing_error || "—"], ["ERROR DETAIL", item.processing_error_detail || "—"],
-      ["AUTO SEND ELIGIBLE", String(record.delivery_review?.auto_eligibility?.eligible || false)], ["TRANSLATION REVIEW", String(item.translation_requires_review)],
+      ["AI AUTO AUTHORITY", String(item.auto_send_eligible)], ["TRANSLATION REVIEW", String(item.translation_requires_review)],
       ["TRANSLATION SOURCE", item.translation_source]].forEach(([label, value]) => {
         const cell = node("div"); cell.append(node("div", "reply-field-label", label), node("div", "value mono", value)); metadata.append(cell);
       });
     card.append(metadata);
     const flags = node("div", "flag-list");
     flags.append(node("span", "badge warning", item.requires_approval ? "REQUIRES APPROVAL" : "APPROVAL STATUS UNKNOWN"),
-      node("span", "badge neutral", record.delivery_review?.auto_eligibility?.eligible ? "AUTO ELIGIBLE" : "AUTO BLOCKED"));
+      node("span", "badge neutral", "AI DOES NOT AUTHORIZE AUTO"));
     card.append(flags, node("p", "reply-reason", item.reason));
     const actions = node("div", "reply-actions"), copy = node("button", "button secondary-button", "COPY REPLY");
     copy.type = "button"; copy.disabled = !item.suggested_reply;
@@ -188,7 +194,7 @@
       card.append(node("p", "subtle mono", `ID ${envelope.suggestion_id} · runtime ${envelope.active_runtime_revision.slice(0, 8)} · session ${envelope.live_session_id?.slice(0, 8) || "Playground"}`),
         node("p", "subtle", `Approval: ${review.approval_state} · Delivery: ${review.approval_state === "approved" ? "APPROVED" : "READY"} · ${review.eligibility.reason}`));
       const approve = node("button", "button secondary-button", "APPROVE · без отправки");
-      approve.type = "button"; approve.disabled = item.status !== "ready" || review.approval_state !== "missing";
+      approve.type = "button"; approve.disabled = item.status !== "ready" || review.approval_state !== "missing" || review.consumed;
       let translationCheck = null;
       if (item.translation_requires_review) {
         const label = node("label", "field-label", "Я проверил перевод ответа");
@@ -204,7 +210,7 @@
         } catch (error) {
           toast(error.message);
           try { record.delivery_review = await api(`/api/admin/suggestions/${envelope.suggestion_id}`); card.replaceWith(replyCard(record)); }
-          catch { approve.disabled = false; }
+          catch { approve.disabled = Boolean(review.consumed); }
         }
       });
       actions.prepend(approve);
@@ -290,10 +296,12 @@
     stream.onopen = () => { text("dash-sse", "CONNECTED"); refresh().catch(() => setConnected(false)); };
     stream.onerror = () => setConnected(false);
     receive("snapshot", renderStatus);
+    receive('preparation_status', renderPreparation);
     receive("quality_update", quality.apply);
     receive("operator_settings", (value) => { operator.render(value); refreshReviews().catch(() => setConnected(false)); });
     receive("delivery_status", (value) => { delivery.render(value); refreshReviews().catch(() => setConnected(false)); });
     receive("suggestion_approval", () => { refresh().catch(() => setConnected(false)); });
+    receive("windows_sender_status", () => { delivery.refresh().catch(() => setConnected(false)); });
     receive("live_state", (value) => {
       const changed = value.state !== state.status?.live?.state || value.live_session_id !== state.status?.live?.live_session_id;
       renderLiveStatus(value);

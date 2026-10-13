@@ -1,6 +1,509 @@
 # tiktok-live-automation
 
+## UNIFIED: Mobile / Android + PC / LIVE Studio
+
+Один backend и Admin UI, один явно выбранный active transport. В Settings выберите
+карточку Mobile / Android или PC / LIVE Studio, сохраните и нажмите Apply.
+Сначала отключите listener и завершите текущую device operation. Saved и Active
+показываются отдельно. Apply сбрасывает AUTO/ARM/trust; новый режим требует своей
+readiness. Оба режима используют общий durable registry и сохраняют blockers из
+обоих старых журналов. Не меняйте STATE_DIR для обхода dedup.
+
+Сначала выполняется Mobile MANUAL acceptance: PREPARE MOBILE → вручную START LIVE
+ON PHONE → CONNECT LISTENER → NEW TEST COMMENT → AI REPLY → APPROVE → guarded
+FILL PHONE → оператор нажимает Send → VERIFY → STOP. AUTO тестируется отдельно
+только после успешного manual результата; optional startup one-shot gate ограничен
+одной попыткой. Development не запускает LIVE, Android input или Windows SendInput.
+
+Полная архитектура, решения по каждому merge conflict, dedup limitations, команды
+и operator flow: [docs/UNIFIED_TRANSPORTS.md](docs/UNIFIED_TRANSPORTS.md).
+Read-only preflight: `./scripts/prepare-mobile.ps1 -Username YOUR_OWN_HANDLE`
+после Save/Apply Mobile и открытия собственного Profile. Unsupported device/profile
+или security/login/unknown state требуют NEED OPERATOR.
+
 ## Stage 4B.4: MANUAL fill и отдельно включаемый AUTOMATIC
+## CURRENT WINDOWS RELEASE STATE — PC-SEND-2B / release hardening
+
+Текущий release scope: **собственный LIVE, один оператор, одна Studio instance,
+EN, ручной review/approval, one-shot acceptance, ограниченная нагрузка**.
+AUTO по умолчанию OFF, physical gates по умолчанию OFF. Это локальная доверенная
+Windows VM; Admin не предназначен для публикации в сеть. SendInput сохраняет
+остаточную гонку ОС между последней проверкой focus и вводом; echo correlation
+не является криптографическим доказательством доставки. Реальный LIVE и ввод
+не входят в offline release validation. FR/DE timeout, длительная нагрузка и
+политика хранения всех AI/comment logs остаются вне подтверждённого release scope.
+
+PC-SEND-2B закрывает audit blockers: trusted ingestion до queue/AI с sequence и
+account/session/runtime/UID/SDK ID; старый receipt не получает AUTO после долгого AI,
+APPLY или reconnect. CLOCK_UNSTABLE необратим для текущей попытки: UNKNOWN,
+AUTO OFF, DISARM, consumed identity без retry. CONNECT принимает только нормализованный
+startup own handle и актуальный runtime token. Admin сохраняет STOP / DO NOT RETRY
+и CONSUMED / NO RETRY; AI **REPLY READY** отделён от amber **ARM READY — CLICK COMPOSER NOW**.
+Windows consumed identity также отклоняется сервером при approval: HTTP 409 до
+изменения approval, публикации события и delivery callback. Проверка использует
+тот же durable consumed source, что карточка и delivery, включая reconnect/restart.
+
+### Windows LIVE Studio transport
+
+Добавлен Windows transport: явный operator ARM → ручной клик пустого composer →
+guarded Unicode Fill → опциональный один Enter → подтверждение по собственному
+comment echo. По умолчанию DISARMED, AUTO OFF, `ENABLE_PHYSICAL_WINDOWS_SEND=false`.
+Fill работает независимо от Enter gate; approval, reservation, dedup и expiry
+остаются обязательными. Без readback пустое поле подтверждает оператор.
+Реальная работа sender ещё не проверена; агент выполнял только offline tests.
+
+Pre-LIVE hardening: final native guard после SQLite/preflight, clock bridge,
+durable SDK delivery key независимо от session, server-owned AUTO eligibility и
+epoch/watermark без старого backlog. Для единственного acceptance LIVE заранее
+установите `$env:WINDOWS__ACCEPTANCE_ONE_SHOT = 'true'` (по умолчанию false):
+максимум один AUTO Enter за процесс, затем AUTO OFF и DISARM после verification.
+Порядок фазы AUTO: включить epoch → новый комментарий → AI/policy → approval →
+ручной ARM. AI `auto_send_eligible=false` не является правом физической отправки;
+сервер отдельно вычисляет и проверяет AUTO delivery eligibility.
+
+Настройка, ограничения timestamp/identity и **единственная acceptance процедура
+за один LIVE**: [PC-SEND-2 operator guide](docs/PC_SEND_2.md).
+Описание discovery ниже относится к предыдущему этапу и не является условием
+запуска нового sender: новый real Chromium probe не требуется.
+
+### Один запуск перед следующим acceptance на Windows VM
+
+Из любого каталога запустите `scripts/start-acceptance.ps1` (или ярлык
+**TikTok acceptance** на рабочем столе подготовленной VM):
+
+```powershell
+& 'C:\Users\Tiktok\Documents\tiktok-live-automation\scripts\start-acceptance.ps1'
+```
+
+Подтвердите обычный Windows **UAC**. Установленная Studio запрашивает
+`highestAvailable`, поэтому backend запускается с повышением и скрипт read-only
+проверяет integrity обоих процессов. Это требуется для Windows
+[UIPI / SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput);
+UAC не обходится и никакой пробный ввод не выполняется. Отказ UAC останавливает запуск.
+
+Скрипт проверяет branch/HEAD, свежий единственный GUI PID и exact executable
+Studio 1.36.6, effective own account `d3pp1s`, UID `7412662672502555649`, запускает
+llmster и loopback server 1234 при необходимости, загружает уже установленную
+`qwen/qwen3-8b`, проверяет `/v1/models`, короткий `/no_think` запрос и штатный
+application smoke **Is bot trading automatically?** с обязательным `status=ready`.
+Затем запускает backend **из корня repo** с `--app-dir backend` на `127.0.0.1:8000`,
+Windows Enter gate ON, Android gate OFF, one-shot AVAILABLE и AUTO OFF; проверяет
+оба admin status API и открывает админку. `-NoBrowser` отключает открытие браузера.
+Настройки startup, PID и логи сохраняются в ignored `work/pc/`; authoritative result
+каждой попытки — `work/acceptance/startup/<launch_id>.json` и `latest.json`.
+PENDING записывается до UAC; отказ — CANCELLED, bounded preparation timeout — FAILED.
+`latest.json` описывает только текущую попытку. `last-ready.json` отдельно хранит
+кандидата на reuse; CANCELLED/FAILED его не превращают в текущий READY. При reuse
+повторно проверяются HEAD, PID/start/command/ancestry, Studio, integrity, health,
+own account и fingerprint фактической startup-конфигурации backend. Результат
+получает новый launch_id и поля `reused_backend` / `reused_from_launch_id`.
+Умерший или несовместимый кандидат инвалидируется; неизвестный владелец 8000 не завершается.
+Результаты публикуются atomic replace; поздний child не отменяет terminal failure.
+Общий publication lock защищает latest/last-ready и смену generation от позднего child.
+Parent ждёт только preparation result (по умолчанию 300 секунд), не lifetime backend.
+Допустимы clean `feature/windows-live-studio` для pre-release и clean `main` после review;
+другие branches/detached HEAD отклоняются. HEAD и process start identities записываются.
+Порты PocketWin `9000/9002/9003` не меняются.
+
+Studio GUI должен быть уже открыт оператором. Скрипт не начинает LIVE, не подключает
+listener, не делает discovery/ARM/Fill/Send. AI smoke READY **не означает** Windows
+**ARM READY — CLICK COMPOSER NOW**: он появится только после явного операторского ARM.
+Повторный запуск до LIVE переиспользует проверенный backend с тем же PID Studio и
+HEAD и валидным READY artifact. Любой другой владелец 8000, включая прежний backend
+без такой привязки, даёт `FAILED / port_in_use`: launcher его не завершает.
+При failure cleanup завершает только созданные этой попыткой PID с повторной проверкой
+start time, executable, command и ancestry. Admin показывает **PRE-LIVE PREPARED** только
+при READY для текущих HEAD, Studio PID/start и backend PID/start; restart делает его stale.
+Открытая Admin автоматически получает `preparation_status` через существующий SSE:
+backend перепроверяет evidence не чаще раза в две секунды на подключённую страницу.
+PENDING/FAILED/CANCELLED убирают PREPARED без reload; потеря связи тоже убирает его.
+Активный listener/sender, SPENT, завершённая фаза, reserved/AUTO journal row
+блокируют подготовку; журнал и дедупликация не сбрасываются. Прежние MANUAL UNKNOWN
+сохраняются: эти replies нельзя повторять, следующая процедура использует новые
+комментарии. При сбое текущей acceptance — STOP, без перезапуска для повторения фазы.
+
+Краткий порядок для оператора: **BEFORE LIVE → START LIVE → CONNECT LISTENER →
+PHASE 1 FILL ONLY → PHASE 2 GUARDED SEND → PHASE 3 ONE-SHOT AUTO → STOP**.
+Точные действия и критерии остановки: [operator guide](docs/PC_SEND_2.md#one-acceptance-live-performed-only-by-the-operator).
+
+### Предыдущий этап: PC-SEND-1G discovery
+
+PC-SEND-1G добавлял выбор транспорта и **read-only discovery**. На том этапе это ещё не
+manual-prepare RC: Windows ввод и SEND недоступны до review реального UI tree.
+Android RC ниже сохранён; default transport остаётся `android` для совместимости.
+PocketWin — внешняя программа, её internals и торговля здесь не управляются.
+Подробный аудит, ограничения и этапы: [PC architecture](docs/PC_LIVE_STUDIO_ARCHITECTURE.md).
+
+Требования probe: Windows 10/11 с интерактивным desktop, Windows PowerShell 5.1 и
+встроенными .NET UI Automation / Accessibility assemblies, Python 3.12+, установленный LIVE Studio.
+Дополнительные Python UI-пакеты не нужны. Оператор сам запускает Studio, входит в
+свой аккаунт и открывает панель комментариев. Поддержка конкретной версии Studio
+ещё не подтверждена. Probe никогда не фокусирует поле, не вводит и не отправляет.
+
+```powershell
+$env:TIKTOK_TRANSPORT = 'windows_live_studio'
+$env:INSTANCE_ID = 'vm1'
+$env:ACCOUNT_LABEL = 'own-live'
+$env:STATE_DIR = 'work/vm1/data'
+$env:LOG_DIR = 'work/vm1/logs'
+$env:ADMIN_LIVE_ENABLED = 'false'
+$env:ENABLE_PHYSICAL_TIKTOK_SEND = 'false'
+& ./.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Windows-режим запускается без Android/ADB. GET/SSE/startup не сканируют desktop и
+не вызывают AI. Discovery dashboard показывал `PC-SEND-1 / probe_required`, Prepare/Submit
+DISABLED; Android startup flag не включает Windows-действия. Источник комментариев
+и существующий LM Studio/fake pipeline сохранены. Real CONNECT выполняет оператор.
+Для возврата к Android задайте `TIKTOK_TRANSPORT=android` и перезапустите backend.
+
+PC-SEND-1G добавляет **opt-in Chromium AX activation и наблюдение ручного focus**.
+Только `--backend chromium-ax` выполняет honey-pot handshake. UIA/HWND/MSAA/all/IA2/client
+его не выполняют. Это discovery, не PC-SEND-2: ввода/кликов/clipboard/SEND нет.
+Стандартный WM_GETOBJECT может изменить внутренний accessibility mode Studio;
+поэтому отчёт отдельно содержит `accessibility_activation_performed`, при этом
+`physical_action=false`. Агент реальный probe не запускал.
+
+Для каждого выбранного renderer **точного target PID** и класса
+`Chrome_RenderWidgetHostHWND` снимается CLIENT baseline, затем один
+`SendMessageTimeout(WM_GETOBJECT=61, wParam=OBJID_CLIENT=-4, lParam=1)` с timeout 250 ms,
+ABORTIFHUNG/ERRORONEXIT. Повторного activation при timeout нет. После успешного запроса
+CLIENT получается заново до 21 раза / до 2 секунд, интервал 100 ms, с проверкой scope,
+protection и общего deadline. Polling заканчивается при изменении root role/count
+или появлении document с детьми; это ограниченное наблюдение, не ожидание готовности UI.
+Максимум 32 renderer, visible primary и secondary идут прежде hidden. Общий max-nodes
+делится между before/after всех renderer, diagnostic cap 64 общий для обеих частей.
+
+Schema 7: `chromium_accessibility_activation.checks` содержит source/root HWND,
+target PID, message/object IDs, attempted/send_status/timeout_ms, poll_attempts,
+baseline/after role и child_count, tree_changed/comparison_complete и elapsed ms.
+Отдельные `before_msaa` / `after_msaa` содержат свежие CLIENT snapshots, `msaa=null`.
+Сравнение не использует names. Changed=null означает неполные данные, а не unchanged.
+`accessibility_activation_performed=true` означает выполненную попытку запроса, даже
+если он завершился timeout/ошибкой; false — запроса не было. Если worker был запущен,
+но погиб/вернул невалидный результат, flag=null: возможность activation неизвестна.
+На свежем after CLIENT с role document/application проверяется официальный
+`QI(IServiceProvider) → QueryService(IID_IAccessible, IID_IAccessible2)`; shell не
+запрашивается (`not_queried_shell`). Альтернативный service IID и IA2 actions не добавлены.
+
+Исправлены signed VT_I4 во всех MSAA backends: любой nonzero ID сначала проходит exact
+`get_accChild`, включая negative. Успешный negative становится accessible_object с
+`original_child_kind=negative`, `child_resolution_category=negative_accessible_object`;
+сам negative ID не сохраняется. S_FALSE/null — informational unresolved/leaf; failure —
+sanitized HRESULT и `reserved_system_objid` либо `unresolved_negative_child` после
+неуспешного resolution. CHILDID_SELF=0 остаётся ссылкой на текущий объект. Positive
+simple-child representation, protection, cycle guard и per-root dedup сохранены.
+
+`hwnd.architecture` показывает `primary_main_window`,
+`secondary_visible_chromium_windows`, `secondary_renderer_hwnds`. Primary — только
+первый выбранный visible widget (visibility, затем HWND), не доказанный main window.
+Secondary visible root с visible direct renderer получает `chat_window_candidate=true`
+как гипотезу. Размеры/координаты не используются для выбора. Top-level metadata:
+owner, GA_ROOT/GA_ROOTOWNER, style/exstyle numeric и allowlisted flags, client/window
+rect (left/top/right/bottom), direct renderer HWND, target-PID z-order и optional DWM
+cloaked. Обычный `bounds` по-прежнему x/y/width/height. По capture оператора Studio
+1.36.6.0 показал два visible widget с отдельными renderer; screenshot связывает второе
+окно с LIVE-чатом. Код пока не подтверждает эту семантику или стабильный selector.
+
+`--watch-focus-seconds 15` устанавливает только PID-filtered EVENT_OBJECT_FOCUS
+`WINEVENT_OUTOFCONTEXT`, без DLL/module/in-process hook. В callback exact
+`AccessibleObjectFromEvent` даёт безопасную metadata: role/state/count/bounds,
+name только с `--include-names`, никогда Value. `focus_watch.events` содержит
+category object ID, child kind, owning root и отношения к secondary window/renderer.
+После event GetGUIThreadInfo читает GUI thread foreground target window; foreign
+active/focus/caret handles заменяются null, при null caret rcCaret также null.
+rcCaret — RECT в системе координат соответствующего окна, не координаты для клика.
+Watcher ограничен 0..30 секундами, 64 событиями, общий timeout всё равно действует.
+
+Оператор может выполнить **один capture уже открытого собственного LIVE**. PID 3332 —
+только пример из его capture; замените актуальным GUI PID. Команда с names сохранит
+частные labels/comments в ignored diagnostics; перед передачей отчёт надо проверить.
+
+```powershell
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend chromium-ax --process-id 3332 --watch-focus-seconds 15 --include-names --instance-id vm1 --max-nodes 2000 --max-hwnd 256 --max-depth 20 --timeout 60
+```
+
+Последовательность: запустите из корня проекта → дождитесь JSON event
+`live_studio_focus_watch_ready` → вручную кликните «Добавить комментарий» во втором
+LIVE-окне → ничего не вводите → дождитесь завершения и пути отчёта. READY появляется
+после установки hook, уже после activation. Если READY не появился, watcher не был
+подтверждён; смотрите status/errors. Агент эту команду не выполняет.
+
+Интерпретация для **нужного secondary renderer** и его focus events:
+
+- A: полная пара, tree_changed=false — дерево не изменилось за окно наблюдения.
+- B: after document/application с descendants — content tree появилось; labels/ancestry
+  ещё требуют review. Увеличение количества nodes само по себе не доказывает composer.
+- C: negative_accessible_object — signed negative ID успешно resolved через get_accChild.
+- D: focus available, accessible_descendant=true и конкретный role/name/ancestry —
+  кандидат inner accessible, ещё не доказанный composer.
+- E: focus только renderer/shell, role 9/10, child zero либо доступного inner object нет —
+  inner composer пока не найден. Unavailable/read_failed не доказывает его отсутствие.
+- F: target-owned hwndCaret/rcCaret появились — наблюдение системного caret; это не
+  selector и не доказательство input/publication.
+
+Upstream honey-pot=1 и точные параметры подтверждены Chromium source/test;
+эффект в установленном Studio 1.36.6.0 ещё не доказан. Источники и ограничения —
+[PC architecture](docs/PC_LIVE_STUDIO_ARCHITECTURE.md#pc-send-1g-chromium-activation-and-manual-focus-observation).
+
+PC-SEND-1B добавляет HWND и MSAA/IAccessible discovery для Chromium shell. По отчёту
+оператора, на Studio 1.36.6 UIA control/raw показывают только `Chrome_WidgetWin_1`
+и `Chrome_RenderWidgetHostHWND`, без patterns/кандидатов. Это не найденные chat controls.
+Default остаётся UIA; HWND/MSAA/all запускаются только явно и требуют основной PID.
+
+PC-SEND-1C исправляет traversal после operator capture Studio 1.36.6.0: HWND нашёл
+14 окон, MSAA сообщил `Chrome Legacy Window` / role 9 / child_count 7, но потерял
+детей. VT_I4 уже поддерживался; исправлены resolution через `get_accChild`, потеря
+node при optional property error и общий dedup между независимыми roots. Simple
+children теперь имеют `owner_kind=simple_child` и exact `child_id`; S_FALSE/null —
+обычный leaf. Full object из child ID сохраняется отдельным descendant. Protection
+state проверяется до имени; недоступные optional properties остаются `null`.
+Агент не запускал real probe; результат исправления на Studio ещё должен измерить оператор.
+
+PC-SEND-1D добавляет диагностику следующего operator capture: 18 MSAA nodes,
+`child_count=7`, но без simple children, с `msaa_child_unsupported` и root limit.
+Причина этого реального unsupported пока **не доказана**: прежний `object[]` терял
+native vt и объединял null/неподдерживаемый тип/отказ IAccessible в одну ошибку.
+Цикл уже использовал `pcObtained`; ошибка x64 marshaler по одному capture не доказана.
+Теперь читается исходный VARIANT buffer (Pack 8, size x64=24/x86=16, payload offset 8),
+только actual obtained slots. VT_I4 сохраняет exact ID; VT_DISPATCH проходит explicit
+QI IAccessible. Init/Clear, QI pointer и отдельный RCW имеют раздельное владение.
+S_FALSE/partial сохраняет requested/obtained, пустые slots за obtained не обходятся.
+Плохой populated slot диагностируется и не мешает чтению следующих siblings;
+он также расходует общий node budget. IA2 не добавлен: сначала нужен новый capture.
+
+В schema 4 `msaa.child_diagnostics` содержит максимум 64 записи, далее увеличивается
+`diagnostics_dropped`. Exact fields: `source_hwnd`, `parent_id`, `child_index` (с нуля),
+`vt` (число), `category`, `reason`, `hresult_category`, `requested`, `obtained`.
+Неизвестные/неприменимые поля — null; у ошибок root property parent_id может быть null.
+Причины: `unsupported_variant_type`, `dispatch_qi_failed`, `child_property_failed`,
+`child_resolution_failed`, `empty_slot`, `partial_accessible_children`, `malformed_variant`.
+Эти записи не содержат names, values, BSTR, COM pointers/addresses или exception text,
+даже с `--include-names`; opt-in labels остаются только в обычных nodes.
+
+Root cap остаётся 8, desktop cap 512. Среди roots выбранного PID сначала идут видимые,
+при равной visibility — HWND по возрастанию. Каждый root обходится вместе со своими
+дочерними HWND/render-widget ancestry до следующего root; hidden roots идут позже.
+`hwnd.root_statistics` содержит `target_roots_total`, `target_roots_selected`,
+`target_roots_skipped`, `enumeration_complete`. При desktop cap total — число
+наблюдавшихся matching roots, а не доказанный итог всего desktop.
+`hwnd.selected_roots` показывает `hwnd`, `visible`, `hwnd_traversal_complete` и
+`msaa_traversal_complete` (null для HWND backend). Локальная полнота видимого root
+видна отдельно от общего `target_root_limit`; protection, ошибки и caps делают её
+false. Это полнота данного snapshot, не доказательство доступности chat controls.
+Отдельный `--root-hwnd` не добавлен.
+
+PC-SEND-1F добавляет отдельный **read-only WINDOW/CLIENT comparison** через
+`--backend client`. Review HEAD `06b697c` установил: прежний `NativeDesktop.Accessible`
+уже вызывал `AccessibleObjectFromWindow(hwnd, unchecked((uint)-4), IID_IAccessible)`.
+Это **OBJID_CLIENT**, не OBJID_WINDOW; CreateStdAccessibleObject/custom WM_GETOBJECT
+в нашем пути отсутствовали. Поэтому window chrome в capture 1E нельзя объяснять
+ошибочно выбранным OBJID_WINDOW. Почему установленный provider возвращает только
+shell, пока не доказано; новый этап добавляет измерение, а не обещает исправленное UI.
+
+Schema 6 явно маркирует nodes/checks `source_kind` и `object_id` (-4 CLIENT / 0 WINDOW).
+Для каждого bounded Chromium HWND в `client_objects.checks` доступны отдельные
+`objid_client` и `objid_window`: acquisition available/status/HRESULT category,
+role/state/child_count/bounds, optional name, provider/QS capability. Неуспешный CLIENT
+не подменяется WINDOW. CLIENT queries идут первыми: visible main widget, его visible
+renderer, другие visible Chromium HWND, затем hidden. Root cap 8 и check cap 32
+сохранены; скрытые renderer не могут вытеснить основной видимый renderer.
+
+`msaa_client.nodes` содержит CLIENT tree **после** client-only IA2 query;
+`ia2.before_msaa` — CLIENT baseline на том же удержанном объекте, как в 1E.
+`client_objects.window_msaa` содержит только WINDOW root metadata, без его descendants.
+В dual режиме `msaa=null`: деревья разных OBJID не смешиваются. Metadata в паре
+CLIENT берётся из baseline (`metadata_phase=before`), WINDOW — из отдельного чтения
+(`metadata_phase=window`); при нехватке бюджета поля могут оставаться null.
+
+На CLIENT выполняется прежний проверенный `QI(IServiceProvider)` →
+`QueryService(IID_IAccessible, IID_IAccessible2)`. Для WINDOW проверяется только
+IServiceProvider: `query_service_attempted=false`, `ia2_available=null`,
+`ia2_query_status=not_queried_window`. Это отсутствие запроса, не вывод об отсутствии IA2.
+IA2 metadata getters/actions/traversal не добавлены. Names остаются только под
+`--include-names`; Value/password/attributes не читаются, input отсутствует.
+
+Общий max-nodes покрывает CLIENT before + after + WINDOW metadata: WINDOW получает
+не более min(32, max-nodes/4) visits, CLIENT — оставшийся бюджет. Даже если metadata
+budget исчерпан, bounded acquisition/capability сохраняется; missing metadata/null
+не означает unavailable. Depth/timeout/output/storage/privacy guards сохранены.
+В 1F negative child IDs ещё имели conservative malformed_variant diagnostic;
+PC-SEND-1G выше заменяет его exact signed resolution во всех backends.
+
+Оператор может сделать **один idle capture без LIVE**, заменив пример PID текущим
+основным GUI PID Studio. Агент эту команду не выполняет:
+
+```powershell
+Set-Location C:\Users\user\Documents\tiktok-live-automation
+$studioProcessId = 4620 # Заменить актуальным основным GUI PID.
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend client --process-id $studioProcessId --instance-id vm1 --max-nodes 2000 --max-hwnd 256 --max-depth 20 --timeout 60
+```
+
+Смотрите `client_objects.primary_root_hwnd` и соответствующий check с
+`chromium_kind=render_widget`, `source_visible=true`, `visible_root=true`:
+
+- A: `objid_client.available=true`, CLIENT descendants в `msaa_client.nodes` показывают
+  document/pane/text/edit/button content. Это evidence для review, не selectors/readiness.
+- B: CLIENT available, но roles/descendants остаются window chrome: shell-only результат
+  данного snapshot. Один role или node count не доказывает содержание всего UI.
+- C: CLIENT `available=false`, `status=unavailable`, sanitized `hresult_category` —
+  acquisition отказал. Protected/out_of_scope/timeout — пропущенная проверка, не C.
+- D: CLIENT `ia2_available=true`, `query_hresult_category=s_ok` — IA2 доступен на CLIENT.
+
+Сводка только основного visible renderer: `visible_renderer_client_available`,
+`visible_renderer_client_nodes` (after tree), `visible_renderer_client_ia2_supported`.
+Неполные snapshots (`comparison_complete=false` / changed=null) не доказывают shell-only.
+UIA/default, HWND/MSAA/all и отдельный IA2 backend сохранены. PC-SEND-2 не начат.
+Источники и ограничения: [PC architecture](docs/PC_LIVE_STUDIO_ARCHITECTURE.md).
+
+PC-SEND-1E добавил отдельный **read-only IA2 capability probe**. После 1D оператор
+получил 52 MSAA nodes: Windows chrome/simple children доступны, но TikTok comment
+panel/composer/Send ещё не найдены. Ручное включение Narrator структуру не изменило.
+Четыре VT_I4 diagnostics не доказывают, что за ними находятся TikTok controls.
+
+`--backend ia2` использует только уже выбранные bounded Chromium HWND. Capability
+checks идут в порядке visible main widget → его renderer → остальные in-scope
+Chromium HWND; максимум 32 checks, root cap 8 и desktop cap 512 сохранены. Visible
+renderer остаётся приоритетным независимо от пропущенных hidden roots.
+`ia2.primary_root_hwnd` фиксирует первый выбранный видимый main widget; сводные
+renderer flags относятся только к его renderer, а не к другому видимому окну.
+Проверяется `QI(IServiceProvider)` → `QueryService(IID_IAccessible, IID_IAccessible2)`.
+IID/signatures сверены с официальным Chromium `ia2_api_all.idl` и Microsoft COM
+документацией; источники и точные GUID — в архитектурном документе.
+
+Этот этап читает capability/HRESULT categories, source/owner HWND/PID, отношение к
+visible root и обычную безопасную MSAA metadata. IA2 role/states/uniqueID/windowHandle/
+indexInParent пока не читаются: полного IA2 vtable/traversal нет. Не читаются Value,
+password text или arbitrary attributes, не объявляются IA2 action interfaces.
+Исходный root COM object удерживается до конца before/after; окна не переоткрываются.
+Все baseline snapshots снимаются **до первого QueryService**. После каждого capability
+check тот же объект повторно читается один раз, сразу, без ожидания/retry или UI action.
+Проверки process/root scope и protection повторяются перед запросом и чтением.
+Сам стандартный IA2 запрос может включить accessibility on-demand; реальное поведение
+данной сборки Studio ещё должен измерить оператор. Query другого root и асинхронные
+изменения Chromium могут повлиять на дерево, поэтому сравнение не доказывает причинность.
+
+Schema 5 добавляет `ia2.primary_root_hwnd`, `capability_checks`, `query_success_count`,
+`query_failure_count` (только attempted QueryService), `visible_renderer_supported`,
+`visible_renderer_checked`, `before_msaa_nodes`, `after_msaa_nodes`,
+`comparison_complete`, `tree_changed_after_ia2_query`, `before_msaa`. Повторное дерево
+сохраняется в обычном `msaa`; оба используют прежний serializer/privacy policy.
+Каждый check содержит source/root/owner HWND, source/owner PID, visibility, Chromium
+hint, nested `capability` с отдельными provider/query HRESULT categories, before/after
+counts и результат сравнения. Это capability, не readiness аккаунта/LIVE/контролов.
+
+Общий `--max-nodes` делится между before/after и всеми checks, а не удваивается.
+Для пары visible renderer резервируется приоритетный бюджет. Depth/time/output/storage
+caps сохранены; diagnostic records суммарно ограничены 64. Полнота пары указана в
+check, в IA2 режиме `hwnd.selected_roots[].msaa_traversal_complete` = null. При caps,
+protection или ошибке сравнение = null; общий target_root_limit сам по себе не делает
+полную пару visible renderer неполной. Сводное comparison_complete требует полных
+пар всех выбранных checks; иначе сводный changed=null. Сравниваются relationships/role/state/count,
+не приватные names. `--include-names` по-прежнему разрешает labels только в nodes.
+
+`child_diagnostics.child_id_kind` различает zero/positive/negative/invalid без raw
+неположительного ID. `CHILDID_SELF=0` — ссылка на текущий object, informational
+`childid_self_reference`; её не обходят повторно и не называют malformed. Отрицательный
+ID в 1E оставался conservative unsupported; это исправлено в 1G выше.
+Эти slots расходуют bounded visit budget.
+
+Оператор может выполнить **один idle IA2 capture**, без LIVE и без изменения UI,
+заменив пример PID актуальным GUI PID. Команда по умолчанию не включает names:
+
+```powershell
+Set-Location C:\Users\user\Documents\tiktok-live-automation
+$studioProcessId = 4620 # Заменить актуальным основным GUI PID.
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend ia2 --process-id $studioProcessId --instance-id vm1 --max-nodes 2000 --max-hwnd 256 --max-depth 20 --timeout 60
+```
+
+Интерпретация **полной пары visible renderer**, а не суммарного status/root limit:
+
+- IA2 supported + tree expands: после стандартных IA2 queries появились дополнительные
+  MSAA descendants. Они требуют review; увеличение nodes не доказывает TikTok controls.
+- IA2 supported + tree unchanged: интерфейс доступен, но данный немедленный snapshot
+  не раскрыл новое дерево. Это не доказательство, что позднее Chromium ничего не изменит.
+- IA2 unavailable: смотрите раздельные provider/query HRESULT categories. Интерфейс
+  не предоставлен в этом объекте/контексте; поддержка всей сборки этим не опровергнута.
+- `comparison_complete=false` / changed=null: вывод об unchanged/expansion не делать.
+
+Агент real probe не запускал. PC-SEND-2/input/SEND остаются отдельными этапами.
+
+В отдельном PowerShell оператор вручную выполняет read-only capture (LIVE для самого
+discovery не нужен). PID 4620 — пример из последнего capture, замените текущим основным
+GUI PID своего Studio из Task Manager. `--include-names` включает приватные labels;
+уберите его для capture без имён. Backend/FastAPI запускать для probe не требуется.
+
+```powershell
+Set-Location C:\Users\user\Documents\tiktok-live-automation
+$studioProcessId = 4620 # Заменить актуальным основным GUI PID.
+$captureArgs = @('--process-id', "$studioProcessId", '--instance-id', 'vm1', '--include-names', '--max-nodes', '2000', '--max-hwnd', '256', '--max-depth', '20', '--timeout', '60')
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend uia --tree-view raw @captureArgs
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend hwnd @captureArgs
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend msaa @captureArgs
+& ./.venv/Scripts/python.exe scripts/probe_live_studio.py --backend all --tree-view raw @captureArgs
+# Для отдельного control snapshot замените --tree-view raw на --tree-view control.
+# Прежний минимальный вызов по-прежнему использует UIA без имён:
+# & ./.venv/Scripts/python.exe scripts/probe_live_studio.py --instance-id vm1
+```
+
+JSON tree сохраняется только в ignored `diagnostics/windows/vm1/<id>.json`, максимум
+20 отчётов суммарно для всех backends, без eviction; stdout показывает status/count/path.
+UIA сохраняет schema 1; native schema 6 разделяет `hwnd.windows`, `msaa.nodes` и, в `all`,
+`uia`. HWND metadata содержит реальный owning PID, parent/depth/class/rectangle и
+Chromium hints. MSAA содержит role/state/relationships/location и diagnostic hints.
+Различение object/simple child с `child_id` сохранено из schema 3;
+старые schema 2/3/4/5 captures остаются историческими файлами и не переписываются.
+Bounded process metadata содержит descendants, optional image path и HWND references;
+`has_windows` относится только к окнам в этом snapshot. `studio_version` читается из
+доступного executable основного PID; недоступный path/version — `null`, не ошибка.
+Никакие command lines/values/passwords/session storage не читаются. Protected nodes
+не раскрывают имя/поддерево; unknown protection прекращает чтение узла.
+
+Defaults: 256 HWND, 500 MSAA nodes и 500 UIA nodes, depth 12, timeout 20 секунд.
+Caps: 2000 HWND, 2000 nodes **на каждый accessibility backend**, depth 20, timeout 60.
+`all` делит один timeout между native worker и UIA. Ограниченный desktop/process
+snapshot нужен только для поиска выбранных roots/descendants; чужие деревья не обходятся.
+Некорректный `--max-nodes 3000` и другие limits дают явный argparse `invalid_argument`.
+Scan limits теперь разделены: `desktop_scan_limit`, `target_root_limit`,
+`target_hwnd_scan_limit`, `process_scan_limit`. Ровно восемь matching roots больше
+не создают ложный limit из-за следующего чужого окна. При исчерпании desktop cap 512
+полнота списка target roots не доказана: сохраняется conservative unknown/truncated,
+даже если children уже найденного root перечислены полностью. Caps не увеличены.
+Exit 0 означает полный snapshot discovery;
+exit 2 — window_not_found/timeout/unknown_ui_state/uia_unavailable/native_unavailable либо отказ записи.
+Кандидат Edit/Button не доказывает input/Send, аккаунт или LIVE. Никакие selectors
+не угаданы. Результат прежнего PC-SEND-1 probe был `window_not_found`; в PC-SEND-1B
+реальный probe агентом не запускался. Fake tests не подтверждают MSAA на Studio 1.36.6.
+
+Ручная последовательность: запустите Studio, откройте comments, выполните discovery,
+проверьте unique input/ancestry/patterns в локальном отчёте. Для последующего review
+соберите также version/locale и snapshots idle и собственного practice/LIVE, если
+он доступен; это делает оператор. **Следующий этап PC-SEND-2** добавит подготовку
+approved reply без Submit и exact readback. После его реальной проверки можно
+проектировать отдельный guarded PC-SEND-3. Сейчас не включайте и не тестируйте Submit:
+его реализации/флага нет. MANUAL сохранён; ASSISTED/AUTO остаются последующими этапами.
+
+LM Studio настройки остаются в project YAML (`lmstudio_base_url`, model, timeout,
+max tokens). Текущий endpoint guard разрешает только loopback `/v1`; host/LAN LLM
+для нескольких VM требует отдельного network configuration этапа. Каждый экземпляр
+использует свои STATE_DIR/LOG_DIR, project directory/overlay и localhost port.
+INSTANCE_ID маркирует JSONL logs; ACCOUNT_LABEL — подпись, не проверка аккаунта.
+
+Тесты выполняются по уровням, без полного прогона после каждого изменения:
+
+```powershell
+& ./scripts/test-fast.ps1 # Tier A: новые offline PC contracts
+& ./scripts/test-pc.ps1   # Tier B: затронутые компоненты перед commit
+# Tier C: только merge/release/major change или признаки общей регрессии:
+# & ./scripts/test-full.ps1
+```
+
+Если локальная политика запрещает `.ps1`, используйте прямой `python -m pytest -q`
+с соответствующими файлами из скрипта; probe не изменяет execution policy.
+Real UI test требует отдельного `RUN_LIVE_STUDIO_E2E=1` и только читает tree;
+обычные тесты не требуют аккаунта/Studio и не отправляют сообщения.
+
+## Stage 4B.3: MANUAL SEND release candidate
 
 Это текущая поставка. Она заменяет MANUAL SEND/TAB/DPAD_CENTER из Stage 4B.3 и
 исторические запреты AUTO в разделах ниже. Агент не выполнял real LIVE, physical

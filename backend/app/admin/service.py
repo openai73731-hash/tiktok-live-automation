@@ -17,8 +17,8 @@ from app.ai.models import ReplySuggestion
 from app.ai.processor import CommentProcessor
 from app.live.models import Comment, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
-from app.delivery.models import DeliveryContext
-from app.delivery.suggestions import SuggestionStore, digest, policy_revision, comment_identity
+from app.delivery.models import ApprovalEvent, DeliveryContext
+from app.delivery.suggestions import SuggestionStore, SuggestionConflict, digest, policy_revision, comment_identity
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -128,6 +128,8 @@ class AdminService:
         self.runtime = None
         self.delivery = None
         self.suggestions = SuggestionStore()
+        from app.windows.preparation import StartupPreparation
+        self.preparation = StartupPreparation(settings)
         playground.register_record = self.register_record
 
     def delivery_context(self):
@@ -141,12 +143,10 @@ class AdminService:
             connected=not invalid and live.connection_owned and live.state == "connected" and live.terminal_state is None,
             active=live.activity == "active")
         if self.delivery is not None:
-            controller = self.delivery.controller
-            device_ready = controller.ready_for(context.live_session_id, context.target_account) if hasattr(controller, "ready_for") else controller.last.ready
             context = context.model_copy(update={
                 "operator_paused": self.delivery.paused or self.delivery.closed,
-                "delivery_available": self.settings.enable_physical_tiktok_send,
-                "device_available": device_ready})
+                "delivery_available": self.delivery.delivery_available,
+                "device_available": self.delivery.device_ready(context)})
         return context
 
     def register_record(self, record, comment, processor, *, session_id=None, target_account=None):
@@ -158,13 +158,30 @@ class AdminService:
     def review_record(self, record):
         return record.model_copy(update={"delivery_review": self.review_view(record.id)})
 
+    def is_consumed(self, envelope):
+        return bool(self.delivery and hasattr(self.delivery, 'consumed') and self.delivery.consumed(envelope))
+
+    def approve_suggestion(self, suggestion_id, body):
+        envelope = self.suggestions.get(suggestion_id)
+        context = self.delivery_context()
+        # No event-loop handoff between the durable check and approval mutation.
+        # Delivery's SQLite reservation still guards against external writers.
+        if self.is_consumed(envelope):
+            raise SuggestionConflict('Suggestion already consumed and cannot be approved again.')
+        self.suggestions.approve(suggestion_id, body, context)
+        self.events.publish('suggestion_approval', ApprovalEvent(suggestion_id=suggestion_id))
+        if self.delivery and hasattr(self.delivery, 'approved'):
+            self.delivery.approved(suggestion_id)
+        return self.review_view(suggestion_id)
+
     def review_view(self, suggestion_id):
         review = self.suggestions.view(suggestion_id, self.delivery_context())
-        actions = getattr(self.delivery.controller, "actions", None) if self.delivery else None
         return review.model_copy(update={"physical_send_allowed": bool(self.delivery and self.delivery.can_send(review)),
-            "text_entry_supported": bool(actions and actions.supports(review.envelope.suggested_reply)),
-            "fill_allowed": bool(self.delivery and self.delivery.can_fill(review)),
-            "auto_eligibility": self.delivery.auto_verdict(review.envelope) if self.delivery else review.auto_eligibility})
+            "fill_allowed": bool(self.delivery and self.settings.tiktok_transport == "android" and self.delivery.can_fill(review)),
+            "auto_eligibility": self.delivery.auto_verdict(review.envelope) if self.delivery and self.settings.tiktok_transport == "android" else review.auto_eligibility,
+            "consumed": self.is_consumed(review.envelope),
+            "auto_delivery": self.delivery.auto_eligibility(suggestion_id) if self.delivery and hasattr(self.delivery, 'auto_eligibility') else None,
+            "text_entry_supported": bool(self.delivery and self.delivery.text_supported(review.envelope.suggested_reply))})
 
     def begin_live_session(self, session_id):
         self.live_archive.extend(self.live_history)
@@ -207,10 +224,14 @@ class AdminService:
 
     def status(self) -> AdminStatus:
         return AdminStatus(started_at=self.started_at, uptime_seconds=int(perf_counter() - self.started),
+                           active_transport=self.settings.tiktok_transport,
+                           preparation=self.preparation.view(),
                            live=self.live_view(), ai=self.ai_status, metrics=self.metrics,
                            playground_processed=self.playground.processed,
-                           reply_mode=self.delivery.mode if self.delivery else "MANUAL",
-                           automatic_enabled=bool(self.delivery and self.delivery.mode == "AUTOMATIC" and not self.delivery.paused),
+                           reply_mode="AUTOMATIC" if self.delivery and (getattr(self.delivery, "mode", "MANUAL") == "AUTOMATIC" or
+                               getattr(getattr(self.delivery, "sender", None), "auto_enabled", False)) else "MANUAL",
+                           automatic_enabled=bool(self.delivery and not self.delivery.paused and (getattr(self.delivery, "mode", "MANUAL") == "AUTOMATIC" or
+                               getattr(getattr(self.delivery, "sender", None), "auto_enabled", False))),
                            reply_policy=self.playground.processor.project.ai.reply_policy,
                            temperature=self.playground.processor.project.ai.temperature)
 
@@ -235,12 +256,15 @@ class AdminService:
                 status.terminal_state in {LiveState.ENDED, LiveState.OPERATOR_REQUIRED}):
             self.runtime.live.session_invalidated = True
         self.live_status = status
-        if self.delivery: self.delivery.context_changed()
+        if self.settings.tiktok_transport == "android" and self.delivery: self.delivery.context_changed()
+        if hasattr(self.delivery, "live_state"): self.delivery.live_state(status)
         self.events.publish("live_state", self.live_view())
 
     async def handle_live(self, comment: Comment, processor: CommentProcessor, *, mode=None, session_id=None, target_account=None) -> ReplyRecord | None:
         source = {"real": "tiktok", "fake": "fake", "replay": "replay"}[mode or self.settings.live_mode]
         if not self.accepts_session(session_id) or source == "tiktok" and not session_id: return None
+        if source == "tiktok" and hasattr(self.delivery, "observe_comment"):
+            self.delivery.observe_comment(comment, session_id, target_account)
         identity, _ = comment_identity(comment, source, session_id, target_account)
         # Deduplicate SDK message IDs within a bounded receipt window. No unbounded log.
         if source == "tiktok" and identity in self.live_seen: return None
