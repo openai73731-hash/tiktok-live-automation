@@ -474,3 +474,145 @@ async def test_manual_fill_api_keeps_all_pre_input_guards(manual_fill_api, failu
     if response.status_code == 200: assert response.json()["status"] != "filled"
     assert not {AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TEXT, AdbCommand.TAP_SEND,
         AdbCommand.TAB, AdbCommand.ACTIVATE} & {c for c, _ in transport.calls}
+
+
+@pytest.fixture
+async def captured_manual_fill_api(manual_fill_api, monkeypatch):
+    """Operator-provided hierarchy(8)/metadata(8); read-only ADB returns exact bytes."""
+    from hashlib import sha256
+    app, client, service, transport, envelope, body = manual_fill_api
+    directory = Path(__file__).parent / "fixtures/android/reviewed_manual_fill_4683"
+    raw = (directory / "hierarchy.xml").read_bytes()
+    metadata = json.loads((directory / "metadata.json").read_bytes())
+    assert sha256(raw).hexdigest() == metadata["hierarchy_sha256"] == "1f64b5ad6665183d7a70bf8ebc5d4ad92e42f84dbf26f040d16e5364f3142a98"
+    assert (metadata["device_model"], metadata["android_version"], metadata["version"]) == ("M2101K9G", "13", "46.8.3")
+    assert metadata["foreground_activity"] == "com.windukk.mod.icon.default" and metadata["profile_verified"]
+    transport.xml = raw.decode("utf-8")
+    original = transport.run
+    reads = []
+    async def preserving_raw(command, **kwargs):
+        before = transport.xml
+        result = await original(command, **kwargs)
+        if command not in {AdbCommand.DELETE, AdbCommand.TEXT, AdbCommand.TAB}:
+            transport.xml = before
+        if command == AdbCommand.HIERARCHY:
+            reads.append(before.encode("utf-8"))
+            return before
+        return result
+    monkeypatch.setattr(transport, "run", preserving_raw)
+    transport.calls.clear()
+    yield manual_fill_api, raw, reads
+
+
+@pytest.mark.parametrize("take_capture", [False, True])
+async def test_exact_capture_status_capture_then_final_manual_fill(captured_manual_fill_api, tmp_path, monkeypatch, take_capture):
+    fixture, raw, reads = captured_manual_fill_api
+    app, client, service, transport, envelope, body = fixture
+    monkeypatch.setattr("app.android.diagnostics.CAPTURE_ROOT", tmp_path / "captures")
+    status = (await client.post("/api/admin/device/inspect", json={})).json()
+    assert status["inspection"]["screen"] == "COMMENT_INPUT_READY"
+    assert status["inspection"]["comment_input_found"] and status["fill_ready"]
+    assert not status["inspection"]["live_verified"] and not status["inspection"]["send_button_found"]
+    binding = service.controller._account_binding
+    if take_capture:
+        captured = await client.post("/api/admin/device/capture", json={})
+        assert captured.status_code == 200
+        assert (tmp_path / "captures" / captured.json()["capture_id"] / "hierarchy.xml").read_bytes() == raw
+    result = await client.post("/api/admin/delivery/fill", json=body)
+    assert result.json() == {"status": "filled", "reason": "filled_waiting_user_send"}
+    assert service.controller._account_binding == binding
+    assert service.controller.last.account_verified
+    assert service.controller.last.screen.value == "COMMENT_INPUT_READY"
+    assert not service.controller.last.live_verified and not service.controller.physical_enabled
+    count = 6 if take_capture else 5  # status, optional capture, admission, controller, clear/delete guards
+    assert reads[:count] == [raw] * count
+    assert [args["text"] for command, args in transport.calls if command == AdbCommand.TEXT] == [envelope.suggested_reply]
+    assert not {AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE} & {c for c, _ in transport.calls}
+    assert service.journal.lookup(body["idempotency_key"]).status == "filled"
+
+
+INPUT_ACTIONS = {AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TEXT,
+    AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE}
+
+
+@pytest.mark.parametrize("phase", [1, 2, 3])
+@pytest.mark.parametrize("incomplete", ["dump", "empty", "partial"])
+async def test_manual_one_incomplete_acquisition_recheck_before_input(captured_manual_fill_api, monkeypatch, phase, incomplete):
+    fixture, raw, reads = captured_manual_fill_api
+    _, client, service, transport, envelope, body = fixture
+    original, failures, acquisitions = transport.run, [], []
+    async def fail_once(command, **kwargs):
+        if command == AdbCommand.DUMP:
+            acquisitions.append(command)
+            if len(acquisitions) == phase and incomplete == "dump":
+                failures.append(command)
+                return "ERROR: could not get idle state"
+        if command == AdbCommand.HIERARCHY and len(acquisitions) == phase and incomplete != "dump":
+            failures.append(command)
+            return "" if incomplete == "empty" else '<?xml version="1.0"?><hierarchy><node'
+        return await original(command, **kwargs)
+    monkeypatch.setattr(transport, "run", fail_once)
+    result = await client.post("/api/admin/delivery/fill", json=body)
+    assert result.json() == {"status":"filled", "reason":"filled_waiting_user_send"}
+    assert len(failures) == 1 and reads[0] == raw
+    assert [args["text"] for command, args in transport.calls if command == AdbCommand.TEXT] == [envelope.suggested_reply]
+    assert not {AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE} & {c for c, _ in transport.calls}
+    assert service.journal.lookup(body["idempotency_key"]).status == "filled"
+
+
+@pytest.mark.parametrize("failure", ["twice", "unknown", "security", "foreign", "conflict", "offline", "budget", "timeout", "account"])
+async def test_exact_capture_manual_failures_block_before_input(captured_manual_fill_api, monkeypatch, caplog, failure):
+    from app.android.adb import AdbError
+    fixture, _, _ = captured_manual_fill_api
+    _, client, service, transport, _, body = fixture
+    original, acquisitions = transport.run, []
+    if failure == "timeout": monkeypatch.setattr("app.android.manual_inspection.RECHECK_TIMEOUT", 0.01)
+    if failure == "account": service.controller.invalidate_trust()
+    async def failing_read(command, **kwargs):
+        if command == AdbCommand.DUMP:
+            acquisitions.append(command)
+            if failure in {"twice", "timeout"} or failure == "budget" and len(acquisitions) in {1, 3}:
+                return "ERROR: could not get idle state"
+        if command == AdbCommand.FOREGROUND:
+            if failure == "foreign": return "ResumedActivity: other.app/.Main\nmFocusedApp=ActivityRecord{x u0 other.app/.Main t1}"
+            if failure == "conflict": return "ResumedActivity: com.zhiliaoapp.musically/com.windukk.mod.icon.default\nmFocusedApp=ActivityRecord{x u0 other.app/.Main t1}"
+            if failure == "offline": raise AdbError()
+        if command == AdbCommand.HIERARCHY:
+            if failure == "unknown": return '<hierarchy><node package="com.zhiliaoapp.musically"/></hierarchy>'
+            if failure == "security": return transport.xml.replace("Введите сообщение...", "captcha")
+        return await original(command, **kwargs)
+    monkeypatch.setattr(transport, "run", failing_read)
+    result = await client.post("/api/admin/delivery/fill", json=body)
+    assert result.status_code == 200 and result.json()["status"] != "filled"
+    assert not INPUT_ACTIONS & {c for c, _ in transport.calls}
+    assert len(acquisitions) <= (2 if failure == "twice" else 3 if failure == "budget" else 1)
+    if failure == "account":
+        assert result.json()["reason"] == "account_unverified"
+        assert service.controller.last.screen.value == "COMMENT_INPUT_READY"
+        assert not service.controller.last.account_verified
+    record = next(r for r in caplog.records if "ANDROID_MANUAL_FILL_BLOCKED " in r.getMessage())
+    detail = json.loads(record.getMessage().split("ANDROID_MANUAL_FILL_BLOCKED ")[1])
+    assert detail["final_block_reason"] in {"unknown_screen", "security_ui", "account_unverified"}
+    assert "runtime_revision" in detail and "hierarchy_sha256" in detail and "session_match" in detail
+    assert "Введите сообщение" not in record.getMessage() and "<hierarchy" not in record.getMessage()
+
+
+@pytest.mark.parametrize("after_command", [AdbCommand.SELECT_ALL, AdbCommand.TEXT])
+async def test_manual_never_rechecks_acquisition_after_input_starts(captured_manual_fill_api, monkeypatch, after_command):
+    fixture, _, _ = captured_manual_fill_api
+    _, client, service, transport, _, body = fixture
+    original, started, failures = transport.run, False, []
+    async def fail_after_input(command, **kwargs):
+        nonlocal started
+        if command == AdbCommand.DUMP and started:
+            failures.append(command)
+            return "ERROR: could not get idle state"
+        result = await original(command, **kwargs)
+        if command == after_command: started = True
+        return result
+    monkeypatch.setattr(transport, "run", fail_after_input)
+    response = await client.post("/api/admin/delivery/fill", json=body)
+    assert response.json()["status"] != "filled" and len(failures) == 1
+    assert len([c for c, _ in transport.calls if c == AdbCommand.TEXT]) == (1 if after_command == AdbCommand.TEXT else 0)
+    assert not {AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE} & {c for c, _ in transport.calls}
+    assert service.journal.lookup(body["idempotency_key"]).status != "filled"

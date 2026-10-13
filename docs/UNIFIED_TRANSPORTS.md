@@ -125,6 +125,19 @@ Existing content, freshness and authority rules still apply. One attempt spends
 the one-shot latch and returns to MANUAL/AUTO OFF, draining the remaining queue;
 UNKNOWN additionally pauses and never retries. No AUTO test is part of development.
 
+Android MANUAL status and final input checks use the same fresh hierarchy
+classifier. CAPTURE passes the server's current account/session into inspection,
+so a read-only capture cannot revoke exact Profile trust by supplying no account.
+An incomplete UI dump permits one read-only recheck (8-second bound) shared across
+the whole Fill operation, only before its first input action. Unsafe/unknown UI,
+foreground conflicts and transport failures do not trigger this recheck; text
+insertion is never retried. Failed final checks log only structural evidence,
+hashes and binding matches, never hierarchy text or account handles.
+
+After backend restart, verify the exact own Profile again, then open/focus the
+composer and CHECK DEVICE. Missing account trust blocks with `account_unverified`;
+`COMMENT_INPUT_READY` recognizes a field and cannot substitute for account proof.
+
 ## Windows acceptance
 
 Windows keeps release provenance, own-account/UID binding, sticky clock failure

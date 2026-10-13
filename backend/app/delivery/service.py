@@ -214,7 +214,10 @@ class ManualDeliveryService:
     async def capture(self):
         async def run():
             async with self.lock:
-                return await self.controller.capture()
+                ctx = self.context()
+                target = AndroidTarget(live_session_id=ctx.live_session_id or "0" * 32, account=ctx.target_account,
+                    device_serial=self.controller.serial) if ctx.target_account else None
+                return await self.controller.capture(target)
         return await self._owned(run)
 
     def prepare(self, *, fill=False):
@@ -389,17 +392,20 @@ class ManualDeliveryService:
                     return DeliveryResult(status="needs_operator", reason="unicode_entry_unavailable")
                 target = AndroidTarget(live_session_id=e.live_session_id, account=e.target_account,
                     device_serial=self.controller.serial or self.controller.last.serial)
-                state = await self.controller.inspect(target)
+                inspection = self.controller.manual_inspection(target, e.active_runtime_revision)
+                state = await inspection.inspect()
                 # Opening the composer is an operator action. No reservation is spent while waiting.
                 if state.security_state:
                     self.paused = True
+                    inspection.block("security_ui")
                     return DeliveryResult(status="needs_operator", reason="security_ui")
                 if state.screen.value == "TRANSIENT_OVERLAY":
                     self.workflow = "WAITING FOR PHONE INPUT"
                     return DeliveryResult(status="not_sent", reason="transient_overlay")
                 if not self.controller.fill_ready_for(target.live_session_id, target.account):
                     self.workflow = "WAITING FOR PHONE INPUT"
-                    reason = "open_phone_composer" if state.live_verified and state.account_verified else "unknown_screen"
+                    reason = self.controller.manual_block_reason()
+                    inspection.block(reason)
                     return DeliveryResult(status="needs_operator", reason=reason)
                 self.prepare(fill=True)
                 if self.paused or self.journal is None: return DeliveryResult(status="needs_operator", reason="delivery_paused")
@@ -409,7 +415,7 @@ class ManualDeliveryService:
                         from app.delivery.models import AndroidSubmission
                         outcome = await service.controller.fill(AndroidSubmission(operation_id=request.operation_id,
                             target=target, text=request.text, expires_at=request.expires_at),
-                            guard=lambda: coordinator.preflight(request) and service.mode == "MANUAL")
+                            guard=lambda: coordinator.preflight(request) and service.mode == "MANUAL", inspection=inspection)
                         return DeliveryResult.model_validate(outcome.model_dump())
                 coordinator = DeliveryCoordinator(self.suggestions, self.journal, FillSender(), self.fill_context)
                 self.coordinator = coordinator

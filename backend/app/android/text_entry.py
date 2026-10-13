@@ -20,14 +20,15 @@ class ASCIITextEntryBackend:
 
     def supports(self, text): return ascii_supported(text)
 
-    def bind(self, target, guard, *, require_send=True):
+    def bind(self, target, guard, *, require_send=True, inspection=None):
         self.target, self.guard = target, guard
         self.require_send = require_send
+        self.inspection = inspection
         self.expected = None
 
     async def checked(self, serial, *, focused=False):
         c = self.controller
-        state = await c._inspect(self.target)
+        state = await self.inspection.read() if not self.require_send and self.inspection else await c._inspect(self.target)
         entry = unique_node(c._xml, c._profile.input_id) if c._profile else None
         ready = state.ready if self.require_send else c.fill_ready_for(self.target.live_session_id, self.target.account)
         if (not self.guard() or not ready or state.serial != serial or entry is None or
@@ -37,6 +38,7 @@ class ASCIITextEntryBackend:
 
     async def clear(self, serial):
         await self.checked(serial, focused=True)
+        if not self.require_send and self.inspection: self.inspection.input_started = True
         await self.controller.transport.run(AdbCommand.SELECT_ALL, serial=serial, guard=self.guard)
         await self.checked(serial, focused=True)
         await self.controller.transport.run(AdbCommand.DELETE, serial=serial, guard=self.guard)

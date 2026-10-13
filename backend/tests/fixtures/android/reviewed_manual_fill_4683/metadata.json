@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-10-13T21:44:41.678309+00:00",
+  "device_model": "M2101K9G",
+  "android_version": "13",
+  "serial_sha256": "0b43905d1d29a648e843510296bafb8317b9d6cb55ff7c9165d629c7e0db4daf",
+  "package": "com.zhiliaoapp.musically",
+  "version": "46.8.3",
+  "version_code": "2024608030",
+  "foreground_activity": "com.windukk.mod.icon.default",
+  "client_variant": "TIKTOK_YOU",
+  "profile_verified": true,
+  "hierarchy_sha256": "1f64b5ad6665183d7a70bf8ebc5d4ad92e42f84dbf26f040d16e5364f3142a98"
+}

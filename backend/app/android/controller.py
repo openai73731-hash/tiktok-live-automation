@@ -1,6 +1,8 @@
 """ADB inspection and a separately gated semantic UI action boundary."""
 import asyncio
 import re
+import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
 from time import monotonic
 from uuid import uuid4
 from hashlib import sha256
@@ -9,6 +11,7 @@ from app.android.models import ClientVariant, DeviceInspection, ScreenState, And
 from app.android.tiktok_ui import (foreground, inspect_hierarchy, exact_input, unique_node, observed_variant, package_version,
     TIKTOK_YOU_4683, profile_account)
 from app.android.diagnostics import CaptureError, save_capture
+from app.android.manual_inspection import HierarchyUnavailable, ManualInspection
 
 
 class ADBAndroidController:
@@ -58,6 +61,18 @@ class ADBAndroidController:
                 and self._manual_fill_evidence[:3] == (self._installation, account, session_id))
         return self.last.fill_ready
 
+    def manual_inspection(self, target, runtime_revision=None):
+        return ManualInspection(self, target, runtime_revision)
+
+    def manual_block_reason(self):
+        state = self.last
+        if state.security_state: return "security_ui"
+        if state.screen == ScreenState.COMMENT_INPUT_READY and not state.account_verified:
+            return "account_unverified"
+        if state.screen == ScreenState.LIVE_READY and state.live_verified and state.account_verified:
+            return "open_phone_composer"
+        return "unknown_screen"
+
     @staticmethod
     def installation(info):
         values = []
@@ -67,9 +82,14 @@ class ADBAndroidController:
             values.append(matches[0].strip())
         return sha256(repr(values).encode()).hexdigest()
 
-    async def _inspect(self, target=None):
+    async def _inspect(self, target=None, *, manual=False):
         self._profile, self._xml = None, ""
         self._manual_fill_evidence = None
+        self._hierarchy_unavailable = False
+        self._inspection_started = monotonic()
+        self._inspection_timestamp = datetime.now(UTC).isoformat()
+        self._inspection_trace = dict(adb_device_state=None, foreground_package=None, foreground_activity=None,
+            tiktok_package_match=False, hierarchy_acquired=False, hierarchy_sha256=None)
         if self.closed or self.transport.executable is None:
             self.last = DeviceInspection(reason="adb_unavailable")
             return self.last
@@ -86,6 +106,7 @@ class ADBAndroidController:
                     reason="multiple_devices" if multiple else "device_missing")
                 return self.last
             values.update(serial=selected.serial, device=selected.state)
+            self._inspection_trace["adb_device_state"] = selected.state
             if selected.state != "CONNECTED":
                 self.invalidate_trust()
                 self.last = DeviceInspection(**values, reason="unauthorized" if selected.state == "UNAUTHORIZED" else "offline")
@@ -94,6 +115,8 @@ class ADBAndroidController:
             installed = {line.removeprefix("package:").strip() for line in listed.splitlines() if line.startswith("package:")}
             before = await self.transport.run(AdbCommand.FOREGROUND, serial=selected.serial)
             package, activity = foreground(before)
+            self._inspection_trace.update(foreground_package=package, foreground_activity=activity,
+                tiktok_package_match=package in PACKAGES)
             if package is None:
                 self.invalidate_trust()
                 self.last = DeviceInspection(**values, screen=ScreenState.UNKNOWN_SCREEN, reason="unknown_screen")
@@ -104,8 +127,16 @@ class ADBAndroidController:
                 return self.last
             values.update(package=package, foreground_activity=activity)
             dumped = await self.transport.run(AdbCommand.DUMP, serial=selected.serial)
-            if DUMP_PATH not in dumped: raise ValueError("Hierarchy unavailable")
+            if DUMP_PATH not in dumped: raise HierarchyUnavailable()
             xml = await self.transport.run(AdbCommand.HIERARCHY, serial=selected.serial)
+            self._inspection_trace["hierarchy_sha256"] = sha256(xml.encode("utf-8")).hexdigest()
+            if manual and len(xml.encode("utf-8")) <= 524288 and not re.search(r"<!\s*(?:DOCTYPE|ENTITY)", xml, re.I):
+                # Completeness only, never a second screen classifier. Mirror
+                # inspect_hierarchy's XML declaration handling exactly.
+                start = xml.find("<?xml")
+                try: ET.fromstring(xml[start:] if start >= 0 else xml)
+                except ET.ParseError: raise HierarchyUnavailable() from None
+            self._inspection_trace["hierarchy_acquired"] = True
             info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=selected.serial, package=package)
             version, code = package_version(info)
             variant = observed_variant(package, activity)
@@ -165,6 +196,13 @@ class ADBAndroidController:
         except AdbError:
             self._live_evidence = None
             self.last = DeviceInspection(**values, reason="adb_failed")
+        except HierarchyUnavailable:
+            self._hierarchy_unavailable = True
+            # A MANUAL operation may preserve the exact Profile binding only
+            # across its one immediate read-only recheck. No input is authorized
+            # by this incomplete snapshot; all other paths still revoke trust.
+            if not manual: self.invalidate_trust()
+            self.last = DeviceInspection(**values, screen=ScreenState.UNKNOWN_SCREEN, reason="unknown_screen")
         except ValueError:
             self.invalidate_trust()
             self.last = DeviceInspection(**values, screen=ScreenState.UNKNOWN_SCREEN, reason="unknown_screen")
@@ -203,10 +241,10 @@ class ADBAndroidController:
             await self._inspect(target)
             return self.last.ready
 
-    async def capture(self):
+    async def capture(self, target=None):
         async with self.lock:
             try:
-                state = await self._inspect()
+                state = await self._inspect(target)
                 if state.package is None or not self._xml or state.reason == "adb_failed": raise CaptureError()
                 model = (await self.transport.run(AdbCommand.DEVICE_MODEL, serial=state.serial)).strip()
                 android = (await self.transport.run(AdbCommand.ANDROID_VERSION, serial=state.serial)).strip()
@@ -220,20 +258,27 @@ class ADBAndroidController:
             except (AdbError, OSError, ValueError):
                 raise CaptureError() from None
 
-    async def fill(self, request, *, guard=lambda: False):
+    async def fill(self, request, *, guard=lambda: False, inspection=None):
         """MANUAL preparation only. This path cannot call click_send or an activation."""
         async with self.lock:
             if not guard(): return AndroidOutcome(status="not_sent", reason="rejected")
-            state = await self._inspect(request.target)
+            inspection = inspection or self.manual_inspection(request.target)
+            if inspection.controller is not self or inspection.target != request.target:
+                return AndroidOutcome(status="needs_operator", reason="rejected")
+            state = await inspection.read()
             if not guard(): return AndroidOutcome(status="not_sent", reason="rejected")
             if request.target.device_serial != state.serial:
+                inspection.block("device_unavailable")
                 return AndroidOutcome(status="needs_operator", reason="device_unavailable")
-            if state.security_state: return AndroidOutcome(status="needs_operator", reason="security_ui")
+            if state.security_state:
+                inspection.block("security_ui")
+                return AndroidOutcome(status="needs_operator", reason="security_ui")
             if state.screen == ScreenState.TRANSIENT_OVERLAY:
+                inspection.block("transient_overlay")
                 return AndroidOutcome(status="not_sent", reason="transient_overlay")
             if not self.fill_ready_for(request.target.live_session_id, request.target.account):
-                reason = "open_phone_composer" if state.screen == ScreenState.LIVE_READY and state.live_verified and state.account_verified else state.reason
-                if reason not in {"open_phone_composer", "account_unverified", "live_unverified", "profile_unverified"}: reason = "unknown_screen"
+                reason = self.manual_block_reason()
+                inspection.block(reason)
                 return AndroidOutcome(status="needs_operator", reason=reason)
             if not self.actions or not self.actions.supports(request.text):
                 return AndroidOutcome(status="needs_operator", reason="unicode_entry_unavailable")
@@ -242,15 +287,17 @@ class ADBAndroidController:
                 # Other adapters need an independently reviewed fill-only contract.
                 return AndroidOutcome(status="needs_operator", reason="profile_unverified")
             profile = self._profile
-            self.actions.bind(request.target, guard, require_send=False)
+            self.actions.bind(request.target, guard, require_send=False, inspection=inspection)
             try:
                 entered = await self.actions.prepare_exact(state.serial, profile.input_id, request.text)
-                final = await self._inspect(request.target)
+                final = await inspection.read()
             except (TextEntryError, AdbError):
+                inspection.block("rejected")
                 return AndroidOutcome(status="needs_operator", reason="rejected")
             if (not guard() or entered != request.text or
                     not self.fill_ready_for(request.target.live_session_id, request.target.account) or self._profile != profile
                     or final.serial != state.serial or not exact_input(self._xml, profile, request.text)):
+                inspection.block("rejected")
                 return AndroidOutcome(status="needs_operator", reason="rejected")
             return AndroidOutcome(status="filled", reason="filled_waiting_user_send")
 

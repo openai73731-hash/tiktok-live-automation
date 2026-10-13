@@ -208,7 +208,9 @@ async def test_last_checks_no_send(change, monkeypatch):
     dest=request()
     if change=="focus": t.xml=t.xml.replace('focused="true"','focused="false"')
     elif change=="security": t.xml=t.xml.replace('text="Test"','text="security check"')
-    elif change=="lease": monkeypatch.setattr("app.android.controller.monotonic", lambda: c._live_evidence[3]+91)
+    elif change=="lease":
+        expired_time = c._live_evidence[3] + 91
+        monkeypatch.setattr("app.android.controller.monotonic", lambda: expired_time)
     elif change=="session": dest=dest.model_copy(update={"target":target("b"*32)})
     elif change=="missing_send_bounds":
         root=ET.fromstring(t.xml)
