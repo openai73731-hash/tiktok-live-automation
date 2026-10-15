@@ -122,7 +122,7 @@ class ApprovalEvent(FrozenModel):
 DeliveryStatus = Literal["filled", "confirmed", "not_sent", "unknown", "needs_operator"]
 DeliveryReason = Literal["mock_confirmed", "not_configured", "rejected", "timeout",
     "cancelled", "sender_failed", "interrupted", "operator_required",
-    "physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen",
+    "physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen", "hierarchy_unavailable",
     "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
     "journal_unavailable", "delivery_paused", "cooldown", "dry_run", "shutdown",
     "filled_waiting_user_send", "feed_confirmed", "open_phone_composer", "transient_overlay",
@@ -183,7 +183,7 @@ class DryRunView(FrozenModel):
     device_ready: bool
     would_send: bool
     reason: EligibilityReason | Literal["not_checked", "adb_unavailable", "device_missing", "multiple_devices",
-        "unauthorized", "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen",
+        "unauthorized", "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen", "hierarchy_unavailable", "profile_mismatch",
         "profile_unverified", "account_unverified", "live_unverified", "input_unavailable", "send_control_unverified", "transient_overlay", "ready", "rejected"]
     diagnostic_id: OpaqueId
     physical_action: Literal[False] = False

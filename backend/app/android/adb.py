@@ -25,6 +25,7 @@ class AdbCommand(StrEnum):
     FOREGROUND = "foreground"
     FOREGROUND_WINDOW = "foreground_window"
     DUMP = "dump"
+    CLEAR_HIERARCHY = "clear_hierarchy"
     HIERARCHY = "hierarchy"
     PACKAGE_INFO = "package_info"
     DEVICE_MODEL = "device_model"
@@ -39,6 +40,10 @@ class AdbCommand(StrEnum):
 
 class AdbError(RuntimeError):
     def __init__(self): super().__init__("Android inspection unavailable")
+
+
+class HierarchyUnavailable(ValueError):
+    """Transport worked, but no usable current UI hierarchy was acquired."""
 
 
 def parse_devices(output):
@@ -66,8 +71,9 @@ class AdbTransport:
         self.closed = False
         self.last_command_result = None
 
-    def argv(self, command, *, serial=None, package=None, text=None, point=None):
+    def argv(self, command, *, serial=None, package=None, text=None, point=None, compressed=False):
         if not isinstance(command, AdbCommand) or self.executable is None: raise AdbError()
+        if type(compressed) is not bool or compressed and command != AdbCommand.DUMP: raise AdbError()
         if text is not None and command != AdbCommand.TEXT: raise AdbError()
         if point is not None and command != AdbCommand.TAP_SEND: raise AdbError()
         args = [str(self.executable), "-H", "127.0.0.1", "-P", "5037"]
@@ -80,7 +86,8 @@ class AdbTransport:
             AdbCommand.PACKAGES: ["shell", "pm", "list", "packages"],
             AdbCommand.FOREGROUND: ["shell", "dumpsys", "activity", "activities"],
             AdbCommand.FOREGROUND_WINDOW: ["shell", "dumpsys", "window", "windows"],
-            AdbCommand.DUMP: ["shell", "uiautomator", "dump", DUMP_PATH],
+            AdbCommand.DUMP: ["shell", "uiautomator", "dump", *(["--compressed"] if compressed else []), DUMP_PATH],
+            AdbCommand.CLEAR_HIERARCHY: ["shell", "rm", "-f", DUMP_PATH],
             AdbCommand.HIERARCHY: ["exec-out", "cat", DUMP_PATH],
             AdbCommand.DEVICE_MODEL: ["shell", "getprop", "ro.product.model"],
             AdbCommand.ANDROID_VERSION: ["shell", "getprop", "ro.build.version.release"],
@@ -102,13 +109,13 @@ class AdbTransport:
         if command not in commands: raise AdbError()
         return args + commands[command]
 
-    async def run(self, command, *, serial=None, package=None, text=None, point=None, guard=None):
+    async def run(self, command, *, serial=None, package=None, text=None, point=None, guard=None, compressed=False):
         result = dict(command=command.value if isinstance(command, AdbCommand) else "invalid",
             category="transport_error", exit_code=None, stdout_present=False, stderr_present=False,
             stderr_miui_uiautomator_noise=False)
         self.last_command_result = result
         if self.closed: raise AdbError()
-        args = self.argv(command, serial=serial, package=package, text=text, point=point)
+        args = self.argv(command, serial=serial, package=package, text=text, point=point, compressed=compressed)
         # Do not forward API keys, proxy settings or remote ADB server overrides.
         permitted = {"SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}
         env = {k: v for k, v in os.environ.items() if k.upper() in permitted}
@@ -117,6 +124,11 @@ class AdbTransport:
         readers = []
         try:
             async with asyncio.timeout(self.timeout):
+                if command == AdbCommand.DUMP:
+                    # Only our fixed ephemeral output. A zero-exit false success
+                    # can never read a hierarchy left by an earlier attempt.
+                    await self.run(AdbCommand.CLEAR_HIERARCHY, serial=serial)
+                    self.last_command_result = result
                 async def start():
                     if guard is not None and not guard():
                         result["category"] = "guard_rejected"
@@ -132,7 +144,9 @@ class AdbTransport:
                     while chunk := await stream.read(65536):
                         result[name + "_present"] = True
                         total += len(chunk)
-                        if total > limit: raise AdbError()
+                        if total > limit:
+                            if command == AdbCommand.HIERARCHY and name == "stdout": raise HierarchyUnavailable()
+                            raise AdbError()
                         chunks.append(chunk)
                     return b"".join(chunks)
                 readers = [asyncio.create_task(read(process.stdout, 524288, "stdout")),
@@ -144,11 +158,21 @@ class AdbTransport:
                 lines = stderr.decode("utf-8", errors="replace").splitlines()
                 result["stderr_miui_uiautomator_noise"] = (command == AdbCommand.DUMP and bool(lines)
                     and all(line.startswith("WARNING: linker:") for line in lines))
+                if (command == AdbCommand.DUMP and b"could not get idle state" in (stdout + stderr).lower()
+                        or command == AdbCommand.HIERARCHY and code != 0 and DUMP_PATH.encode() in stderr
+                        and b"no such file" in stderr.lower()):
+                    result["category"] = "hierarchy_unavailable"
+                    raise HierarchyUnavailable()
                 if code != 0:
                     result["category"] = "exit_nonzero"
                     raise AdbError()
                 result["category"] = "output_invalid"
-                output = stdout.decode("utf-8", errors="strict")
+                try: output = stdout.decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
+                    if command == AdbCommand.HIERARCHY:
+                        result["category"] = "hierarchy_unavailable"
+                        raise HierarchyUnavailable() from None
+                    raise
                 result["category"] = "success"
                 if command == AdbCommand.FOREGROUND:
                     # MIUI's focused window can be AOD while the resumed/focused
@@ -161,6 +185,9 @@ class AdbTransport:
         except TimeoutError:
             result["category"] = "timeout"
             raise AdbError() from None
+        except HierarchyUnavailable:
+            result["category"] = "hierarchy_unavailable"
+            raise
         except Exception:
             raise AdbError() from None
         finally:

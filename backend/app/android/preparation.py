@@ -59,6 +59,8 @@ async def prepare_mobile(service, runtime):
                 target = AndroidTarget(live_session_id=ctx.live_session_id or "0" * 32,
                     account=ctx.target_account, device_serial=service.controller.serial)
                 state = await service.controller.inspect(target)
+                if state.reason == "hierarchy_unavailable":
+                    reject("hierarchy_unavailable: Profile hierarchy unavailable; keep own Profile open and retry")
                 c = service.controller
                 if (state.security_state or not state.account_verified or not state.profile_verified
                         or c._profile != TIKTOK_YOU_4683 or not c._installation or not c._installation[-1]

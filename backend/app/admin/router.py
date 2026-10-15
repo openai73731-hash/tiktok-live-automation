@@ -111,8 +111,8 @@ class ConfirmSendInput(UIModel):
 @router.post("/api/admin/device/verify-account")
 async def verify_account(request: Request, body: EmptyInput):
     try: return await request.app.state.delivery.trust_action(verify=True)
-    except SuggestionConflict:
-        raise HTTPException(409, detail="Откройте собственный Profile с точным настроенным @handle и повторите проверку.") from None
+    except SuggestionConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from None
 
 
 @router.post("/api/admin/device/confirm-send")

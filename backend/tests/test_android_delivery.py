@@ -328,12 +328,12 @@ async def test_security_screen_blocks_every_action(text, state):
     assert c.last.screen == state and result.reason == "security_ui" and not a.entries and not a.clicks
 
 
-@pytest.mark.parametrize("xml,reason", [("<bad", "unknown_screen"), ("<!DOCTYPE hierarchy><hierarchy/>", "unknown_screen"),
+@pytest.mark.parametrize("xml,reason", [("<bad", "hierarchy_unavailable"), ("<!DOCTYPE hierarchy><hierarchy/>", "hierarchy_unavailable"),
     (hierarchy(account="@other"), "account_unverified"), (hierarchy(live="FEED"), "live_unverified"),
     (hierarchy(missing=PROFILE.input_id), "input_unavailable"), (hierarchy(missing=PROFILE.send_id), "input_unavailable"),
     (hierarchy(extra={"class": "android.app.Dialog", "package": PACKAGE}), "unknown_screen"),
     (hierarchy(extra={"package": "com.foreign"}), "unknown_screen"),
-    ("<hierarchy>" + "<node>" * 34 + "</node>" * 34 + "</hierarchy>", "unknown_screen")])
+    ("<hierarchy>" + "<node>" * 34 + "</node>" * 34 + "</hierarchy>", "hierarchy_unavailable")])
 async def test_unknown_account_live_modal_and_missing_controls_fail_closed(xml, reason):
     c, _, a = device(xml=xml)
     assert (await c.inspect(submission().target)).reason == reason

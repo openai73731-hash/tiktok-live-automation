@@ -235,14 +235,14 @@ async def test_device_disconnected_requires_device_or_adb_failure(failure):
 
 
 @pytest.mark.parametrize("dump", ["", "ERROR: could not get idle state."])
-async def test_successful_adb_with_unavailable_hierarchy_is_unknown(dump):
+async def test_successful_adb_with_unavailable_hierarchy_has_explicit_reason(dump):
     class NoHierarchyTransport(InspectionTransport):
         async def run(self, command, **kwargs):
             if command == AdbCommand.DUMP: return dump
             return await super().run(command, **kwargs)
     state = await ADBAndroidController(NoHierarchyTransport(RESUMED_TIKTOK, RESUMED_TIKTOK)).inspect()
     assert state.device == "CONNECTED" and state.screen == ScreenState.UNKNOWN_SCREEN
-    assert state.reason == "unknown_screen" and not state.account_verified and not state.ready
+    assert state.reason == "hierarchy_unavailable" and not state.account_verified and not state.ready
 
 
 @pytest.mark.parametrize("window_code", [0, 1])

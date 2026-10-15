@@ -211,14 +211,15 @@ async def test_manual_rejection_logs_internal_reason_without_reply(manual_fill_a
 async def test_adb_result_diagnostics_do_not_reclassify_stderr(tmp_path, monkeypatch, code, stderr, category, noise, command):
     class Process:
         returncode = code
-        def __init__(self):
+        def __init__(self, reset=False):
+            self.returncode = 0 if reset else code
             self.stdout, self.stderr = asyncio.StreamReader(), asyncio.StreamReader()
-            self.stdout.feed_data(b"UI hierarchy dumped to: /data/local/tmp/tiktok-live-hierarchy.xml")
-            self.stderr.feed_data(stderr)
+            self.stdout.feed_data(b"" if reset else b"UI hierarchy dumped to: /data/local/tmp/tiktok-live-hierarchy.xml")
+            self.stderr.feed_data(b"" if reset else stderr)
             self.stdout.feed_eof(); self.stderr.feed_eof()
         async def wait(self): return self.returncode
     path = tmp_path / "adb.exe"; path.touch()
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=Process()))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *args, **kwargs: Process(reset="rm" in args)))
     transport = AdbTransport(path)
     args = {"text":"Private approved reply"} if command == AdbCommand.TEXT else {}
     if code:

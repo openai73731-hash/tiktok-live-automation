@@ -157,6 +157,17 @@ codes/readback outcome. It never includes reply, stdout or stderr bodies. Stderr
 alone is not failure; nonzero exit, timeout, invalid output and unsafe readback
 still reject. No text insertion is retried.
 
+Fresh UI acquisition requires a successful transport, a newly created remote
+dump, nontrivial UTF-8 XML and a bounded valid `hierarchy` root. The fixed temporary
+dump is removed before each attempt; old diagnostic captures are never account
+proof. UIAutomator's zero-exit `could not get idle state`, absent/empty file or
+invalid XML yields `hierarchy_unavailable`, with one bounded normal-to-compressed
+read-only retry shared across Profile verification or MANUAL Fill. No retry after
+input starts. A parsed Profile that fails exact configured-handle comparison is
+`profile_mismatch`; Admin/preflight show these causes separately. The observed
+SplashActivity is accepted only with reviewed Profile layout/device/version;
+composer/LIVE activity allowlists and AUTO/Send guards remain unchanged.
+
 ## Windows acceptance
 
 Windows keeps release provenance, own-account/UID binding, sticky clock failure

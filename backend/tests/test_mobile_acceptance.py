@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.parametrize("failure", ["none", "transport", "own_account", "pending", "listener", "auto", "gate",
     "multiple", "offline", "wrong_device", "security", "unverified", "revision", "recover",
-    "still_paused", "final_paused", "recovery_refused", "busy"])
+    "still_paused", "final_paused", "recovery_refused", "busy", "hierarchy_unavailable"])
 def test_mobile_preparation_has_no_input_and_fails_closed(failure):
     shell = shutil.which("pwsh") or shutil.which("powershell")
     if not shell: pytest.skip("PowerShell unavailable")
@@ -42,7 +42,7 @@ function Invoke-RestMethod {
    $devices=@(@{serial='fixture';state=$(if($global:mobileFixtureFailure -eq 'offline'){'OFFLINE'}else{'CONNECTED'})})
    if($global:mobileFixtureFailure -eq 'multiple'){$devices+=@{serial='second';state='CONNECTED'}}
    return @{mode='MANUAL';busy=($global:mobileFixtureFailure -eq 'busy');paused=(($global:mobileFixtureFailure -eq 'recover' -and -not $global:mobileFixturePrepared) -or ($global:mobileFixtureFailure -eq 'final_paused' -and $global:mobileFixturePrepared));physical_delivery_enabled=($global:mobileFixtureFailure -eq 'gate');
-    inspection=@{adb='AVAILABLE';devices=$devices;serial=$(if($global:mobileFixtureFailure -eq 'wrong_device'){'foreign'}else{'fixture'});
+    inspection=@{adb='AVAILABLE';reason=$(if($global:mobileFixtureFailure -eq 'hierarchy_unavailable'){'hierarchy_unavailable'}else{'not_checked'});devices=$devices;serial=$(if($global:mobileFixtureFailure -eq 'wrong_device'){'foreign'}else{'fixture'});
      security_state=($global:mobileFixtureFailure -eq 'security');account_verified=($global:mobileFixtureFailure -ne 'unverified');profile_verified=$true}}
   }
  }

@@ -596,7 +596,7 @@ async def test_exact_capture_manual_failures_block_before_input(captured_manual_
         assert not service.controller.last.account_verified
     record = next(r for r in caplog.records if "ANDROID_MANUAL_FILL_BLOCKED " in r.getMessage())
     detail = json.loads(record.getMessage().split("ANDROID_MANUAL_FILL_BLOCKED ")[1])
-    assert detail["final_block_reason"] in {"unknown_screen", "security_ui", "account_unverified"}
+    assert detail["final_block_reason"] in {"unknown_screen", "security_ui", "account_unverified", "hierarchy_unavailable"}
     assert "runtime_revision" in detail and "hierarchy_sha256" in detail and "session_match" in detail
     assert "Введите сообщение" not in record.getMessage() and "<hierarchy" not in record.getMessage()
 

@@ -55,7 +55,7 @@ class DeviceInspection(DeviceModel):
     send_control_state: Literal["UNAVAILABLE", "SEND_CONTROL_CANDIDATE", "VERIFIED"] = "UNAVAILABLE"
     send_confirmation_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     reason: Literal["not_checked", "adb_unavailable", "device_missing", "multiple_devices", "unauthorized",
-        "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen", "profile_unverified",
+        "offline", "adb_failed", "tiktok_not_running", "security_ui", "unknown_screen", "profile_unverified", "hierarchy_unavailable", "profile_mismatch",
         "account_unverified", "live_unverified", "input_unavailable", "send_control_unverified", "transient_overlay", "ready"] = "not_checked"
 
     @property
@@ -104,6 +104,7 @@ class UIActionBackend(TextEntryBackend, Protocol):
 class AndroidOutcome(DeviceModel):
     status: Literal["filled", "confirmed", "not_sent", "unknown", "needs_operator"]
     reason: Literal["physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen",
+        "hierarchy_unavailable",
         "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
         "rejected", "interrupted", "filled_waiting_user_send", "feed_confirmed",
         "open_phone_composer", "transient_overlay", "confirmation_ambiguous"]

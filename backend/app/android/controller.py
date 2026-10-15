@@ -1,17 +1,16 @@
 """ADB inspection and a separately gated semantic UI action boundary."""
 import asyncio
 import re
-import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from time import monotonic
 from uuid import uuid4
 from hashlib import sha256
-from app.android.adb import AdbTransport, AdbCommand, AdbError, PACKAGES, parse_devices, DUMP_PATH
+from app.android.adb import AdbTransport, AdbCommand, AdbError, HierarchyUnavailable, PACKAGES, parse_devices, DUMP_PATH
 from app.android.models import ClientVariant, DeviceInspection, ScreenState, AndroidOutcome
 from app.android.tiktok_ui import (foreground, inspect_hierarchy, exact_input, unique_node, observed_variant, package_version,
-    TIKTOK_YOU_4683, profile_account)
+    TIKTOK_YOU_4683, profile_account, parse_hierarchy, reviewed_profile_screen)
 from app.android.diagnostics import CaptureError, save_capture
-from app.android.manual_inspection import HierarchyUnavailable, ManualInspection
+from app.android.manual_inspection import ManualInspection
 
 
 class ADBAndroidController:
@@ -66,6 +65,7 @@ class ADBAndroidController:
 
     def manual_block_reason(self):
         state = self.last
+        if state.reason == "hierarchy_unavailable": return "hierarchy_unavailable"
         if state.security_state: return "security_ui"
         if state.screen == ScreenState.COMMENT_INPUT_READY and not state.account_verified:
             return "account_unverified"
@@ -82,7 +82,7 @@ class ADBAndroidController:
             values.append(matches[0].strip())
         return sha256(repr(values).encode()).hexdigest()
 
-    async def _inspect(self, target=None, *, manual=False):
+    async def _inspect(self, target=None, *, manual=False, compressed=False):
         self._profile, self._xml = None, ""
         self._manual_fill_evidence = None
         self._hierarchy_unavailable = False
@@ -126,16 +126,13 @@ class ADBAndroidController:
                 self.last = DeviceInspection(**values, screen=ScreenState.TIKTOK_NOT_RUNNING, reason="tiktok_not_running")
                 return self.last
             values.update(package=package, foreground_activity=activity)
-            dumped = await self.transport.run(AdbCommand.DUMP, serial=selected.serial)
+            dumped = await self.transport.run(AdbCommand.DUMP, serial=selected.serial, compressed=compressed)
             if DUMP_PATH not in dumped: raise HierarchyUnavailable()
             xml = await self.transport.run(AdbCommand.HIERARCHY, serial=selected.serial)
             self._inspection_trace["hierarchy_sha256"] = sha256(xml.encode("utf-8")).hexdigest()
-            if manual and len(xml.encode("utf-8")) <= 524288 and not re.search(r"<!\s*(?:DOCTYPE|ENTITY)", xml, re.I):
-                # Completeness only, never a second screen classifier. Mirror
-                # inspect_hierarchy's XML declaration handling exactly.
-                start = xml.find("<?xml")
-                try: ET.fromstring(xml[start:] if start >= 0 else xml)
-                except ET.ParseError: raise HierarchyUnavailable() from None
+            root = parse_hierarchy(xml)
+            if len(xml.strip().encode("utf-8")) < 32 or root is None or not len(root):
+                raise HierarchyUnavailable()
             self._inspection_trace["hierarchy_acquired"] = True
             info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=selected.serial, package=package)
             version, code = package_version(info)
@@ -145,7 +142,9 @@ class ADBAndroidController:
             matching = [p for p in self.profiles if p.package == package and p.verified and p.version == version
                 and (p.version_code is None or p.version_code == code) and (p.serial is None or p.serial == selected.serial)
                 and (p.client_variant == ClientVariant.UNKNOWN and variant == ClientVariant.UNKNOWN and not p.activities
-                     or activity in p.activities and variant in {ClientVariant.UNKNOWN, p.client_variant})]
+                     or (activity in p.activities or p == TIKTOK_YOU_4683
+                         and activity == "com.ss.android.ugc.aweme.splash.SplashActivity" and reviewed_profile_screen(xml))
+                     and variant in {ClientVariant.UNKNOWN, p.client_variant})]
             if len(matching) == 1:
                 profile = matching[0]
                 values["client_variant"] = profile.client_variant
@@ -202,7 +201,7 @@ class ADBAndroidController:
             # across its one immediate read-only recheck. No input is authorized
             # by this incomplete snapshot; all other paths still revoke trust.
             if not manual: self.invalidate_trust()
-            self.last = DeviceInspection(**values, screen=ScreenState.UNKNOWN_SCREEN, reason="unknown_screen")
+            self.last = DeviceInspection(**values, screen=ScreenState.UNKNOWN_SCREEN, reason="hierarchy_unavailable")
         except ValueError:
             self.invalidate_trust()
             self.last = DeviceInspection(**values, screen=ScreenState.UNKNOWN_SCREEN, reason="unknown_screen")
@@ -210,22 +209,29 @@ class ADBAndroidController:
 
     async def inspect(self, target=None):
         async with self.lock:
-            return await self._inspect(target)
+            return await self.manual_inspection(target).read()
 
     async def verify_account(self, target):
         async with self.lock:
             self.invalidate_trust()
-            state = await self._inspect(target)
+            inspection = self.manual_inspection(target)
+            state = await inspection.read()
             if (state.security_state or self._profile != TIKTOK_YOU_4683 or not self._installation or not self._installation[-1]
-                    or not profile_account(self._xml, target.account)):
+                    or state.reason == "hierarchy_unavailable"):
+                return False
+            if not profile_account(self._xml, target.account):
+                self.last = state.model_copy(update={"reason": "profile_mismatch"})
                 return False
             model = (await self.transport.run(AdbCommand.DEVICE_MODEL, serial=state.serial)).strip()
             android = (await self.transport.run(AdbCommand.ANDROID_VERSION, serial=state.serial)).strip()
             # Reinspect after device metadata, so Profile cannot change during binding.
             key = self._installation
-            await self._inspect(target)
+            await inspection.read()
             if (model != "M2101K9G" or android != "13" or self.last.security_state or self._profile != TIKTOK_YOU_4683
-                    or self._installation != key or not profile_account(self._xml, target.account)): return False
+                    or self._installation != key): return False
+            if not profile_account(self._xml, target.account):
+                self.last = self.last.model_copy(update={"reason": "profile_mismatch"})
+                return False
             self._account_binding = (self._installation, target.account)
             self.last = self.last.model_copy(update={"account_verified": True})
             return True

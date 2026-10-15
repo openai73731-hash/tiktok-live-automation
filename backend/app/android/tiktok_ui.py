@@ -97,6 +97,15 @@ def composer_shape(root):
     return chain(("l_8", "l_6", "lbz", "yo8", "lcm", "h4k")) and chain(("l_8", "l_6", "lbz", "vp8", "vpl"))
 
 
+def reviewed_profile_screen(xml):
+    """Recognize Profile layout only; configured account comparison is separate."""
+    root = parse_hierarchy(xml)
+    handles = [n.get("text", "") for n in root.iter() if n.get("resource-id") == rid("sxp")
+        and n.get("package") == PACKAGE and n.get("class") == "android.widget.Button" and n.get("enabled") == "true"
+        and re.fullmatch(r"@[A-Za-z0-9._]{1,24}", n.get("text", ""))] if root is not None else []
+    return len(handles) == 1 and profile_account(xml, handles[0][1:])
+
+
 def foreground(output):
     """Resolve current app evidence; an inert AOD window grants no authority."""
     records = {}

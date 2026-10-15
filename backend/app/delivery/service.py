@@ -185,7 +185,12 @@ class ManualDeliveryService:
                 if not account: raise SuggestionConflict("Сначала укажите аккаунт собственного LIVE.")
                 target = AndroidTarget(live_session_id=ctx.live_session_id or "0" * 32,
                     account=account, device_serial=self.controller.serial)
+                if verify: self._verified_runtime_revision = None
                 valid = await self.controller.verify_account(target) if verify else await self.controller.confirm_send(target, token)
+                if not valid and verify and self.controller.last.reason == "hierarchy_unavailable":
+                    raise SuggestionConflict("hierarchy_unavailable: Profile hierarchy unavailable; keep own Profile open and retry.")
+                if not valid and verify and self.controller.last.reason == "profile_mismatch":
+                    raise SuggestionConflict("profile_mismatch: свежий Profile не подтвердил точный настроенный @handle.")
                 if not valid: raise SuggestionConflict("Проверка не выполнена. Проверьте Profile, LIVE и reviewed composer.")
                 if verify: self._verified_runtime_revision = ctx.active_runtime_revision
                 return self.view()

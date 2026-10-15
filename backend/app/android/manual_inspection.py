@@ -1,4 +1,4 @@
-"""Fresh MANUAL evidence, with one acquisition recheck before any input."""
+"""Fresh Profile/MANUAL evidence, with one acquisition recheck before any input."""
 import asyncio
 import json
 import logging
@@ -9,10 +9,6 @@ from app.android.tiktok_ui import unique_node
 
 logger = logging.getLogger(__name__)
 RECHECK_TIMEOUT = 8
-
-
-class HierarchyUnavailable(ValueError):
-    """No complete snapshot was acquired; not a classification of an unsafe UI."""
 
 
 class ManualInspection:
@@ -34,10 +30,10 @@ class ManualInspection:
             try:
                 async with asyncio.timeout(RECHECK_TIMEOUT):
                     await asyncio.sleep(0.1)
-                    state = await c._inspect(self.target, manual=True)
+                    state = await c._inspect(self.target, manual=True, compressed=True)
             except TimeoutError:
                 c._hierarchy_unavailable = True
-                c.last = state = state.model_copy(update={"screen": ScreenState.UNKNOWN_SCREEN, "reason": "unknown_screen"})
+                c.last = state = state.model_copy(update={"screen": ScreenState.UNKNOWN_SCREEN, "reason": "hierarchy_unavailable"})
         if c._hierarchy_unavailable:
             c.invalidate_trust()
         return state

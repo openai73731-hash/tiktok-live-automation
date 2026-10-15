@@ -40,6 +40,7 @@ $delivery = Invoke-MobileRequest '/api/admin/delivery/status'
 Assert-MobileIdle $status $delivery -AllowRecovery
 $delivery = Invoke-MobileRequest '/api/admin/device/inspect' -Post
 $device = $delivery.inspection
+if ($device.reason -ceq 'hierarchy_unavailable') { throw 'hierarchy_unavailable: Profile hierarchy unavailable; keep own Profile open and retry.' }
 $devices = @($device.devices)
 if ($device.adb -cne 'AVAILABLE' -or $devices.Count -ne 1 -or $devices[0].state -cne 'CONNECTED') { throw 'Exactly one expected online Android device is required.' }
 if ($DeviceSerial -and $devices[0].serial -cne $DeviceSerial) { throw 'Detected device differs from expected serial.' }
