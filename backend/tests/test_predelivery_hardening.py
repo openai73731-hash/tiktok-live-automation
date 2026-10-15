@@ -294,7 +294,7 @@ async def test_crash_reservation_blocks_restart(suggestion, tmp_path):
 async def panel(settings, tmp_path, monkeypatch):
     path = tmp_path / "project.yaml"; path.write_bytes(settings.project_config_path.read_bytes())
     monkeypatch.setattr("app.main.LiveService", lambda *a, **k: pytest.fail("Unexpected LIVE construction"))
-    app = create_app(settings.model_copy(update={"project_config_path": path, "log_dir": tmp_path / "logs"}))
+    app = create_app(settings.model_copy(update={"project_config_path": path, "log_dir": tmp_path / "logs", "tiktok_username":"own"}))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8000") as client:
             client.headers["X-Admin-CSRF"] = (await client.get("/api/admin/session")).json()["csrf_token"]

@@ -1,11 +1,16 @@
 /* Explicit manual fill; separately armed backend AUTO. Identity-only requests. */
 window.createDeliveryControls = ({api, node, toast, state, refreshCards, refreshReviews = async () => {}}) => {
   const $ = (id) => document.getElementById(id);
-  let view = null, version = 0, busy = false;
+  let view = null, version = 0, busy = false, challengeTimer = null;
   const keys = new Map();
   function render(next) {
     ++version; // Invalidate older GETs when SSE publishes a transport switch.
     view = next;
+    if (challengeTimer !== null) { window.clearTimeout(challengeTimer); challengeTimer = null; }
+    if (next.transport !== "windows_live_studio" && next.account_challenge?.token && window.setTimeout) {
+      challengeTimer = window.setTimeout(() => { challengeTimer = null; refresh().catch((error) => toast(error.message)); },
+        (next.account_challenge.expires_in_seconds + 1) * 1000);
+    }
     const windows = next.transport === "windows_live_studio";
     $("active-transport").textContent = windows ? "PC / LIVE STUDIO" : "MOBILE / ANDROID";
     $("stream-mode").textContent = windows ? "PC" : "MOBILE";
@@ -23,7 +28,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("legacy-delivery-settings").hidden = windows;
     $("dash-delivery-mode").textContent = windows ? next.windows_sender?.auto_enabled ? "AUTO · operator approved" : "MANUAL" : next.mode;
     $("android-capture-note").hidden = windows;
-    ["inspect-device", "capture-device", "verify-account", "confirm-send", "prepare-mobile"].forEach((id) => {
+    ["inspect-device", "capture-device", "verify-account", "confirm-send", "prepare-mobile", "live-account-challenge", "mobile-challenge-note"].forEach((id) => {
       $(id).hidden = windows;
       $(id).disabled = windows || busy || !state.connected;
     });
@@ -44,6 +49,8 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       ["Comment input / Send", `${d.comment_input_found} / ${d.send_button_found}`],
       ["Send control", d.send_control_state],
       ["Account / LIVE verified", `${d.account_verified} / ${d.live_verified}`],
+      ["Device/install prepared", Boolean(next.mobile_prepared)],
+      ["LIVE account challenge", next.account_challenge?.state || "REQUIRED"],
       ["Security UI", d.security_state], ["Delivery", next.delivery],
       ["Physical SEND", next.physical_delivery_enabled ? "GATE ENABLED · проверка обязательна" : "DISABLED"],
       ["Причина", next.reason === "device_unavailable" ? d.reason : next.reason]];
@@ -78,6 +85,13 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("inspect-device").disabled = busy || !state.connected;
     $("capture-device").disabled = busy || !state.connected;
     $("verify-account").disabled = busy || !state.connected;
+    $("live-account-challenge").disabled = busy || next.busy || !state.connected || !next.account_challenge?.available;
+    const challenge = next.account_challenge;
+    $("mobile-challenge-note").textContent = challenge?.token
+      ? `TYPE THIS EXACT COMMENT FROM THE HOST PHONE: ${challenge.token} · expires in ${challenge.expires_in_seconds}s. Введите и отправьте вручную с host телефона.`
+      : challenge?.state === "VERIFIED" ? "LIVE ACCOUNT VERIFIED · новая внешняя test comment → AI → APPROVE → host LIVE inspect → FILL PHONE → human Send → VERIFY."
+      : challenge?.state === "CHECKING" ? "Challenge получен. Свежая read-only проверка host LIVE/device/install…"
+      : "PREPARE MOBILE проверяет только device/install. Затем вручную START LIVE → CONNECT → LIVE ACCOUNT CHALLENGE. Profile proof остаётся отдельной строгой диагностикой.";
     $("prepare-mobile").disabled = busy || next.busy || !state.connected || next.mode !== "MANUAL" || Boolean(next.live_session_id);
     $("confirm-send").disabled = busy || !state.connected || !d.send_confirmation_token;
     $("delivery-mode").value = next.mode || "MANUAL";
@@ -146,8 +160,15 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     busy = true;
     try {
       render(await api("/api/admin/delivery/prepare", {}));
-      toast("Mobile prepared. Новая runtime revision; старые consumed ответы повторять нельзя. AUTO OFF.");
+      toast("Device/install prepared. Аккаунт ещё не подтверждён: START LIVE → CONNECT → LIVE ACCOUNT CHALLENGE. AUTO OFF.");
     } catch (error) { toast(error.message); }
+    finally { busy = false; await refresh(); }
+  });
+  $("live-account-challenge").addEventListener("click", async () => {
+    if (busy || !state.connected || view?.transport === "windows_live_studio") return;
+    busy = true;
+    try { render(await api("/api/admin/device/live-account-challenge", {})); }
+    catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
   });
   $("confirm-send").addEventListener("click", async () => {

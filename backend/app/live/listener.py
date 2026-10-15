@@ -313,6 +313,9 @@ class LiveListener(BaseListener):
         self.dropped_comments = 0
         self.unknown_event_count = 0
         self.cleanup_failures = ()
+        self.connection_generation = 0
+        self.session_active = False
+        self.connected_handle = None
 
     def on_comment(self, event: Any) -> None:
         if self.halt.is_set():
@@ -326,10 +329,17 @@ class LiveListener(BaseListener):
             return
         try:
             observer = getattr(self, "on_receipt", None)
+            if (self.settings.tiktok_transport == "android" and self.settings.live_mode == "real"
+                    and self.session_active and self.status.state == LiveState.CONNECTED):
+                comment._sdk_receipt = (self, self.connection_generation)
+                comment._sdk_text_exact = event.content == comment.text
             if observer:
-                try: observer(comment)
+                try:
+                    if observer(comment) is True: return
                 except Exception:
                     logger.warning("receipt_observer_failed")
+            if self.settings.tiktok_transport == "android" and comment.text.upper().startswith("MOB-"):
+                return  # Even a failed observer must not leak a challenge to AI/logs.
             self.queue.put_nowait(comment)
         except asyncio.QueueFull:
             self.dropped_comments += 1
@@ -337,13 +347,16 @@ class LiveListener(BaseListener):
                 "fields": {"dropped_total": self.dropped_comments},
             })
 
-    def on_connect(self, _: Any) -> None:
+    def on_connect(self, event: Any) -> None:
         if not self.halt.is_set():
+            handle = getattr(event, "unique_id", None)
+            self.connected_handle = handle.casefold() if isinstance(handle, str) and re.fullmatch(r"[A-Za-z0-9._]{1,24}", handle) else None
             self.connected.set()
             self.set_state(LiveState.CONNECTED)
 
     def on_disconnect(self, _: Any) -> None:
         if not self.halt.is_set():
+            self.connected_handle = None
             self.connected.clear()
             self.set_state(LiveState.DISCONNECTED)
             logger.info("sdk_disconnected", extra={"fields": {"event_type": "DisconnectEvent"}})
@@ -389,6 +402,10 @@ class LiveListener(BaseListener):
         halt_task = None
         connected_task = None
         self.connected.clear()
+        self.connected_handle = None
+        self.connection_generation += 1
+        generation = self.connection_generation
+        self.session_active = True
         try:
             for event, handler in (
                 (ConnectEvent, self.on_connect), (DisconnectEvent, self.on_disconnect),
@@ -399,7 +416,12 @@ class LiveListener(BaseListener):
                 (UnauthorizedMemberEvent, self.on_security),
                 (UnknownEvent, self.on_unknown),
             ):
-                client.add_listener(event, handler)
+                # An SDK callback from a retired socket cannot enter a later
+                # connection, including its account challenge or receipt ledger.
+                def current(event, handler=handler):
+                    if self.session_active and self.connection_generation == generation:
+                        return handler(event)
+                client.add_listener(event, current if self.settings.tiktok_transport == "android" else handler)
             # connect()/run()/close() in 7.0.1 invoke loop-wide cleanup.
             # start() gives us ownership of just this connection task.
             async with asyncio.timeout(self.settings.connect_timeout_seconds):
@@ -430,6 +452,7 @@ class LiveListener(BaseListener):
                 raise AmbiguousSDKState() from None
             raise
         finally:
+            self.session_active = False
             from app.lifecycle import finish_owned
             cleanup = asyncio.create_task(self._cleanup(client, socket_task, halt_task,
                 connected_task, sdk_logger, sdk_filter), name="live-owned-cleanup")

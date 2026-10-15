@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 $adminUrl = "http://127.0.0.1:$Port"
 
 function Invoke-MobileRequest([string]$Path, [switch]$Post) {
-    $options = @{ Uri = "$adminUrl$Path"; TimeoutSec = 45; Method = 'GET' }
+    $options = @{ Uri = "$adminUrl$Path"; TimeoutSec = 180; Method = 'GET' }
     if ($Post) {
         $options.Method = 'POST'
         $options.Headers = @{ 'X-Admin-CSRF' = $script:mobileCsrf; Origin = $adminUrl }
@@ -38,25 +38,24 @@ if ($operator.username.ToLowerInvariant() -cne $Username.TrimStart('@').ToLowerI
 $status = Invoke-MobileRequest '/api/admin/status'
 $delivery = Invoke-MobileRequest '/api/admin/delivery/status'
 Assert-MobileIdle $status $delivery -AllowRecovery
-$delivery = Invoke-MobileRequest '/api/admin/device/inspect' -Post
-$device = $delivery.inspection
-if ($device.reason -ceq 'hierarchy_unavailable') { throw 'hierarchy_unavailable: Profile hierarchy unavailable; keep own Profile open and retry.' }
-$devices = @($device.devices)
-if ($device.adb -cne 'AVAILABLE' -or $devices.Count -ne 1 -or $devices[0].state -cne 'CONNECTED') { throw 'Exactly one expected online Android device is required.' }
-if ($DeviceSerial -and $devices[0].serial -cne $DeviceSerial) { throw 'Detected device differs from expected serial.' }
-if ($device.serial -cne $devices[0].serial -or $device.security_state) { throw 'Selected device mismatch or security/login dialog: STOP.' }
-Write-Host 'Checking own Profile. Open your own TikTok Profile before running this script.'
-$verified = Invoke-MobileRequest '/api/admin/device/verify-account' -Post
-if (-not $verified.inspection.account_verified -or -not $verified.inspection.profile_verified -or $verified.inspection.security_state) { throw 'Own account/reviewed installation not verified: NEED OPERATOR.' }
+Write-Host 'Preparing the exact reviewed phone/installation. This does not verify the account.'
 # Explicit recovery creates a new runtime revision; journals/consumed rows remain intact.
 $beforePrepare = Invoke-MobileRequest '/api/admin/operator/settings'
 if ($beforePrepare.active_runtime_revision -cne $operator.active_runtime_revision -or $beforePrepare.pending -or
     $beforePrepare.username.ToLowerInvariant() -cne $Username.TrimStart('@').ToLowerInvariant()) { throw 'Runtime/account changed before preparation. Prepare again.' }
 $prepared = Invoke-MobileRequest '/api/admin/delivery/prepare' -Post
 if ($prepared.paused) { throw 'operator_paused / recovery required: preparation did not clear the safety pause.' }
+$device = $prepared.inspection
+$devices = @($device.devices)
+if (-not $prepared.mobile_prepared -or $device.account_verified) { throw 'Device/install preparation must PASS without claiming account verification.' }
+if ($device.adb -cne 'AVAILABLE' -or $devices.Count -ne 1 -or $devices[0].state -cne 'CONNECTED') { throw 'Exactly one expected online Android device is required.' }
+if ($DeviceSerial -and $devices[0].serial -cne $DeviceSerial) { throw 'Detected device differs from expected serial.' }
+if ($device.serial -cne $devices[0].serial -or $device.security_state) { throw 'Selected device mismatch or security/login dialog: STOP.' }
 $finalOperator = Invoke-MobileRequest '/api/admin/operator/settings'
 if ($finalOperator.active_runtime_revision -cne $prepared.active_runtime_revision -or $finalOperator.pending) { throw 'Runtime changed during preparation. Prepare again.' }
 Assert-MobileIdle (Invoke-MobileRequest '/api/admin/status') (Invoke-MobileRequest '/api/admin/delivery/status')
-Write-Host 'PREPARE MOBILE complete. AUTO OFF. No input or delivery performed.'
-Write-Host 'START LIVE ON PHONE manually -> CONNECT LISTENER -> NEW TEST COMMENT -> AI REPLY -> APPROVE.'
+Write-Host 'PREPARE MOBILE complete. Device/install only; account_verified=false. AUTO OFF. No input or delivery performed.'
+Write-Host 'START LIVE ON PHONE manually -> CONNECT LISTENER -> LIVE ACCOUNT CHALLENGE.'
+Write-Host 'Type/send the backend challenge yourself from the host phone; wait for LIVE ACCOUNT VERIFIED.'
+Write-Host 'Then NEW EXTERNAL TEST COMMENT -> AI REPLY -> APPROVE.'
 Write-Host 'Inspect host LIVE, open/focus composer manually -> FILL PHONE -> tap Send yourself -> VERIFY -> STOP.'

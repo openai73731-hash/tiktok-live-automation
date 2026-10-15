@@ -8,7 +8,9 @@ from app.android.models import ScreenState
 from app.android.tiktok_ui import unique_node
 
 logger = logging.getLogger(__name__)
-RECHECK_TIMEOUT = 8
+# Entire compressed inspection, not just uiautomator: metadata, two foreground
+# sources, cleanup and a bounded device probe fit outside the 12-second dump.
+RECHECK_TIMEOUT = 45
 
 
 class ManualInspection:

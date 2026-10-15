@@ -192,8 +192,11 @@ class MockLive:
 
 
 @pytest.fixture
-def live_mock(client):
+async def live_mock(client):
     app, c = client
+    runtime = app.state.operator_runtime
+    await runtime.save(OperatorOverlay(tiktok={"username":"own"}), runtime.saved_config_revision)
+    await runtime.apply(runtime.saved_config_revision, runtime.active_runtime_revision)
     created = []
     MockLive.instances = created
     app.state.operator_runtime.live.factory = MockLive
@@ -202,9 +205,11 @@ def live_mock(client):
 
 async def test_connect_disconnect_single_listener_and_playground_survives(live_mock):
     app, c, created = live_mock
-    pg = app.state.admin.playground.processor
     unrelated = asyncio.create_task(asyncio.Event().wait())
     try:
+        assert (await post_action(c, BASE + "settings", json={"tiktok":{"username":"own.account"}})).status_code == 200
+        assert (await post_action(c, BASE + "apply", json={})).status_code == 200
+        pg = app.state.admin.playground.processor
         response = await c.post("/api/admin/live/connect", json={"username": " @own.account "})
         assert response.status_code == 202
         await created[0].started.wait()
@@ -226,6 +231,9 @@ async def test_connect_disconnect_single_listener_and_playground_survives(live_m
         assert result.status_code == 200 and result.json()["suggestion"]["status"] == "ready"
         assert app.state.quality.run.enabled
         assert (await post_action(c, "/api/admin/live/disconnect", json={})).status_code == 200
+        assert (await c.post("/api/admin/live/connect", json={"username":"other"})).status_code == 409
+        assert (await post_action(c, BASE + "settings", json={"tiktok":{"username":"other"}})).status_code == 200
+        assert (await post_action(c, BASE + "apply", json={})).status_code == 200
         assert (await c.post("/api/admin/live/connect", json={"username": "other"})).status_code == 202
         assert len(created) == 2
     finally:

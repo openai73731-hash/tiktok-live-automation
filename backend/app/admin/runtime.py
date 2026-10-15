@@ -49,6 +49,11 @@ class AdminLiveController:
                 if not configured or applied != configured or username.casefold() != configured:
                     raise RuntimeConflict('Windows CONNECT разрешён только для configured own account.')
                 username = configured
+            elif self.runtime.settings.tiktok_transport == "android" and not (startup and self.runtime.settings.live_mode == "fake"):
+                configured = TikTokOverride(username=self.runtime.username).username.casefold()
+                if not configured or username.casefold() != configured:
+                    raise RuntimeConflict("Mobile CONNECT разрешён только для applied own account.")
+                username = configured
             reason = self.runtime.connect_block_reason(username, startup=startup)
             if reason: raise RuntimeConflict(reason)
             config = self.runtime.settings.model_copy(update={"tiktok_username": username,
@@ -59,17 +64,24 @@ class AdminLiveController:
             async def handle(comment):
                 if self.session_id != session_id:
                     return None
+                if config.tiktok_transport == "android" and comment.text.upper().startswith("MOB-"):
+                    return None  # Defense in depth for non-SDK/fake/queued challenge text.
                 return await self.runtime.admin.handle_live(comment, processor, mode=config.live_mode,
                     session_id=session_id, target_account=username)
             def on_status(status):
                 if self.session_id == session_id:
                     self.runtime.admin.on_live_state(status)
+                    delivery = self.runtime.admin.delivery
+                    if config.tiktok_transport == "android" and hasattr(delivery, "account_proof") and status.state == LiveState.CONNECTED:
+                        delivery.account_proof.connected()
             try:
                 service = self.factory(config, on_comment=handle, on_status=on_status)
                 def receipt(comment):
                     delivery = self.runtime.admin.delivery
                     if self.session_id == session_id and config.live_mode == "real":
                         self.runtime.ingestion.bind(comment, username, session_id, runtime_revision, config.windows.broadcaster_user_id)
+                        if config.tiktok_transport == "android" and hasattr(delivery, "account_proof"):
+                            if delivery.account_proof.observe(comment): return True
                         if hasattr(delivery, "observe_comment"): delivery.observe_comment(comment, session_id, username)
                 service.on_receipt = receipt
             except BaseException:
@@ -184,6 +196,7 @@ class OperatorRuntime:
 
     def install_delivery(self, delivery):
         self.application.state.delivery = self.admin.delivery = delivery
+        if hasattr(delivery, "account_proof"): delivery.account_proof.runtime = self
         def changed():
             if self.admin.delivery is not delivery: return
             self.publish()

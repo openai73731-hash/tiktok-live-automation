@@ -93,21 +93,32 @@ evidence still rejects input. MANUAL fills only the immutable approved server te
 Supported readiness is still the reviewed Xiaomi M2101K9G / Android 13 / TikTok
 You 46.8.3 installation/profile. Device selection is discovered, not hardcoded by
 the acceptance script. Other devices/installations stop at NEED OPERATOR until a
-separately reviewed profile exists. Exact own Profile handle, owner control and
-installation binding remain mandatory; LIVE display name is never account proof.
+separately reviewed profile exists. Exact own account and installation binding
+remain mandatory. The release proof is a fresh two-channel LIVE challenge;
+strict Profile handle/owner verification remains an optional alternative.
+LIVE display name is never account proof.
 Security/login/CAPTCHA/unknown screens require STOP/NEED OPERATOR.
 
 1. Start the backend on loopback with `LIVE_MODE=fake`, `ADMIN_LIVE_ENABLED=false`,
    both physical gates false and `TIKTOK_TRANSPORT=android`.
 2. In Settings choose Mobile / Android and your own username. Save, then Apply.
    Select the sole detected device if needed. Keep AUTO OFF.
-3. Open your own TikTok Profile. In PowerShell, from the repository, run:
+3. Open TikTok on the reviewed phone. In PowerShell, from the repository, run:
    `./scripts/prepare-mobile.ps1 -Username YOUR_OWN_HANDLE`.
    Optionally supply `-DeviceSerial` for an expected discovered device. This script
-   checks exactly one online device, own Profile, initial disconnected listener,
-   AUTO OFF, explicit expected gate and unchanged runtime. It reads only.
+   checks exactly one expected online device, exact model/Android/install/version,
+   disconnected listener, idle journal, AUTO OFF, expected gate and runtime. It
+   reads only and leaves `account_verified=false`; hierarchy_unavailable is not
+   device disconnection or account proof. Detectable security/login still blocks.
 4. START LIVE ON PHONE manually. CONNECT LISTENER in Admin.
-5. Send a NEW TEST COMMENT from a test viewer. Review AI REPLY and both Russian
+5. On reviewed normal host LIVE the backend displays a server-owned `MOB-…`
+   challenge (or explicitly use LIVE ACCOUNT CHALLENGE after opening host LIVE).
+   Type/send it manually from the host phone within 60 seconds. Require LIVE
+   ACCOUNT VERIFIED: exact real SDK author_handle/token/message/receipt plus a
+   second fresh host/device/install inspection. No challenge goes to AI or normal
+   comment logs. Runtime/session/connection generation/device/install/account
+   changes invalidate it; no raw auth secret is persisted. Then send a NEW
+   EXTERNAL TEST COMMENT from a test viewer. Review AI REPLY and both Russian
    translations, then APPROVE. Fake AI accepts only its documented fixtures;
    `Is it automatic?` is an offline/acceptance fixture. LM Studio can be selected
    and explicitly checked separately; no paid provider is required.
@@ -118,8 +129,10 @@ Security/login/CAPTCHA/unknown screens require STOP/NEED OPERATOR.
 
 Only after successful manual acceptance, an optional Android AUTO one-shot test
 uses startup `ENABLE_PHYSICAL_TIKTOK_SEND=true` and
-`MOBILE_ACCEPTANCE_ONE_SHOT=true`. Restart, repeat own Profile/host/composer and
-Send-control confirmation. Run preflight with `-ExpectedPhysicalGate ON`.
+`MOBILE_ACCEPTANCE_ONE_SHOT=true`. Restart, repeat device preparation, LIVE
+challenge, successful manual Fill/human Send/VERIFY, and Send-control confirmation.
+Run preflight with `-ExpectedPhysicalGate ON`. The challenge path cannot arm AUTO
+until its current binding has a successful manual verification.
 Explicitly arm AUTOMATIC for the current session, then admit one NEW SDK comment.
 Existing content, freshness and authority rules still apply. One attempt spends
 the one-shot latch and returns to MANUAL/AUTO OFF, draining the remaining queue;
@@ -128,28 +141,30 @@ UNKNOWN additionally pauses and never retries. No AUTO test is part of developme
 Android MANUAL status and final input checks use the same fresh hierarchy
 classifier. CAPTURE passes the server's current account/session into inspection,
 so a read-only capture cannot revoke exact Profile trust by supplying no account.
-An incomplete UI dump permits one read-only recheck (8-second bound) shared across
+An incomplete UI dump permits one bounded read-only recheck shared across
 the whole Fill operation, only before its first input action. Unsafe/unknown UI,
 foreground conflicts and transport failures do not trigger this recheck; text
 insertion is never retried. Failed final checks log only structural evidence,
 hashes and binding matches, never hierarchy text or account handles.
 
-After backend restart, verify the exact own Profile again, then open/focus the
-composer and CHECK DEVICE. Missing account trust blocks with `account_unverified`;
+After backend restart, repeat preparation and the LIVE account challenge (or the
+optional strict Profile proof), then inspect host LIVE and open/focus the composer.
+Missing account trust blocks with `account_unverified`;
 `COMMENT_INPUT_READY` recognizes a field and cannot substitute for account proof.
 
 MANUAL `REJECTED` pauses delivery: Admin shows **DELIVERY PAUSED — RE-PREPARE
 REQUIRED**. Neither VERIFY/Profile, reconnect nor new comments clear it. Disconnect
-the listener, open exact own Profile, VERIFY ACCOUNT, then use **PREPARE MOBILE /
+the listener, open TikTok on the reviewed phone, then use **PREPARE MOBILE /
 RECOVER** or `prepare-mobile.ps1`. The existing `/api/admin/delivery/prepare` checks
 AUTO OFF, idle native/coordinator work, no pending fill, fresh current-runtime
-Profile/account/device/install trust and all current/legacy journals. Only a
+device/install evidence, configured own account and all current/legacy journals. Only a
 settled MANUAL rejection on the reviewed Android device is recoverable. UNKNOWN/reserved/filled, other pause
 causes or unreadable journals fail with `operator_paused / recovery required`.
 Successful preparation creates a new runtime revision, retains every consumed
 row and the acceptance one-shot latch, and keeps AUTO OFF. The script rechecks
 final pause and revision; it cannot report success while paused. Start a new
-listener session and use a new comment/approval; never retry the old identity.
+listener session, complete the fresh LIVE account challenge and use a new external
+comment/approval; never retry the old identity. Preparation never proves the account.
 
 MANUAL entry emits `android_manual_text_entry` in `logs/app.jsonl` with structural
 target/focus, command category/exit code, output-presence flags and exact rejection
@@ -163,7 +178,11 @@ dump is removed before each attempt; old diagnostic captures are never account
 proof. UIAutomator's zero-exit `could not get idle state`, absent/empty file or
 invalid XML yields `hierarchy_unavailable`, with one bounded normal-to-compressed
 read-only retry shared across Profile verification or MANUAL Fill. No retry after
-input starts. A parsed Profile that fails exact configured-handle comparison is
+input starts. Each dump has a 12-second deadline; a dump/read timeout probes the
+selected device through bounded ADB before reporting hierarchy_unavailable.
+The compressed inspection deadline covers metadata/cleanup as well as the dump,
+so it cannot cancel at the former 8-second boundary before the device's idle error.
+A parsed Profile that fails exact configured-handle comparison is
 `profile_mismatch`; Admin/preflight show these causes separately. The observed
 SplashActivity is accepted only with reviewed Profile layout/device/version;
 composer/LIVE activity allowlists and AUTO/Send guards remain unchanged.

@@ -1,5 +1,19 @@
 # Project scope and rules
 
+- Mobile release account proof (explicit user authorization) replaces mandatory
+  Profile acquisition on the reviewed Xiaomi/TikTok installation with a fresh
+  two-channel LIVE challenge. PREPARE MOBILE is device/install/idle-journal only,
+  AUTO OFF and account_verified=false. Real CONNECT to applied own handle plus
+  fresh normal-host Android evidence issues a server-random <=60-second token;
+  only a fresh real SDK exact-author/exact-token event and a second fresh host
+  inspection bind account/device/install/runtime/session/connection generation.
+  No challenge enters AI/logs or any Android input path. Reconnect/APPLY/restart/
+  changes revoke trust. Strict profile_account remains intact as optional proof.
+  New preparation requires successful manual Fill/human Send/read-only VERIFY
+  before AUTO. UNKNOWN/reserved/filled/consumed journals and one-shot gates remain.
+  The agent may inspect ADB read-only and connect only after the human starts LIVE;
+  it never starts LIVE, types, taps, sends or enables AUTO for this acceptance.
+
 - Stage 4B.4 (explicit user authorization) supersedes Stage 4B.3 MANUAL SEND and
   older AUTO/input restrictions below. Default MANUAL: human APPROVE -> guarded ASCII
   FILL PHONE -> human taps Send; manual fill NEVER activates Send, even with startup

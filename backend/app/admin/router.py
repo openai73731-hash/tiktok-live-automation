@@ -122,6 +122,13 @@ async def confirm_send(request: Request, body: ConfirmSendInput):
         raise HTTPException(409, detail="Кандидат изменился или не проверен. Проверьте устройство, LIVE и composer.") from None
 
 
+@router.post("/api/admin/device/live-account-challenge")
+async def live_account_challenge(request: Request, body: EmptyInput):
+    try: return await android_service(request).account_proof.issue()
+    except SuggestionConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from None
+
+
 @router.get("/")
 async def root():
     return RedirectResponse("/ui/")

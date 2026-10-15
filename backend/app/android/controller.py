@@ -33,6 +33,7 @@ class ADBAndroidController:
         self.invalidate_trust()
 
     def invalidate_trust(self):
+        self._account_scope_guard = None
         self._account_binding = self._send_binding = self._candidate_key = self._candidate_token = None
         self._live_evidence = None
         self._manual_fill_evidence = None
@@ -41,6 +42,7 @@ class ADBAndroidController:
 
     @property
     def current_ready(self):
+        if self._account_scope_guard is not None and not self._account_scope_guard(): return False
         if not self.last.ready: return False
         if self._profile and self._profile.live_markers:
             return bool(self._live_evidence and monotonic() - self._live_evidence[3] < 90
@@ -54,6 +56,10 @@ class ADBAndroidController:
         return True
 
     def fill_ready_for(self, session_id, account):
+        if self._account_scope_guard is not None and not self._account_scope_guard(): return False
+        if self._account_scope_guard is not None and not (self._live_evidence and self.last.live_verified
+                and self._live_evidence[:3] == (self._installation, account, session_id)
+                and monotonic() - self._live_evidence[3] < 90): return False
         if self._profile and self._profile.live_markers:
             return bool(self.last.manual_fill_candidate and self._manual_fill_evidence
                 and monotonic() - self._manual_fill_evidence[3] < 90
@@ -160,6 +166,7 @@ class ADBAndroidController:
             if self._account_binding is not None and self._account_binding[1] != account:
                 self.invalidate_trust()
             key = (selected.serial, package, version, code, values["client_variant"], model, android, self.installation(info))
+            if self._account_scope_guard is not None and not self._account_scope_guard(): self.invalidate_trust()
             if self._installation is not None and key != self._installation: self.invalidate_trust()
             self._installation = key
             account_bound = bool(key[-1] and self._account_binding == (key, account))
@@ -210,6 +217,45 @@ class ADBAndroidController:
     async def inspect(self, target=None):
         async with self.lock:
             return await self.manual_inspection(target).read()
+
+    async def prepare_installation(self, target):
+        """Device/install preparation only; no accessibility or account claim."""
+        async with self.lock:
+            self.invalidate_trust()
+            async def binding():
+                devices = parse_devices(await self.transport.run(AdbCommand.DEVICES))
+                if (len(devices) != 1 or devices[0].state != "CONNECTED" or devices[0].serial != TIKTOK_YOU_4683.serial
+                        or self.serial not in {None, devices[0].serial}): raise ValueError("expected_device_required")
+                serial = devices[0].serial
+                listed = await self.transport.run(AdbCommand.PACKAGES, serial=serial)
+                if "package:" + TIKTOK_YOU_4683.package not in listed.splitlines(): raise ValueError("expected_install_required")
+                info = await self.transport.run(AdbCommand.PACKAGE_INFO, serial=serial, package=TIKTOK_YOU_4683.package)
+                model = (await self.transport.run(AdbCommand.DEVICE_MODEL, serial=serial)).strip()
+                android = (await self.transport.run(AdbCommand.ANDROID_VERSION, serial=serial)).strip()
+                package, activity = foreground(await self.transport.run(AdbCommand.FOREGROUND, serial=serial))
+                version, code = package_version(info)
+                fingerprint = self.installation(info)
+                if (model != "M2101K9G" or android != "13" or package != TIKTOK_YOU_4683.package
+                        or activity not in (*TIKTOK_YOU_4683.activities, "com.ss.android.ugc.aweme.splash.SplashActivity")
+                        or (version, code) != (TIKTOK_YOU_4683.version, TIKTOK_YOU_4683.version_code) or not fingerprint):
+                    raise ValueError("expected_install_required")
+                return (serial, package, version, code, TIKTOK_YOU_4683.client_variant, model, android, fingerprint), devices, activity
+            try:
+                before, _, _ = await binding()
+                state = await self.manual_inspection(target).read()
+                if state.security_state or state.reason not in {"hierarchy_unavailable", "unknown_screen", "live_unverified", "account_unverified", "input_unavailable"}:
+                    raise ValueError("device_or_security_check_failed")
+                after, devices, activity = await binding()
+                if before != after: raise ValueError("installation_changed")
+                self.serial, self._installation = after[0], after
+                self.last = state.model_copy(update={"serial": after[0], "devices": devices, "device": "CONNECTED",
+                    "package": after[1], "version": after[2], "version_code": after[3], "client_variant": after[4],
+                    "foreground_activity": activity, "account_verified": False})
+                return after
+            except (AdbError, ValueError):
+                self.invalidate_trust()
+                self.last = self.last.model_copy(update={"account_verified": False})
+                raise ValueError("fresh expected device/install preparation failed") from None
 
     async def verify_account(self, target):
         async with self.lock:

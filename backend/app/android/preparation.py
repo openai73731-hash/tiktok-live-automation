@@ -1,7 +1,8 @@
 """Explicit MANUAL recovery; never rewrites a delivery journal or enables AUTO."""
 from uuid import uuid4
+import asyncio
 
-from app.android.tiktok_ui import TIKTOK_YOU_4683, profile_account
+from app.android.tiktok_ui import TIKTOK_YOU_4683
 from app.delivery.models import AndroidTarget
 from app.delivery.registry import read_store, REGISTRY_NAME
 from app.delivery.suggestions import SuggestionConflict
@@ -51,24 +52,16 @@ async def prepare_mobile(service, runtime):
                 if not idle(): reject("delivery is not idle")
                 if service.paused and service._pause_reason != "manual_rejected":
                     reject("pause is not a recoverable MANUAL rejection; UNKNOWN has NO RETRY")
-                if service._verified_runtime_revision != before:
-                    reject("VERIFY ACCOUNT ON PROFILE in the current runtime first")
                 ctx = service.context()
                 if not ctx.target_account or ctx.target_account != runtime.username:
                     reject("own account binding mismatch")
                 target = AndroidTarget(live_session_id=ctx.live_session_id or "0" * 32,
                     account=ctx.target_account, device_serial=service.controller.serial)
-                state = await service.controller.inspect(target)
-                if state.reason == "hierarchy_unavailable":
-                    reject("hierarchy_unavailable: Profile hierarchy unavailable; keep own Profile open and retry")
                 c = service.controller
-                if (state.security_state or not state.account_verified or not state.profile_verified
-                        or c._profile != TIKTOK_YOU_4683 or not c._installation or not c._installation[-1]
-                        or c._account_binding != (c._installation, target.account)
-                        or len(state.devices) != 1 or state.devices[0].state != "CONNECTED"
-                        or state.serial != c._installation[0] or state.serial != state.devices[0].serial
-                        or not profile_account(c._xml, target.account)):
-                    reject("fresh exact own Profile/device/install verification required; security UI must be absent")
+                service.account_proof.prepared = None
+                service.account_proof.revoke()
+                try: installation = await c.prepare_installation(target)
+                except ValueError: reject("fresh expected device/install preparation failed; security/login must be absent")
                 try:
                     if service.journal is None: service.journal = service.journal_factory()
                     if recovery_blocked(service.journal, service.settings.state_dir):
@@ -79,8 +72,7 @@ async def prepare_mobile(service, runtime):
                 except Exception:
                     service.paused = True
                     reject("authoritative delivery journal unavailable")
-                if (not idle() or runtime.active_runtime_revision != before or runtime.pending
-                        or service._verified_runtime_revision != before):
+                if not idle() or runtime.active_runtime_revision != before or runtime.pending:
                     reject("runtime or recovery evidence changed")
                 # No await from the last checks through publication. Old approvals
                 # become stale; no delivery row, one-shot latch or dedup key changes.
@@ -90,9 +82,17 @@ async def prepare_mobile(service, runtime):
                 c._live_evidence = c._manual_fill_evidence = c._send_binding = None
                 c._candidate_key = c._candidate_token = None
                 service.paused = False
-                service._verified_runtime_revision = runtime.active_runtime_revision
+                service._verified_runtime_revision = None
+                service.account_proof.prepared = (runtime.username.casefold(), runtime.active_runtime_revision, installation)
+                service.account_proof.state = "REQUIRED"
                 service.workflow = "READY"
 
-        await service._owned(run)
+        try:
+            async with asyncio.timeout(150):
+                await service._owned(run)
+        except TimeoutError:
+            service.account_proof.prepared = None
+            service.account_proof.revoke()
+            reject("device preparation deadline exceeded")
         runtime.publish()
         return service.view()

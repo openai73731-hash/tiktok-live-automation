@@ -10,7 +10,7 @@ readiness. Оба режима используют общий durable registry 
 обоих старых журналов. Не меняйте STATE_DIR для обхода dedup.
 
 Сначала выполняется Mobile MANUAL acceptance: PREPARE MOBILE → вручную START LIVE
-ON PHONE → CONNECT LISTENER → NEW TEST COMMENT → AI REPLY → APPROVE → guarded
+ON PHONE → CONNECT LISTENER → LIVE ACCOUNT CHALLENGE → NEW EXTERNAL TEST COMMENT → AI REPLY → APPROVE → guarded
 FILL PHONE → оператор нажимает Send → VERIFY → STOP. AUTO тестируется отдельно
 только после успешного manual результата; optional startup one-shot gate ограничен
 одной попыткой. Development не запускает LIVE, Android input или Windows SendInput.
@@ -18,8 +18,29 @@ FILL PHONE → оператор нажимает Send → VERIFY → STOP. AUTO 
 Полная архитектура, решения по каждому merge conflict, dedup limitations, команды
 и operator flow: [docs/UNIFIED_TRANSPORTS.md](docs/UNIFIED_TRANSPORTS.md).
 Read-only preflight: `./scripts/prepare-mobile.ps1 -Username YOUR_OWN_HANDLE`
-после Save/Apply Mobile и открытия собственного Profile. Unsupported device/profile
-или security/login/unknown state требуют NEED OPERATOR.
+после Save/Apply Mobile и открытия TikTok на reviewed телефоне. PREPARE проверяет
+только точные serial/model/Android/package/version/versionCode/install и idle journal;
+`account_verified=false`. Ошибка Profile hierarchy не выдаёт ни account proof, ни
+DEVICE_DISCONNECTED. Обнаруженные security/login и реальные ADB failures блокируют.
+
+После CONNECT к applied own username backend читает свежий reviewed normal host
+LIVE и показывает один случайный `MOB-…` token. Если host экран ещё не открыт,
+откройте его и нажмите **LIVE ACCOUNT CHALLENGE**. В течение 60 секунд вручную
+введите и отправьте token с host телефона. Backend ничего не вводит и не отправляет.
+Только настоящий свежий SDK CommentEvent с точным token и точным `author_handle`
+(без учёта регистра), SDK msg_id и server timestamp может подтвердить аккаунт.
+Перед публикацией VERIFIED выполняется ещё одна свежая host/device/install проверка.
+Token не попадает в AI очередь/обычный comment log и не сохраняется как auth secret.
+Привязка действует только для device/install + account + runtime + LIVE session +
+SDK connection generation. Disconnect/reconnect/APPLY/restart/change отзывают её;
+старые callbacks/tokens/message IDs не подтверждают новый runtime. Durable consumed
+и UNKNOWN не сбрасываются. AUTO для этого proof запрещён до успешного MANUAL VERIFY,
+после чего сохраняются прежние SEND/one-shot guards.
+
+Строгая **VERIFY ACCOUNT ON PROFILE** остаётся optional proof/диагностикой с прежними
+sxp/sxq/class/enabled/package проверками. WindowManager dump их не заменяет.
+Pinned TikTokLive 7.0.1 `start()` не получает room info по умолчанию; текущий adapter
+не имеет надёжного broadcaster UID. UID не угадывается по display name.
 
 ## Stage 4B.4: MANUAL fill и отдельно включаемый AUTOMATIC
 ## CURRENT WINDOWS RELEASE STATE — PC-SEND-2B / release hardening

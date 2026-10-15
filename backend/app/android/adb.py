@@ -10,6 +10,8 @@ from app.android.models import Device, SERIAL_PATTERN
 from app.lifecycle import finish_owned
 
 DUMP_PATH = "/data/local/tmp/tiktok-live-hierarchy.xml"
+# Allow the device's idle-state diagnostic to finish before our acquisition bound.
+HIERARCHY_TIMEOUT = 12
 # Shared package; it does not identify an official installation or client variant.
 PACKAGES = frozenset({"com.zhiliaoapp.musically"})
 ASCII_PATTERN = r"[A-Za-z0-9 .,!?':;()\-]{1,400}"
@@ -61,12 +63,13 @@ def parse_devices(output):
 
 
 class AdbTransport:
-    def __init__(self, executable=None, *, timeout=10):
+    def __init__(self, executable=None, *, timeout=10, hierarchy_timeout=HIERARCHY_TIMEOUT):
         candidate = executable or shutil.which("adb")
         self.executable = Path(candidate).resolve() if candidate else None
         if self.executable and (self.executable.name.lower() not in {"adb", "adb.exe"} or not self.executable.is_file()):
             self.executable = None
         self.timeout = timeout
+        self.hierarchy_timeout = hierarchy_timeout
         self.processes = set()
         self.closed = False
         self.last_command_result = None
@@ -123,7 +126,7 @@ class AdbTransport:
         spawn = None
         readers = []
         try:
-            async with asyncio.timeout(self.timeout):
+            async with asyncio.timeout(self.hierarchy_timeout if command in {AdbCommand.DUMP, AdbCommand.HIERARCHY} else self.timeout):
                 if command == AdbCommand.DUMP:
                     # Only our fixed ephemeral output. A zero-exit false success
                     # can never read a hierarchy left by an earlier attempt.
@@ -184,6 +187,18 @@ class AdbTransport:
             raise
         except TimeoutError:
             result["category"] = "timeout"
+            if command in {AdbCommand.DUMP, AdbCommand.HIERARCHY}:
+                if process is not None and process.returncode is None:
+                    try: process.kill()
+                    except ProcessLookupError: pass
+                    await process.wait()
+                # A UI idle timeout is not evidence that ADB disconnected. A
+                # separate bounded transport probe must still prove the device.
+                devices = parse_devices(await self.run(AdbCommand.DEVICES))
+                if any(d.serial == serial and d.state == "CONNECTED" for d in devices):
+                    result["category"] = "hierarchy_unavailable"
+                    self.last_command_result = result
+                    raise HierarchyUnavailable() from None
             raise AdbError() from None
         except HierarchyUnavailable:
             result["category"] = "hierarchy_unavailable"

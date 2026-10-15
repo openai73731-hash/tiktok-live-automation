@@ -18,6 +18,7 @@ from app.delivery.sender import AndroidTikTokReplySender
 from app.delivery.suggestions import SuggestionConflict
 from app.lifecycle import finish_owned
 from app.windows.sender import WindowsSenderStatus
+from app.android.account_challenge import MobileAccountChallenge, AccountChallengeView
 
 
 class DeliveryView(FrozenModel):
@@ -28,6 +29,8 @@ class DeliveryView(FrozenModel):
     windows_sender: WindowsSenderStatus | None = None
     delivery_uncertain: bool = False
     inspection: DeviceInspection | None = None
+    mobile_prepared: bool = False
+    account_challenge: AccountChallengeView | None = None
     physical_delivery_enabled: bool
     physical_ready: bool
     fill_ready: bool = False
@@ -79,6 +82,7 @@ class ManualDeliveryService:
         self.pending_fill = None
         self.acceptance_spent = False
         self.controller.on_stage = self._stage
+        self.account_proof = MobileAccountChallenge(self)
 
     @property
     def paused(self): return self._paused
@@ -119,6 +123,7 @@ class ManualDeliveryService:
         return monotonic() - self.last_attempt < (self.settings.automatic_delivery_min_interval_seconds if self.mode == "AUTOMATIC" else self.settings.manual_delivery_min_interval_seconds)
 
     def view(self):
+        challenge = self.account_proof.view()
         inspected = self.controller.last
         ctx = self.context()
         manual_ready = bool(self.mode == "MANUAL" and not self.closed and not self.paused and not self.cooldown
@@ -138,7 +143,8 @@ class ManualDeliveryService:
             if not auto_ctx.delivery_available: auto_reason = "delivery_unavailable"
             elif not auto_ctx.device_available: auto_reason = "device_unavailable"
             elif self.cooldown: auto_reason = "cooldown"
-        return DeliveryView(instance_id=self.settings.instance_id, account_label=self.settings.account_label, inspection=inspected, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
+        return DeliveryView(instance_id=self.settings.instance_id, account_label=self.settings.account_label, inspection=inspected,
+            mobile_prepared=self.account_proof.prepared_now(), account_challenge=challenge, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
             physical_ready=ready, fill_ready=manual_ready if self.mode == "MANUAL" else inspected.fill_ready,
             mobile_one_shot="DISABLED" if not self.settings.mobile_acceptance_one_shot else "SPENT" if self.acceptance_spent else "AVAILABLE",
             delivery="DELIVERY PAUSED — RE-PREPARE REQUIRED" if self.paused else
@@ -160,6 +166,8 @@ class ManualDeliveryService:
         self.controller.last = DeviceInspection(reason="not_checked")
 
     def revoke_authority(self):
+        self.account_proof.prepared = None
+        self.account_proof.revoke()
         self.mode, self.armed_binding = "MANUAL", None
         self.auto_reason = "automatic_mode_required"
         if self.suggestions is not None: self.suggestions.auto_authorizations.clear()
@@ -185,7 +193,9 @@ class ManualDeliveryService:
                 if not account: raise SuggestionConflict("Сначала укажите аккаунт собственного LIVE.")
                 target = AndroidTarget(live_session_id=ctx.live_session_id or "0" * 32,
                     account=account, device_serial=self.controller.serial)
-                if verify: self._verified_runtime_revision = None
+                if verify:
+                    self._verified_runtime_revision = None
+                    self.account_proof.revoke()
                 valid = await self.controller.verify_account(target) if verify else await self.controller.confirm_send(target, token)
                 if not valid and verify and self.controller.last.reason == "hierarchy_unavailable":
                     raise SuggestionConflict("hierarchy_unavailable: Profile hierarchy unavailable; keep own Profile open and retry.")
@@ -338,6 +348,7 @@ class ManualDeliveryService:
             self.on_idle()
             return self.view()
         if (self.busy or self.closed or self.auto_runner is not None and not self.auto_runner.done()
+                or self.account_proof.prepared is not None and not self.account_proof.manual_accepted
                 or self.settings.mobile_acceptance_one_shot and self.acceptance_spent
                 or not self.settings.enable_physical_tiktok_send
                 or not ctx.connected or not ctx.active or not ctx.device_available or self.pending_fill):
@@ -351,6 +362,9 @@ class ManualDeliveryService:
         return self.view()
 
     def context_changed(self):
+        before = self.account_proof.state
+        self.account_proof.check()
+        if before != self.account_proof.state: self.on_idle()
         if self.mode == "AUTOMATIC" and (not self.auto_context().delivery_available or not self.context().connected):
             self.paused, self.auto_reason = True, "live_session_mismatch"
 
@@ -493,6 +507,7 @@ class ManualDeliveryService:
                 self.pending_fill = None
                 self.workflow = "SENT CONFIRMED" if result.status == "confirmed" else "UNKNOWN"
                 if result.status == "unknown": self.paused = True
+                else: self.account_proof.manual_verified()
                 if cancelled: raise asyncio.CancelledError
                 return result
         return await self._owned(run)

@@ -93,6 +93,9 @@ async def test_explicit_prepare_recovers_only_new_cycle_and_preserves_consumed(m
     assert (await client.post(f"/api/admin/suggestions/{old.suggestion_id}/approve",
         json={"expected_suggestion_revision":old.suggestion_revision})).status_code == 409
     assert (await client.post("/api/admin/delivery/fill", json=old_body)).status_code == 409
+    # Optional strict Profile proof still works; preparation itself proves no account.
+    assert not prepared.json()["inspection"]["account_verified"]
+    assert (await client.post("/api/admin/device/verify-account", json={})).status_code == 200
     assert (await client.post("/api/admin/live/connect", json={"username":ACCOUNT})).status_code == 202
     await runtime.live.service.started.wait()
     repeated = Comment(username="viewer", text="Is it automatic?", message_id="4321")
@@ -113,7 +116,7 @@ async def test_explicit_prepare_recovers_only_new_cycle_and_preserves_consumed(m
     assert service.mode == "MANUAL" and service.consumed(old)
 
 
-@pytest.mark.parametrize("failure", ["listener", "auto", "verify", "revision", "account", "device", "install", "security",
+@pytest.mark.parametrize("failure", ["listener", "auto", "account", "device", "install", "security",
     "pending", "coordinator", "native", "reserved", "filled", "unknown", "other_pause", "legacy_unknown", "legacy_unreadable",
     "legacy_windows_rejected", "runtime_race", "multiple"])
 async def test_prepare_refuses_unsafe_recovery_without_false_pass(manual_fill_api, failure):
@@ -122,11 +125,14 @@ async def test_prepare_refuses_unsafe_recovery_without_false_pass(manual_fill_ap
     if failure != "listener": await disconnect_and_verify(manual_fill_api)
     runtime = app.state.operator_runtime
     if failure == "auto": service.mode = "AUTOMATIC"
-    elif failure == "verify": service._verified_runtime_revision = None
-    elif failure == "revision": service._verified_runtime_revision = "f" * 32
-    elif failure == "account": service.controller._account_binding = (service.controller._installation, "foreign")
+    elif failure == "account":
+        context = service.context
+        service.context = lambda: context().model_copy(update={"target_account":"foreign"})
     elif failure == "device": transport.serial = "foreign"
-    elif failure == "install": transport.info = transport.info.replace("10:00:00", "11:00:00")
+    elif failure == "install":
+        async def change_install(command):
+            if command == AdbCommand.DUMP: transport.info = transport.info.replace("10:00:00", "11:00:00")
+        transport.after = change_install
     elif failure == "security": transport.xml = transport.xml.replace("Добавить описание", "captcha")
     elif failure == "pending": service.pending_fill = (body, None, None, None, operation.operation_id)
     elif failure == "coordinator": service.coordinator.closed = False
@@ -179,11 +185,9 @@ async def test_lazy_journal_rejected_pause_requires_explicit_recovery(manual_fil
     service.paused = False  # Simulate a newly constructed adapter before lazy journal load.
     service.prepare(fill=True)
     assert service.paused and service._pause_reason == "manual_rejected"
-    assert (await client.post("/api/admin/delivery/prepare", json={})).status_code == 409
-    assert (await client.post("/api/admin/device/verify-account", json={})).status_code == 200
-    assert service.paused
     result = await client.post("/api/admin/delivery/prepare", json={})
     assert result.status_code == 200 and not result.json()["paused"]
+    assert result.json()["mobile_prepared"] and not result.json()["inspection"]["account_verified"]
     assert service.consumed(old) and service.mode == "MANUAL"
 
 

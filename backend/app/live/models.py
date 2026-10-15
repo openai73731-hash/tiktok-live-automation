@@ -63,6 +63,9 @@ class Comment(BaseModel):
     _received_monotonic: float = PrivateAttr(default_factory=lambda: monotonic())
     _ingestion_sequence: int = PrivateAttr(default=0)
     _ingestion_receipt: IngestionReceipt | None = PrivateAttr(default=None)
+    # Only the owned real SDK callback sets this; JSON/AI/browser cannot supply it.
+    _sdk_receipt: tuple[object, int] | None = PrivateAttr(default=None)
+    _sdk_text_exact: bool = PrivateAttr(default=False)
     username: str = Field(min_length=1)
     user_id: str | None = None
     author_handle: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._]{1,24}$")
