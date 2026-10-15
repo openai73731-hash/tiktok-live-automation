@@ -29,7 +29,9 @@ LIVE и показывает один случайный `MOB-…` token. Есл
 введите и отправьте token с host телефона. Backend ничего не вводит и не отправляет.
 Только настоящий свежий SDK CommentEvent с точным token и точным `author_handle`
 (без учёта регистра), SDK msg_id и server timestamp может подтвердить аккаунт.
-Перед публикацией VERIFIED выполняется ещё одна свежая host/device/install проверка.
+Перед публикацией VERIFIED выполняется ещё одна свежая UI/device/install проверка:
+normal host или точный reviewed composer в пределах исходного host lease (90 секунд).
+Открытый composer не продлевает lease и до успешного challenge не даёт account proof.
 Token не попадает в AI очередь/обычный comment log и не сохраняется как auth secret.
 Привязка действует только для device/install + account + runtime + LIVE session +
 SDK connection generation. Disconnect/reconnect/APPLY/restart/change отзывают её;
@@ -41,6 +43,11 @@ SDK connection generation. Disconnect/reconnect/APPLY/restart/change отзыв�
 sxp/sxq/class/enabled/package проверками. WindowManager dump их не заменяет.
 Pinned TikTokLive 7.0.1 `start()` не получает room info по умолчанию; текущий adapter
 не имеет надёжного broadcaster UID. UID не угадывается по display name.
+Наблюдаемый `SplashActivity` alias распознаётся только с прежними reviewed Profile,
+полными normal-host markers или точной reviewed composer shape. Распознавание layout
+не подтверждает account/LIVE: доставка требует account/session binding и свежий
+host lease. Activity сама по себе ничего не подтверждает. Диагностика challenge
+показывает только результаты проверок; token/author/SDK payload не пишутся в logs.
 
 ## Stage 4B.4: MANUAL fill и отдельно включаемый AUTOMATIC
 ## CURRENT WINDOWS RELEASE STATE — PC-SEND-2B / release hardening

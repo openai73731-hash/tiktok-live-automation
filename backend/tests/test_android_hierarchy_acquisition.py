@@ -173,10 +173,13 @@ async def test_splash_preparation_is_device_only_profile_verification_remains_op
     assert not prepared.json()["inspection"]["account_verified"]
 
 
-async def test_splash_profile_support_never_extends_composer_or_auto_activity(tmp_path, monkeypatch):
+async def test_splash_composer_recognition_never_substitutes_for_account_or_live_proof(tmp_path, monkeypatch):
     c, _ = native_controller(tmp_path, monkeypatch, [xml("composer")])
     assert not await c.verify_account(target())
-    assert c._profile is None and not c.last.account_verified and not c.current_ready
+    assert c._profile == TIKTOK_YOU_4683 and c.last.screen == ScreenState.COMMENT_INPUT_READY
+    assert not c.last.account_verified and not c.last.live_verified and not c.current_ready
+    assert c._account_binding is None and c._live_evidence is None
+    assert not c.fill_ready_for(target().live_session_id, target().account)
     assert TIKTOK_YOU_4683.activities == ("com.windukk.mod.icon.default",)
 
 

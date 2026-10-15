@@ -51,6 +51,8 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       ["Account / LIVE verified", `${d.account_verified} / ${d.live_verified}`],
       ["Device/install prepared", Boolean(next.mobile_prepared)],
       ["LIVE account challenge", next.account_challenge?.state || "REQUIRED"],
+      ["Challenge rejected checks", next.account_challenge?.last_checks
+        ? Object.entries(next.account_challenge.last_checks).filter(([,pass]) => !pass).map(([name]) => name).join(", ") || "none" : "—"],
       ["Security UI", d.security_state], ["Delivery", next.delivery],
       ["Physical SEND", next.physical_delivery_enabled ? "GATE ENABLED · проверка обязательна" : "DISABLED"],
       ["Причина", next.reason === "device_unavailable" ? d.reason : next.reason]];

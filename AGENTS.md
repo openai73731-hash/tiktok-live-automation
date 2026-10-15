@@ -5,8 +5,11 @@
   two-channel LIVE challenge. PREPARE MOBILE is device/install/idle-journal only,
   AUTO OFF and account_verified=false. Real CONNECT to applied own handle plus
   fresh normal-host Android evidence issues a server-random <=60-second token;
-  only a fresh real SDK exact-author/exact-token event and a second fresh host
+  only a fresh real SDK exact-author/exact-token event and a second fresh UI/device
   inspection bind account/device/install/runtime/session/connection generation.
+  Final UI may be normal host or the exact reviewed composer under the original
+  <=90-second host lease, never refreshed by a composer. SplashActivity surface
+  recognition itself grants neither account nor LIVE authority.
   No challenge enters AI/logs or any Android input path. Reconnect/APPLY/restart/
   changes revoke trust. Strict profile_account remains intact as optional proof.
   New preparation requires successful manual Fill/human Send/read-only VERIFY

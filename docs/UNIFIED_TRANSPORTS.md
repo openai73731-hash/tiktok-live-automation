@@ -183,9 +183,17 @@ selected device through bounded ADB before reporting hierarchy_unavailable.
 The compressed inspection deadline covers metadata/cleanup as well as the dump,
 so it cannot cancel at the former 8-second boundary before the device's idle error.
 A parsed Profile that fails exact configured-handle comparison is
-`profile_mismatch`; Admin/preflight show these causes separately. The observed
-SplashActivity is accepted only with reviewed Profile layout/device/version;
-composer/LIVE activity allowlists and AUTO/Send guards remain unchanged.
+`profile_mismatch`; Admin/preflight show these causes separately.
+The observed SplashActivity alias requires the same reviewed device/version and
+strict Profile layout, every existing normal-host LIVE marker or the exact reviewed
+composer shape. Recognizing that surface grants no account or LIVE authority.
+Challenge issuance still requires fresh normal-host evidence. After the real
+exact-author/token SDK event, a fresh reviewed composer can complete verification
+only on the unchanged device/install/runtime/session/connection and original host
+lease. It never refreshes that lease; delivery still requires account binding and
+an unexpired host lease. Unknown/security layouts fail closed. Boolean receipt
+checks and structural final-readback reasons contain no token/author/SDK payload.
+No new selector, device/version or AUTO/Send authority is introduced.
 
 ## Windows acceptance
 

@@ -8,7 +8,7 @@ from hashlib import sha256
 from app.android.adb import AdbTransport, AdbCommand, AdbError, HierarchyUnavailable, PACKAGES, parse_devices, DUMP_PATH
 from app.android.models import ClientVariant, DeviceInspection, ScreenState, AndroidOutcome
 from app.android.tiktok_ui import (foreground, inspect_hierarchy, exact_input, unique_node, observed_variant, package_version,
-    TIKTOK_YOU_4683, profile_account, parse_hierarchy, reviewed_profile_screen)
+    TIKTOK_YOU_4683, profile_account, parse_hierarchy, reviewed_profile_screen, composer_shape)
 from app.android.diagnostics import CaptureError, save_capture
 from app.android.manual_inspection import ManualInspection
 
@@ -78,6 +78,17 @@ class ADBAndroidController:
         if state.screen == ScreenState.LIVE_READY and state.live_verified and state.account_verified:
             return "open_phone_composer"
         return "unknown_screen"
+
+    def reviewed_splash_surface(self, xml, root):
+        """Observed activity alias, never account authority or a generic UI fallback."""
+        if reviewed_profile_screen(xml): return True
+        layout = inspect_hierarchy(xml, TIKTOK_YOU_4683.package, None, TIKTOK_YOU_4683)
+        if layout["screen"] == ScreenState.LIVE_READY and layout["live_verified"] and not layout["security_state"]:
+            return True
+        # Recognize the reviewed surface independently of account/LIVE authority,
+        # just as for the primary activity. The classifier still requires both
+        # bindings for delivery; an alias must not create a circular account gate.
+        return composer_shape(root)
 
     @staticmethod
     def installation(info):
@@ -149,7 +160,7 @@ class ADBAndroidController:
                 and (p.version_code is None or p.version_code == code) and (p.serial is None or p.serial == selected.serial)
                 and (p.client_variant == ClientVariant.UNKNOWN and variant == ClientVariant.UNKNOWN and not p.activities
                      or (activity in p.activities or p == TIKTOK_YOU_4683
-                         and activity == "com.ss.android.ugc.aweme.splash.SplashActivity" and reviewed_profile_screen(xml))
+                         and activity == "com.ss.android.ugc.aweme.splash.SplashActivity" and self.reviewed_splash_surface(xml, root))
                      and variant in {ClientVariant.UNKNOWN, p.client_variant})]
             if len(matching) == 1:
                 profile = matching[0]

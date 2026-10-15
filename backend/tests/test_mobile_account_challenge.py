@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import re
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -92,18 +93,18 @@ async def prepare(m):
     assert m.service.journal is not None  # Real SQLite, never reset.
 
 
-async def connect(m):
+async def connect(m, *, activity="com.windukk.mod.icon.default"):
     await prepare(m)
     m.phone.snapshots = [xml("live_idle")]
-    m.phone.activity = "com.windukk.mod.icon.default"
+    m.phone.activity = activity
     result = await m.http.post("/api/admin/live/connect", json={"username": OWN})
     assert result.status_code == 202, result.text
     await until(lambda: m.service.account_proof.state == "WAITING")
     return m.service.account_proof.challenge.token
 
 
-async def verify(m):
-    token = await connect(m)
+async def verify(m, *, activity="com.windukk.mod.icon.default"):
+    token = await connect(m, activity=activity)
     m.clients[-1].comment(token, author=OWN.upper())
     await until(lambda: m.service.account_proof.state == "VERIFIED")
     assert m.service.controller.last.account_verified
@@ -131,6 +132,77 @@ async def test_two_channel_challenge_enables_existing_manual_path_without_input(
     assert inspected.json()["fill_ready"] and inspected.json()["inspection"]["account_verified"]
     assert (await m.http.get(f"/api/admin/suggestions/{record.id}")).json()["fill_allowed"]
     assert m.service.mode == "MANUAL" and not m.service.settings.enable_physical_tiktok_send
+
+
+async def test_observed_splash_host_alias_verifies_challenge_then_composer_only_with_lease(mobile):
+    m = mobile
+    await verify(m, activity="com.ss.android.ugc.aweme.splash.SplashActivity")
+    assert m.service.account_proof.valid() and m.service.controller.last.live_verified
+    m.phone.snapshots = [xml("composer")]
+    inspected = await m.http.post("/api/admin/device/inspect", json={})
+    assert inspected.json()["fill_ready"] and inspected.json()["inspection"]["account_verified"]
+    c = m.service.controller
+    c._live_evidence = (*c._live_evidence[:3], c._live_evidence[3] - 91)
+    expired = await m.http.post("/api/admin/device/inspect", json={})
+    assert not expired.json()["fill_ready"] and not expired.json()["inspection"]["live_verified"]
+
+
+@pytest.mark.parametrize("activity", ["com.windukk.mod.icon.default", "com.ss.android.ugc.aweme.splash.SplashActivity"])
+async def test_human_challenge_sent_with_composer_open_uses_original_host_lease(mobile, activity):
+    m = mobile
+    token = await connect(m, activity=activity)
+    ch = m.service.account_proof.challenge
+    m.phone.snapshots = [xml("composer")]
+    before = await m.http.post("/api/admin/device/inspect", json={})
+    assert before.json()["inspection"]["screen"] == "COMMENT_INPUT_READY"
+    assert not before.json()["inspection"]["account_verified"] and not before.json()["fill_ready"]
+    reads = len(m.phone.modes)
+    m.clients[-1].comment(token)
+    await until(lambda: not m.service.tasks)
+    c = m.service.controller
+    assert m.service.account_proof.valid() and c.last.account_verified and c.last.live_verified
+    assert len(m.phone.modes) > reads  # Final evidence is freshly acquired, never cached status.
+    assert c._live_evidence[3] == ch.created and c._host_snapshot == ch.host_snapshot
+    assert not m.app.state.admin.live_history and m.runtime.live.service.queue.empty()
+    assert m.service.mode == "MANUAL" and not m.service.account_proof.manual_accepted
+    assert (await m.http.post("/api/admin/device/inspect", json={})).json()["fill_ready"]
+    assert c._live_evidence[3] == ch.created  # Composer cannot rejuvenate the host lease.
+    c._live_evidence = (*c._live_evidence[:3], ch.created - 91)
+    assert not (await m.http.post("/api/admin/device/inspect", json={})).json()["fill_ready"]
+
+
+@pytest.mark.parametrize("failure", ["security", "unknown_id", "unfocused", "install", "old_host", "hierarchy_unavailable"])
+async def test_challenge_final_composer_still_requires_fresh_reviewed_bound_evidence(mobile, failure):
+    m = mobile
+    token = await connect(m, activity="com.ss.android.ugc.aweme.splash.SplashActivity")
+    layout = xml("composer")
+    if failure == "security": layout = layout.replace('text=""', 'text="captcha"', 1)
+    elif failure == "unknown_id": layout = layout.replace(':id/h4k', ':id/unreviewed_input')
+    elif failure == "unfocused": layout = layout.replace('focused="true"', 'focused="false"')
+    elif failure == "install": m.phone.info = m.phone.info.replace("10:00:00", "11:00:00")
+    elif failure == "old_host": m.service.account_proof.challenge.created -= 91
+    elif failure == "hierarchy_unavailable": layout = "idle"
+    m.phone.snapshots = [layout]
+    m.clients[-1].comment(token)
+    await until(lambda: not m.service.tasks)
+    assert not m.service.account_proof.valid() and not m.service.controller.last.account_verified
+    assert m.service.mode == "MANUAL" and not m.app.state.admin.live_history
+
+
+@pytest.mark.parametrize("marker", ["tv_online_audience_num", "oyh", "user_info_container", "ttlive_toolbar_more"])
+async def test_splash_host_alias_needs_all_existing_reviewed_markers(mobile, marker):
+    m = mobile
+    await prepare(m)
+    root = ET.fromstring(xml("live_idle"))
+    for parent in root.iter():
+        for child in list(parent):
+            if child.get("resource-id", "").endswith(":id/" + marker): parent.remove(child)
+    m.phone.snapshots = [ET.tostring(root, encoding="unicode")]
+    m.phone.activity = "com.ss.android.ugc.aweme.splash.SplashActivity"
+    assert (await m.http.post("/api/admin/live/connect", json={"username":OWN})).status_code == 202
+    await until(lambda: bool(m.clients) and not m.service.tasks)
+    assert not m.service.account_proof.challenge and not m.service.controller.last.account_verified
+    assert m.service.controller.last.reason == "profile_unverified"
 
 
 @pytest.mark.parametrize("failure", ["author", "text", "whitespace", "session", "runtime", "selected_device", "install", "expired",
@@ -173,6 +245,19 @@ async def test_duplicate_event_cannot_reverify_or_refresh_account_lease(mobile):
     await asyncio.sleep(.01)
     assert m.service.account_proof.valid() and m.service.controller._live_evidence == evidence
     assert len(m.phone.calls) == count and not m.app.state.admin.live_history
+
+
+async def test_rejection_diagnostics_are_boolean_only_without_token_or_author(mobile, caplog):
+    m = mobile
+    token = await connect(m)
+    m.clients[-1].comment(token, author="synthetic_foreign")
+    result = (await m.http.get("/api/admin/delivery/status")).json()
+    checks = result["account_challenge"]["last_checks"]
+    assert checks and all(type(value) is bool for value in checks.values())
+    assert not checks["author_matches"] and checks["token_matches"] and checks["source_matches"]
+    assert checks["receipt_fresh"] and checks["server_time_fresh"] and checks["message_identity_fresh"]
+    assert not result["inspection"]["account_verified"]
+    assert token not in caplog.text and "synthetic_foreign" not in caplog.text
 
 
 async def test_reconnect_revokes_old_token_and_old_sdk_callback(mobile):
