@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from app.config import Settings
+from app.android.challenge_text import is_challenge_text
 from app.live.diagnostics import RoomLookupDiagnostics, positive_room_id
 from app.live.models import Comment, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
@@ -338,7 +339,7 @@ class LiveListener(BaseListener):
                     if observer(comment) is True: return
                 except Exception:
                     logger.warning("receipt_observer_failed")
-            if self.settings.tiktok_transport == "android" and comment.text.upper().startswith("MOB-"):
+            if self.settings.tiktok_transport == "android" and is_challenge_text(comment.text):
                 return  # Even a failed observer must not leak a challenge to AI/logs.
             self.queue.put_nowait(comment)
         except asyncio.QueueFull:

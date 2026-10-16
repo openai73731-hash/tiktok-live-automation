@@ -10,6 +10,9 @@
   Final UI may be normal host or the exact reviewed composer under the original
   <=90-second host lease, never refreshed by a composer. SplashActivity surface
   recognition itself grants neither account nor LIVE authority.
+  The challenge uses a neutral server-random English phrase (>39 CSPRNG bits),
+  with the same exact-author/receipt/expiry guards. Legacy MOB text stays outside
+  AI/logs. Hidden comments or TikTok security warnings stop acceptance; no bypass.
   No challenge enters AI/logs or any Android input path. Reconnect/APPLY/restart/
   changes revoke trust. Strict profile_account remains intact as optional proof.
   New preparation requires successful manual Fill/human Send/read-only VERIFY

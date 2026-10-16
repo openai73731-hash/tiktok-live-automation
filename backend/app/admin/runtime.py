@@ -4,6 +4,7 @@ import logging
 from uuid import uuid4
 
 from app.admin.models import AIStatus, OperatorView
+from app.android.challenge_text import is_challenge_text
 from app.admin.operator_config import LocalConfigError, OperatorOverlay, OperatorStore, TikTokOverride
 from app.ai.factory import create_processor
 from app.ai.knowledge import ProjectConfig, load_yaml_model
@@ -64,7 +65,7 @@ class AdminLiveController:
             async def handle(comment):
                 if self.session_id != session_id:
                     return None
-                if config.tiktok_transport == "android" and comment.text.upper().startswith("MOB-"):
+                if config.tiktok_transport == "android" and is_challenge_text(comment.text):
                     return None  # Defense in depth for non-SDK/fake/queued challenge text.
                 return await self.runtime.admin.handle_live(comment, processor, mode=config.live_mode,
                     session_id=session_id, target_account=username)

@@ -2,12 +2,12 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import asyncio
-import secrets
 import logging
 from time import monotonic
 from typing import Literal
 
 from app.android.models import DeviceModel, ScreenState
+from app.android.challenge_text import is_challenge_text, new_challenge_text
 from app.android.feed import HostFeed, host_feed
 from app.android.tiktok_ui import TIKTOK_YOU_4683, inspect_hierarchy
 from app.delivery.models import AndroidTarget
@@ -160,7 +160,7 @@ class MobileAccountChallenge:
                 if not self.host(state) or not self.prepared_now() or self.scope() != scope:
                     raise SuggestionConflict("Fresh reviewed host LIVE/device/install evidence required.")
                 now, sequence = ingestion_boundary()
-                self.challenge = Challenge("MOB-" + secrets.token_hex(12).upper(), scope, now, sequence,
+                self.challenge = Challenge(new_challenge_text(), scope, now, sequence,
                     datetime.now(UTC), now + 60, host_feed(s.controller._xml))
                 self.last_checks = None
                 self.state = "WAITING"
@@ -192,7 +192,7 @@ class MobileAccountChallenge:
 
     def observe(self, comment):
         # Return True to intercept the reserved challenge namespace BEFORE queue/AI.
-        reserved = comment.text.upper().startswith("MOB-")
+        reserved = is_challenge_text(comment.text)
         receipt = comment._sdk_receipt
         key = (self.configured(), comment.message_id)
         duplicate = key in self.seen or len(self.seen) >= 10_000

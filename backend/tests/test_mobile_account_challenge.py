@@ -1,7 +1,6 @@
 """Production API/LiveService/listener/controller/SQLite, fake SDK and OS only."""
 import asyncio
 from datetime import UTC, datetime, timedelta
-import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -13,6 +12,7 @@ import pytest
 from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent
 
 from app.android.adb import AdbTransport
+from app.android.challenge_text import PREFIX, is_challenge_text
 from app.android.controller import ADBAndroidController
 from app.delivery.models import DeliveryResult
 from app.live.models import Comment
@@ -114,7 +114,8 @@ async def verify(m, *, activity="com.windukk.mod.icon.default"):
 async def test_two_channel_challenge_enables_existing_manual_path_without_input(mobile, caplog):
     m = mobile
     token = await verify(m)
-    assert re.fullmatch(r"MOB-[A-F0-9]{24}", token)
+    assert token.startswith(PREFIX) and token.isascii() and len(token) < 160
+    assert not token.startswith("MOB-") and is_challenge_text(token)
     assert m.service.account_proof.valid()
     assert m.runtime.live.service.queue.empty() and m.app.state.admin.current_comment_count == 0
     assert not m.app.state.admin.live_history and not m.app.state.admin.suggestions.groups["live"]
@@ -205,7 +206,7 @@ async def test_splash_host_alias_needs_all_existing_reviewed_markers(mobile, mar
     assert m.service.controller.last.reason == "profile_unverified"
 
 
-@pytest.mark.parametrize("failure", ["author", "text", "whitespace", "session", "runtime", "selected_device", "install", "expired",
+@pytest.mark.parametrize("failure", ["author", "text", "legacy_token", "whitespace", "session", "runtime", "selected_device", "install", "expired",
     "stale_event", "missing_id", "missing_handle", "reused_id", "forged_receipt", "fake", "replay", "playground", "security", "foreground", "sdk_account"])
 async def test_invalid_evidence_cannot_verify_or_enter_ai(mobile, monkeypatch, failure):
     m = mobile
@@ -226,7 +227,8 @@ async def test_invalid_evidence_cannot_verify_or_enter_ai(mobile, monkeypatch, f
             source="playground" if failure == "playground" else "tiktok", server_created_at=datetime.now(UTC))
         assert proof.observe(fake)
     else:
-        m.clients[-1].comment("MOB-WRONG" if failure == "text" else " " + token + " " if failure == "whitespace" else token,
+        m.clients[-1].comment(token[:-1] + "!" if failure == "text" else "MOB-LEGACY" if failure == "legacy_token"
+            else " " + token + " " if failure == "whitespace" else token,
             author="foreign" if failure == "author" else OWN, identity="0" if failure == "missing_id" else "1001",
             created=datetime.now(UTC)-timedelta(minutes=2) if failure == "stale_event" else None,
             user=failure != "missing_handle")
@@ -245,6 +247,19 @@ async def test_duplicate_event_cannot_reverify_or_refresh_account_lease(mobile):
     await asyncio.sleep(.01)
     assert m.service.account_proof.valid() and m.service.controller._live_evidence == evidence
     assert len(m.phone.calls) == count and not m.app.state.admin.live_history
+
+
+async def test_random_generator_failure_never_issues_predictable_fallback(mobile, monkeypatch):
+    m = mobile
+    await prepare(m)
+    def unavailable(values): raise RuntimeError("random generator unavailable")
+    monkeypatch.setattr("app.android.challenge_text.secrets.choice", unavailable)
+    m.phone.snapshots = [xml("live_idle")]
+    m.phone.activity = "com.windukk.mod.icon.default"
+    assert (await m.http.post("/api/admin/live/connect", json={"username":OWN})).status_code == 202
+    await until(lambda: bool(m.clients) and not m.service.tasks)
+    assert not m.service.account_proof.challenge and not m.service.account_proof.valid()
+    assert not m.service.controller.last.account_verified and m.service.mode == "MANUAL"
 
 
 async def test_rejection_diagnostics_are_boolean_only_without_token_or_author(mobile, caplog):

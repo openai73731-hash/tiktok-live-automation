@@ -111,11 +111,13 @@ Security/login/CAPTCHA/unknown screens require STOP/NEED OPERATOR.
    reads only and leaves `account_verified=false`; hierarchy_unavailable is not
    device disconnection or account proof. Detectable security/login still blocks.
 4. START LIVE ON PHONE manually. CONNECT LISTENER in Admin.
-5. On reviewed normal host LIVE the backend displays a server-owned `MOB-…`
+5. On reviewed normal host LIVE the backend displays a server-owned neutral English
    challenge (or explicitly use LIVE ACCOUNT CHALLENGE after opening host LIVE).
    Type/send it manually from the host phone within 60 seconds. Require LIVE
    ACCOUNT VERIFIED: exact real SDK author_handle/token/message/receipt plus a
-   second fresh host/device/install inspection. No challenge goes to AI or normal
+   second fresh UI/device/install inspection. If TikTok hides the comment or
+   reports a security warning, stop acceptance; do not iterate through variants.
+   No challenge goes to AI or normal
    comment logs. Runtime/session/connection generation/device/install/account
    changes invalidate it; no raw auth secret is persisted. Then send a NEW
    EXTERNAL TEST COMMENT from a test viewer. Review AI REPLY and both Russian

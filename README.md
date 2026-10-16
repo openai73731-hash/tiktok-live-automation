@@ -24,15 +24,20 @@ Read-only preflight: `./scripts/prepare-mobile.ps1 -Username YOUR_OWN_HANDLE`
 DEVICE_DISCONNECTED. Обнаруженные security/login и реальные ADB failures блокируют.
 
 После CONNECT к applied own username backend читает свежий reviewed normal host
-LIVE и показывает один случайный `MOB-…` token. Если host экран ещё не открыт,
+LIVE и показывает одну случайную нейтральную английскую фразу. Если host экран ещё не открыт,
 откройте его и нажмите **LIVE ACCOUNT CHALLENGE**. В течение 60 секунд вручную
-введите и отправьте token с host телефона. Backend ничего не вводит и не отправляет.
+введите и отправьте фразу с host телефона. Backend ничего не вводит и не отправляет.
+Если TikTok скрывает комментарий или показывает предупреждение безопасности,
+остановите acceptance: скрытое сообщение не является proof, варианты не перебираются.
 Только настоящий свежий SDK CommentEvent с точным token и точным `author_handle`
 (без учёта регистра), SDK msg_id и server timestamp может подтвердить аккаунт.
 Перед публикацией VERIFIED выполняется ещё одна свежая UI/device/install проверка:
 normal host или точный reviewed composer в пределах исходного host lease (90 секунд).
 Открытый composer не продлевает lease и до успешного challenge не даёт account proof.
 Token не попадает в AI очередь/обычный comment log и не сохраняется как auth secret.
+Фраза содержит четыре случайные пары нейтральных слов (>39 бит CSPRNG); browser
+не выбирает её. Старые `MOB-…` сообщения также остаются вне AI/logs и не подтверждают
+новую фразу. Срок, точное сравнение и остальные account guards не изменены.
 Привязка действует только для device/install + account + runtime + LIVE session +
 SDK connection generation. Disconnect/reconnect/APPLY/restart/change отзывают её;
 старые callbacks/tokens/message IDs не подтверждают новый runtime. Durable consumed
