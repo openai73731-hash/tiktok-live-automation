@@ -310,6 +310,51 @@ feed.select(null);assert.equal(feed.rows.size,0);
     assert done.returncode==0, done.stderr
 
 
+@pytest.mark.parametrize("manual", [True, False])
+@pytest.mark.parametrize("change", ["one_space", "two_spaces", "changed_text", "guard_revoked"])
+async def test_ime_space_correction_requires_fresh_exact_readback_and_guard(manual, change):
+    c, t = await prepared()
+    original = t.run
+    selected, authority, deletes = False, True, 0
+    reply = "Private approved reply."
+    async def run(command, **kwargs):
+        nonlocal selected, authority, deletes
+        root = ET.fromstring(t.xml)
+        entry = next(n for n in root.iter() if n.get("resource-id") == rid("h4k"))
+        before = entry.get("text", "")
+        if command == AdbCommand.DELETE:
+            deletes += 1
+            if deletes == 2 and change == "guard_revoked": authority = False
+        result = await original(command, **kwargs)
+        if command == AdbCommand.SELECT_ALL: selected = True
+        elif command == AdbCommand.DELETE:
+            if not selected:
+                root = ET.fromstring(t.xml)
+                next(n for n in root.iter() if n.get("resource-id") == rid("h4k")).set("text", before[:-1])
+                t.xml = ET.tostring(root, encoding="unicode")
+            selected = False
+        elif command == AdbCommand.TEXT:
+            root = ET.fromstring(t.xml)
+            value = reply + ("  " if change == "two_spaces" else " " if change != "changed_text" else "X")
+            next(n for n in root.iter() if n.get("resource-id") == rid("h4k")).set("text", value)
+            t.xml = ET.tostring(root, encoding="unicode")
+            selected = False
+        return result
+    t.run = run
+    try:
+        outcome = await (c.fill(request(reply), guard=lambda: authority) if manual else
+                         c.submit(request(reply), guard=lambda: authority))
+        assert [kwargs["text"] for cmd, kwargs in t.calls if cmd == AdbCommand.TEXT] == [reply]
+        if change == "one_space":
+            assert deletes == 2
+            assert unique_node(t.xml, rid("h4k")).get("text") == reply
+            assert outcome.status == ("filled" if manual else "unknown")
+            assert t.activations == (0 if manual else 1)
+        else:
+            assert outcome.status != "filled" and t.activations == 0
+    finally: await c.aclose()
+
+
 @pytest.mark.parametrize("revoke", [None,"approval","expiry","session","runtime","reservation","text"])
 async def test_production_ascii_coordinator_final_binding_and_unknown_no_retry(suggestion,settings,tmp_path,revoke):
     r=suggestion

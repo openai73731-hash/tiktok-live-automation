@@ -58,6 +58,17 @@ class ASCIITextEntryBackend:
         result = getattr(self.controller.transport, "last_command_result", None)
         return result if result and result.get("command") == command.value else dict(command=command.value, category="unreported")
 
+    def record_readback(self, text, entry):
+        if self.require_send: return
+        actual = entry.get("text", "")
+        # Boolean/length evidence only. Never log approved or read-back text.
+        self.diagnostic.update(readback_expected_length=len(text), readback_actual_length=len(actual),
+            readback_text_present=entry.get("text") is not None, readback_exact_match=actual == text,
+            readback_trim_match=actual.strip() == text, readback_casefold_match=actual.casefold() == text.casefold(),
+            readback_is_prefix=text.startswith(actual),
+            readback_leading_whitespace=len(actual) - len(actual.lstrip()),
+            readback_trailing_whitespace=len(actual) - len(actual.rstrip()))
+
     async def checked(self, serial, *, focused=False):
         c = self.controller
         state = await self.inspection.read() if not self.require_send and self.inspection else await c._inspect(self.target)
@@ -92,15 +103,16 @@ class ASCIITextEntryBackend:
         await self.checked(serial, focused=True)
         await self.command(AdbCommand.TEXT, serial, text=text)
         entry = await self.checked(serial, focused=True)
-        if not self.require_send:
-            actual = entry.get("text", "")
-            # Boolean/length evidence only. Never log approved or read-back text.
-            self.diagnostic.update(readback_expected_length=len(text), readback_actual_length=len(actual),
-                readback_text_present=entry.get("text") is not None, readback_exact_match=actual == text,
-                readback_trim_match=actual.strip() == text, readback_casefold_match=actual.casefold() == text.casefold(),
-                readback_is_prefix=text.startswith(actual),
-                readback_leading_whitespace=len(actual) - len(actual.lstrip()),
-                readback_trailing_whitespace=len(actual) - len(actual.rstrip()))
+        self.record_readback(text, entry)
+        if entry.get("text") == text + " ":
+            # Some IMEs add one space after punctuation. Correct that exact
+            # observed suffix once; never normalize or accept a mismatched draft.
+            self.report(post_readback_result="trailing_space", readback_correction="delete_one_trailing_space")
+            entry = await self.checked(serial, focused=True)
+            if entry.get("text") == text + " ":
+                await self.command(AdbCommand.DELETE, serial)
+                entry = await self.checked(serial, focused=True)
+            self.record_readback(text, entry)
         if entry.get("text") != text:
             self.report("text_readback_mismatch", post_readback_result="mismatch")
             # Clear only after another full safe focused-field inspection. Never send.
