@@ -92,6 +92,15 @@ class ASCIITextEntryBackend:
         await self.checked(serial, focused=True)
         await self.command(AdbCommand.TEXT, serial, text=text)
         entry = await self.checked(serial, focused=True)
+        if not self.require_send:
+            actual = entry.get("text", "")
+            # Boolean/length evidence only. Never log approved or read-back text.
+            self.diagnostic.update(readback_expected_length=len(text), readback_actual_length=len(actual),
+                readback_text_present=entry.get("text") is not None, readback_exact_match=actual == text,
+                readback_trim_match=actual.strip() == text, readback_casefold_match=actual.casefold() == text.casefold(),
+                readback_is_prefix=text.startswith(actual),
+                readback_leading_whitespace=len(actual) - len(actual.lstrip()),
+                readback_trailing_whitespace=len(actual) - len(actual.rstrip()))
         if entry.get("text") != text:
             self.report("text_readback_mismatch", post_readback_result="mismatch")
             # Clear only after another full safe focused-field inspection. Never send.

@@ -191,15 +191,41 @@ async def test_lazy_journal_rejected_pause_requires_explicit_recovery(manual_fil
     assert service.consumed(old) and service.mode == "MANUAL"
 
 
-async def test_manual_rejection_logs_internal_reason_without_reply(manual_fill_api, caplog, monkeypatch):
-    _, _, _, _, envelope, _ = manual_fill_api
+@pytest.mark.parametrize("mismatch", ["corrupt", "trailing_space", "missing_text"])
+async def test_manual_rejection_logs_internal_reason_without_reply(manual_fill_api, caplog, monkeypatch, mismatch):
+    import xml.etree.ElementTree as ET
+    from app.android.tiktok_ui import rid
+    _, client, service, transport, envelope, body = manual_fill_api
     logger = logging.getLogger(LOGGER_NAME + ".android")
     monkeypatch.setattr(logger, "handlers", [caplog.handler])
     caplog.set_level(logging.INFO)
-    await rejected(manual_fill_api)
+    original = transport.run
+    async def run(command, **kwargs):
+        result = await original(command, **kwargs)
+        if command == AdbCommand.TEXT:
+            root = ET.fromstring(transport.xml)
+            entry = next(n for n in root.iter() if n.get("resource-id") == rid("h4k"))
+            if mismatch == "missing_text": entry.attrib.pop("text", None)
+            else: entry.set("text", envelope.suggested_reply + " " if mismatch == "trailing_space" else "corrupt")
+            transport.xml = ET.tostring(root, encoding="unicode")
+        return result
+    transport.run = run
+    response = await client.post("/api/admin/delivery/fill", json=body)
+    assert response.json() == {"status":"needs_operator", "reason":"rejected"}
+    assert service.paused and service.consumed(envelope)
+    assert service.journal.lookup(body["idempotency_key"]).status == "needs_operator"
+    assert [c for c, _ in transport.calls].count(AdbCommand.TEXT) == 1
+    assert transport.activations == 0
     records = [r.fields for r in caplog.records if r.getMessage() == "android_manual_text_entry"]
     assert records and any(r["rejection_reason"] == "text_readback_mismatch" for r in records)
     assert any(r["post_readback_result"] == "mismatch" for r in records)
+    evidence = next(r for r in records if r["rejection_reason"] == "text_readback_mismatch")
+    assert evidence["readback_expected_length"] == len(envelope.suggested_reply)
+    assert evidence["readback_actual_length"] == (len(envelope.suggested_reply) + 1 if mismatch == "trailing_space" else 0 if mismatch == "missing_text" else len("corrupt"))
+    assert evidence["readback_text_present"] == (mismatch != "missing_text")
+    assert not evidence["readback_exact_match"]
+    assert evidence["readback_trim_match"] == (mismatch == "trailing_space")
+    assert evidence["readback_trailing_whitespace"] == (1 if mismatch == "trailing_space" else 0)
     for record in records:
         assert record["text_entry_method"] == "adb_ascii_focused"
         assert record["input_target_resource_id"].endswith(":id/h4k")
