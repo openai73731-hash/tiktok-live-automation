@@ -233,6 +233,49 @@ async def test_manual_rejection_logs_internal_reason_without_reply(manual_fill_a
         assert envelope.suggested_reply not in json.dumps(record) and "corrupt" not in json.dumps(record)
 
 
+@pytest.mark.parametrize("revoke", [False, True])
+async def test_empty_manual_fill_skips_clear_but_preserves_native_guard_and_journal(manual_fill_api, revoke):
+    _, client, service, transport, envelope, body = manual_fill_api
+    transport.calls.clear()
+    async def before(command):
+        if revoke and command == AdbCommand.TEXT: envelope._monotonic_deadline = 0
+    transport.after = before
+    result = await client.post("/api/admin/delivery/fill", json=body)
+    commands = [c for c, _ in transport.calls]
+    assert AdbCommand.SELECT_ALL not in commands and AdbCommand.DELETE not in commands
+    assert commands.count(AdbCommand.TEXT) == 1 and transport.activations == 0
+    assert commands[:commands.index(AdbCommand.TEXT)].count(AdbCommand.DUMP) == 3
+    assert service.consumed(envelope) and service.mode == "MANUAL"
+    if revoke:
+        assert result.json()["status"] != "filled" and service.paused
+        assert envelope.suggested_reply not in transport.xml
+    else:
+        assert result.json() == {"status":"filled", "reason":"filled_waiting_user_send"}
+        assert service.pending_fill and not service.paused
+        assert service.journal.lookup(body["idempotency_key"]).status == "filled"
+
+
+async def test_empty_fast_path_does_not_repeat_acquisition_after_input(manual_fill_api):
+    from app.android.adb import HierarchyUnavailable
+    _, client, service, transport, envelope, body = manual_fill_api
+    original = transport.run
+    entered, after_input_dumps = False, []
+    async def run(command, **kwargs):
+        nonlocal entered
+        if entered and command == AdbCommand.DUMP:
+            after_input_dumps.append(kwargs.get("compressed", False))
+            raise HierarchyUnavailable()
+        result = await original(command, **kwargs)
+        if command == AdbCommand.TEXT: entered = True
+        return result
+    transport.run = run
+    response = await client.post("/api/admin/delivery/fill", json=body)
+    assert response.json() == {"status":"needs_operator", "reason":"rejected"}
+    assert entered and after_input_dumps == [False]
+    assert service.paused and service.consumed(envelope) and not service.pending_fill
+    assert transport.activations == 0
+
+
 @pytest.mark.parametrize("code,stderr,category,noise", [(0,b"", "success",False),
     (0,b"arbitrary warning with private content", "success",False),
     (0,b"WARNING: linker: unused DT entry", "success",True),

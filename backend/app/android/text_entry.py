@@ -99,8 +99,15 @@ class ASCIITextEntryBackend:
         if not self.supports(text): self.reject("unsupported_text")
         if not c._profile or resource_id != c._profile.input_id: self.reject("input_target_mismatch")
         self.report()
-        await self.clear(serial)
-        await self.checked(serial, focused=True)
+        entry = unique_node(c._xml, resource_id)
+        if entry is not None and entry.get("text") == "":
+            # The cached field only selects this path. Fresh full inspection and
+            # the native guard must still prove the exact empty focused target.
+            entry = await self.checked(serial, focused=True)
+        if entry is None or entry.get("text") != "":
+            await self.clear(serial)
+            await self.checked(serial, focused=True)
+        if not self.require_send and self.inspection: self.inspection.input_started = True
         await self.command(AdbCommand.TEXT, serial, text=text)
         entry = await self.checked(serial, focused=True)
         self.record_readback(text, entry)
