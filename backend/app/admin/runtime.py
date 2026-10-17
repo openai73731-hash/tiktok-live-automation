@@ -187,11 +187,17 @@ class OperatorRuntime:
         self.ingestion = IngestionLedger()
         self.windows_terminal = {"acceptance_spent": False, "clock_unstable": False, "cleanup_failed": False}
         self.mobile_acceptance_spent = False
+        from app.ai.local_knowledge import KnowledgeStore
+        self.knowledge = KnowledgeStore(settings.state_dir)
+        from app.ai.periodic import PeriodicScheduler
+        self.periodic = PeriodicScheduler(self)
 
     @property
     def pending(self):
         username = self.saved.tiktok.username if self.saved.tiktok.username is not None else self.settings.tiktok_username
-        return (self.store.validate(self.saved) != self.project or username != self.username or
+        kb = getattr(self.admin.playground.processor, 'kb', None)
+        knowledge_pending = bool(self.project.ai_profile and kb and self.knowledge.view()[0]['revision'] != kb.revision)
+        return (knowledge_pending or self.store.validate(self.saved) != self.project or username != self.username or
                 self.saved.android.device_serial != self.android_serial or
                 (self.saved.tiktok.transport or self.startup_settings.tiktok_transport) != self.transport)
 
@@ -244,7 +250,12 @@ class OperatorRuntime:
     def view(self):
         reason = self.lock_reason()
         connect_reason = self.connect_block_reason()
-        return OperatorView(saved=self.saved, active=self.admin.public_settings(),
+        from app.ai.profile import AIProfile, ProfileModel
+        defaults=AIProfile()
+        if self.project.ai.provider=='lmstudio':
+            defaults=defaults.model_copy(update={'model':ProfileModel(base_url=self.project.ai.lmstudio_base_url,
+                model=self.project.ai.model,temperature=self.project.ai.temperature,max_tokens=max(128,self.project.ai.max_model_output_tokens))})
+        return OperatorView(profile_defaults=defaults, saved=self.saved, active=self.admin.public_settings(),
             active_transport=self.transport,
             saved_transport=self.saved.tiktok.transport or self.startup_settings.tiktok_transport,
             desired=self.admin.public_settings(self.store.validate(self.saved)), username=self.username,

@@ -93,12 +93,13 @@ class LocalAdminMiddleware:
                 await reject(415, "json_required")
                 return
         received = 0
+        body_limit = 262_144 if scope.get('path') in {'/api/admin/knowledge/upload','/api/admin/knowledge/text'} else 65_536
 
         async def bounded_receive():
             nonlocal received
             message = await receive()
             received += len(message.get("body", b""))
-            if received > 65_536:
+            if received > body_limit:
                 raise HTTPException(status_code=413, detail="Request too large")
             return message
 

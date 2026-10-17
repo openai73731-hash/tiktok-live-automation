@@ -66,6 +66,8 @@ class Comment(BaseModel):
     # Only the owned real SDK callback sets this; JSON/AI/browser cannot supply it.
     _sdk_receipt: tuple[object, int] | None = PrivateAttr(default=None)
     _sdk_text_exact: bool = PrivateAttr(default=False)
+    _periodic_id: str | None = PrivateAttr(default=None)
+    _periodic_proof: object | None = PrivateAttr(default=None)
     username: str = Field(min_length=1)
     user_id: str | None = None
     author_handle: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._]{1,24}$")
@@ -74,7 +76,7 @@ class Comment(BaseModel):
     text: str = Field(min_length=1)
     # Local receipt time, in UTC; not an inferred TikTok server timestamp.
     timestamp: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
-    source: Literal["tiktok", "playground"] = "tiktok"
+    source: Literal["tiktok", "playground", "periodic"] = "tiktok"
 
     def model_post_init(self, context):
         self._received_monotonic, self._ingestion_sequence = ingestion_boundary(receipt=True)

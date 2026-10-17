@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai.models import ReplySuggestion
 from app.admin.operator_config import OperatorOverlay
+from app.ai.profile import AIProfile
 from app.delivery.models import SuggestionView
 from app.windows.preparation import PreparationStatus
 
@@ -22,7 +23,7 @@ class AnalyzeInput(UIModel):
 
 class CommentView(UIModel):
     id: str
-    source: Literal["tiktok", "fake", "replay", "playground"]
+    source: Literal["tiktok", "fake", "replay", "playground", "periodic"]
     username: str = Field(max_length=200)
     text: str = Field(max_length=10_000)
     timestamp: datetime
@@ -33,7 +34,7 @@ class CommentView(UIModel):
 
 class ReplyRecord(UIModel):
     id: str
-    source: Literal["tiktok", "fake", "replay", "playground"]
+    source: Literal["tiktok", "fake", "replay", "playground", "periodic"]
     received_at: datetime
     duration_ms: int
     original_truncated: bool = False
@@ -105,6 +106,7 @@ class AdminStatus(UIModel):
 
 
 class PublicSettings(UIModel):
+    ai_profile: AIProfile | None = None
     product_name: str
     platform: str
     stream_language: str
@@ -125,6 +127,7 @@ class PublicSettings(UIModel):
 
 
 class OperatorView(UIModel):
+    profile_defaults: AIProfile = Field(default_factory=AIProfile)
     saved_transport: Literal["android", "windows_live_studio"] = "android"
     active_transport: Literal["android", "windows_live_studio"] = "android"
     saved: OperatorOverlay

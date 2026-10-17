@@ -60,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime.install_delivery(create_delivery_service(runtime.settings, admin.suggestions,
             admin.delivery_context, serial=runtime.android_serial))
         runtime.live._sync()
+        runtime.periodic.start()
         try:
             if config.admin_live_enabled and not runtime.config_error:
                 await runtime.live.connect(runtime.username or ("demo" if config.live_mode == "fake" else ""), startup=True)
@@ -68,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             runtime.closed = True
             async def shutdown():
                 try:
+                    await runtime.periodic.aclose()
                     await application.state.delivery.aclose()
                 finally:
                     try:
@@ -81,6 +83,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           docs_url=None, redoc_url=None, openapi_url=None)
     application.add_middleware(LocalAdminMiddleware)
     application.include_router(admin_router)
+    from app.admin.profile_router import router as profile_router
+    application.include_router(profile_router)
     application.include_router(quality_router)
     application.mount("/ui/assets", StaticFiles(directory=ASSETS), name="admin-assets")
 

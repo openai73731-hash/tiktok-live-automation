@@ -18,7 +18,7 @@ from app.ai.processor import CommentProcessor
 from app.live.models import Comment, LiveState, LiveStatus
 from app.logging_config import LOGGER_NAME
 from app.delivery.models import ApprovalEvent, DeliveryContext
-from app.delivery.suggestions import SuggestionStore, SuggestionConflict, digest, policy_revision, comment_identity
+from app.delivery.suggestions import SuggestionStore, SuggestionConflict, digest, policy_revision, comment_identity, knowledge_revision
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -139,7 +139,7 @@ class AdminService:
         account = live.username if live.connection_owned else self.runtime.username if self.runtime else live.username
         context = DeliveryContext(live_session_id=None if invalid else live.live_session_id, target_account=account or None,
             active_runtime_revision=self.runtime.active_runtime_revision if self.runtime else "unavailable",
-            knowledge_revision=digest(processor.knowledge), policy_revision=policy_revision(processor),
+            knowledge_revision=knowledge_revision(processor), policy_revision=policy_revision(processor),
             connected=not invalid and live.connection_owned and live.state == "connected" and live.terminal_state is None,
             active=live.activity == "active")
         if self.delivery is not None:
@@ -241,7 +241,7 @@ class AdminService:
     def public_settings(self, project=None) -> PublicSettings:
         project = project or self.playground.processor.project
         ai = project.ai
-        return PublicSettings(product_name=project.product.name, platform=project.product.platform,
+        return PublicSettings(ai_profile=project.ai_profile, product_name=project.product.name, platform=project.product.platform,
             stream_language=project.stream.language, provider=ai.provider, model=ai.model,
             operator_language=ai.operator_language, temperature=ai.temperature,
             max_reply_chars=ai.max_reply_chars, max_reply_sentences=ai.max_reply_sentences,

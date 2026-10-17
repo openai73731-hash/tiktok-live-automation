@@ -5,6 +5,7 @@ from typing import Literal, Self
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from urllib.parse import urlsplit
+from app.ai.profile import AIProfile
 
 
 def local_base_url(value: str) -> str:
@@ -77,6 +78,7 @@ class ProjectConfig(ConfigModel):
     stream: StreamConfig
     product: ProductConfig
     ai: AIConfig
+    ai_profile: AIProfile | None = None
 
 
 class Fact(ConfigModel):

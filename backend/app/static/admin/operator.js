@@ -9,7 +9,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
     const live = state.status?.live;
     const owned = Boolean(live?.connection_owned);
     const locked = owned || Boolean(view?.locked) || busy || state.busy;
-    fields.forEach((name) => { $("operator-" + name).disabled = locked; });
+    fields.forEach((name) => { $("operator-" + name).disabled = locked || Boolean(view?.desired.ai_profile && ["provider","model","temperature","policy"].includes(name)); });
     document.querySelectorAll('input[name="operator-transport"]').forEach(input => { input.disabled = locked; });
     $("transport-saved").textContent = view?.saved_transport === "windows_live_studio" ? "PC / LIVE STUDIO" : "MOBILE / ANDROID";
     $("transport-active").textContent = view?.active_transport === "windows_live_studio" ? "PC / LIVE STUDIO" : "MOBILE / ANDROID";
@@ -98,7 +98,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
   });
   $("operator-form").addEventListener("submit", (event) => {
     event.preventDefault(); if ($("operator-save").disabled) return;
-    action("/api/admin/operator/settings", {expected_saved_revision: editedRevision, settings: {tiktok: {username: value("username"), transport: transport()},
+    action("/api/admin/operator/settings", {expected_saved_revision: editedRevision, settings: {...view.saved, tiktok: {username: value("username"), transport: transport()},
       ai: {provider: value("provider"), model: value("model"), temperature: Number(value("temperature")), timeout_seconds: Number(value("timeout"))},
       reply: {mode: value("policy"), max_sentences: Number(value("sentences")), max_chars: Number(value("chars"))},
       android: {device_serial: value("device") || null}}});

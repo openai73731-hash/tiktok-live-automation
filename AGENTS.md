@@ -1,5 +1,19 @@
 # Project scope and rules
 
+- Generic profile release is explicitly authorized, including a separate generated
+  content policy (operator decision). Keep legacy extractive checks unchanged for
+  legacy profiles. Generic checks bound structured output/citations/claims; do not
+  claim semantic proof of model statements or translations. One active profile,
+  Save/Apply, local literal-loopback OpenAI-compatible endpoint, bounded TXT/MD KB
+  and immutable applied FTS5 snapshots. No paid API, embeddings or arbitrary paths.
+  Periodic is a private server-minted source with durable unique slot IDs, not a
+  forged viewer SDK event. Only this owned provenance may enter existing Android
+  AUTO; use the same coordinator/sender/open/readback/Send/SDK-echo path. Preserve
+  all real viewer provenance and account/device/install/runtime/session guards,
+  UNKNOWN/ACK/dedup/one-shot semantics. Skip missed/busy slots, never catch up or
+  resume old slots. The agent never directly issues Android input. Run focused
+  tests while developing, then one Tier A/FULL at the stable end of this phase.
+
 - Current Android AUTO acceptance (explicit user authorization) adds a reviewed
   two-step ordinary composer opener: unique host More control, then the exact
   "Оставить комментарий" menu row. Each gets one guarded selector-resolved tap;

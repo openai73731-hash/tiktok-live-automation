@@ -25,7 +25,9 @@ class UnknownRecovery:
     def old_event(self, envelope):
         if self.boundary is None: return False
         receipt = envelope._ingestion_receipt
-        return (not self.authorized() or not envelope._source_message_id or receipt is None
+        periodic = bool(envelope.source=='periodic' and envelope._periodic_proof
+            and envelope._periodic_proof.valid(envelope, self.service.context()))
+        return (not self.authorized() or not (periodic or envelope._source_message_id) or receipt is None
             or receipt.monotonic < self.boundary[0] or receipt.sequence <= self.boundary[1]
             or (receipt.account.casefold(), receipt.runtime_revision, receipt.session_id) != self.scope[:3])
 

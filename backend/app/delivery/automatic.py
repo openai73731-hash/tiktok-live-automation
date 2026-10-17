@@ -9,10 +9,14 @@ from app.delivery.suggestions import binding_reason, digest
 def content_binding(e):
     return digest({k: getattr(e,k) for k in ("original_text", "detected_language", "operator_translation",
         "suggested_reply", "reply_translation", "intent", "fact_ids", "template_id", "translation_source",
-        "translation_requires_review", "provider", "model", "processing_error", "knowledge_revision", "policy_revision")})
+        "translation_requires_review", "provider", "model", "processing_error", "knowledge_revision", "policy_revision",
+        "message_purpose", "knowledge_ids", "response_basis")})
 
 
 def verified_content(suggestion, processor):
+    if processor.project.ai_profile is not None:
+        from app.ai.generic import verified
+        return verified(suggestion, processor)
     if (suggestion.status != "ready" or suggestion.intent not in {"facts", "no_promises"}
             or suggestion.translation_requires_review or suggestion.translation_source != "approved"
             or suggestion.processing_error or suggestion.detected_language == "und"):
@@ -33,10 +37,13 @@ class AutomaticEligibility:
     def evaluate(e, context, *, duplicate=False):
         reason = binding_reason(e, context)
         if reason is None:
-            if e.source != "tiktok": reason = "source_not_live"
+            periodic = e.source == 'periodic' and e.message_purpose == 'PERIODIC'
+            private_periodic = bool(periodic and e._periodic_proof and e._periodic_proof.valid(e,context))
+            if e.source != "tiktok" and not private_periodic: reason = "source_not_live"
             elif e.translation_requires_review: reason = "translation_requires_review"
-            elif (not e._auto_content_verified or e._auto_content_binding != content_binding(e) or e.comment_identity_kind != "sdk_message_id"
-                    or e.intent not in {"facts", "no_promises"} or e.processing_error):
+            elif (not e._auto_content_verified or e._auto_content_binding != content_binding(e)
+                    or e.comment_identity_kind != ('periodic_slot' if private_periodic else 'sdk_message_id')
+                    or e.intent not in {"facts", "no_promises", "generic"} or e.processing_error):
                 reason = "auto_content_unverified"
             elif not ascii_supported(e.suggested_reply): reason = "unicode_entry_unavailable"
             elif duplicate: reason = "duplicate_operation"

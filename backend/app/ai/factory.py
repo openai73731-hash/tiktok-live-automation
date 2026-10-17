@@ -9,6 +9,11 @@ from app.config import Settings
 
 
 def create_engine(settings: Settings, project: ProjectConfig) -> AIReplyEngine:
+    if project.ai_profile is not None:
+        from app.ai.generic import GenericReplyEngine
+        p = project.ai_profile.model
+        return GenericReplyEngine(project.ai.model_copy(update=dict(provider='lmstudio', model=p.model,
+            lmstudio_base_url=p.base_url, temperature=p.temperature, max_model_output_tokens=p.max_tokens)))
     if project.ai.provider == "fake":
         return FakeAIReplyEngine.from_file(settings.fake_examples_path)
     if project.ai.provider == "openai":
@@ -25,7 +30,12 @@ def create_processor(settings: Settings, *, ai_smoke: bool = False, smoke_provid
         # Stage 3A isolates the LIVE integration from provider selection.
         project = project.model_copy(update={
             "ai": project.ai.model_copy(update={"provider": smoke_provider or ("openai" if ai_smoke else "fake")}),
+            "ai_profile": None,
         })
     knowledge = load_yaml_model(settings.knowledge_path, KnowledgeBase)
     engine = create_engine(settings, project)
-    return CommentProcessor(engine, project, knowledge)
+    processor = CommentProcessor(engine, project, knowledge)
+    if project.ai_profile is not None:
+        from app.ai.local_knowledge import KnowledgeStore
+        processor.kb = KnowledgeStore(settings.state_dir).snapshot()
+    return processor

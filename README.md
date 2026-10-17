@@ -1,5 +1,52 @@
 # tiktok-live-automation
 
+## Generic AI Profile, local knowledge and periodic comments
+
+Admin → Settings → **AI Profile** configures one active topic, response language,
+system/reply instructions, tone and an OpenAI-compatible model. The release uses
+the existing local client: literal loopback HTTP `/v1` endpoints only, no keys,
+redirects, paid API or arbitrary URL proxy. Refresh models queries the **applied**
+endpoint; failure preserves the chosen model and manual model entry remains available.
+Save persists a draft; Apply requires an idle, disconnected listener and replaces
+the processor. Editing does not change active inference. Existing trading projects
+remain compatible until a generic profile is explicitly saved/applied. Optional
+examples live in `config/examples/trading-profile.yaml` and `trading-knowledge.md`.
+
+**Knowledge Base** accepts UTF-8 TXT/MD and text entries. PDF/DOCX are unsupported
+in this installation. Limits: 128 KiB/file, 32 sources, 2 MiB total, 3000 chunks
+of at most 1000 characters with 100-character overlap. Source IDs are generated;
+names are display-only, paths/unsupported extensions are rejected. SQLite FTS5
+updates source metadata and chunks atomically under `state_dir/knowledge.sqlite3`.
+Apply builds an immutable local FTS snapshot; add/disable/delete affects active
+inference only after Apply. Source text/uploads are never served publicly or
+included in logs; retrieval uses up to eight bounded context passages.
+
+Generic generation has an explicitly authorized **separate content policy**:
+strict structured output, contextual citation validation, length/style limits and
+mandatory prohibited-claim checks. Prompts separate SYSTEM / PROFILE / untrusted
+KNOWLEDGE CONTEXT / USER COMMENT. Missing business facts must be acknowledged;
+ordinary conversation may use model knowledge. This is not a semantic proof of
+arbitrary model facts/translations. Legacy extractive policy remains unchanged.
+
+Periodic comments default **OFF**, interval 300 seconds, jitter ±30 seconds,
+maximum 12 slots/hour. Configure templates/AI/mixed, instruction and templates in
+the same profile. Scheduling is monotonic; missed/busy slots are skipped with no
+catch-up. The scheduler mints private durable slot identities, never fake viewer
+SDK comments, and uses the existing AUTO queue/coordinator/Android sender.
+AUTO OFF, invalid bindings, security UI, pending delivery/fill, cooldown and
+unacknowledged UNKNOWN block periodic generation/delivery. All old dedup/UNKNOWN
+rows remain consumed. A crashed/claimed slot is never resumed. Metadata and hashes
+only are stored in ignored `state_dir/periodic.sqlite3`; generated text is not
+persisted there. The same guarded opener, exact readback, reviewed Send and own SDK
+echo confirmation apply. Existing ASCII input limits remain; Unicode drafts require
+operator handling. One-shot remains one-shot and cannot be rearmed by the scheduler.
+
+For short acceptance only, explicitly save/apply 60–90 seconds with jitter zero;
+verify one viewer question in MANUAL, then manually arm AUTO for one periodic
+operation. Restore the configured production interval afterwards. A code update
+requires backend restart once ready, followed by fresh account/device/LIVE proof;
+never restart an accepted session merely to run offline tests.
+
 ## UNIFIED: Mobile / Android + PC / LIVE Studio
 
 Один backend и Admin UI, один явно выбранный active transport. В Settings выберите

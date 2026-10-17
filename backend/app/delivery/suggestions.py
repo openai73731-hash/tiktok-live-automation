@@ -22,6 +22,8 @@ def reply_hash(text):
 
 
 def comment_identity(comment, source, session_id, target_account):
+    if source == 'periodic' and comment._periodic_id:
+        return digest({'source':'periodic','account':(target_account or '').casefold(),'slot':comment._periodic_id}), 'periodic_slot'
     kind = "sdk_message_id" if comment.message_id and source == "tiktok" else "fingerprint"
     return digest({"source": source, "session": session_id, "account": target_account,
         "id": comment.message_id if kind == "sdk_message_id" else None,
@@ -39,6 +41,11 @@ def policy_revision(processor):
     from app.ai.social import bank
     return digest({"version": "stage4a4-safety-v1", "project": processor.project.model_dump(mode="json"),
                    "social": bank().model_dump(mode="json")})
+
+
+def knowledge_revision(processor):
+    kb = getattr(processor, 'kb', None)
+    return digest({'legacy':processor.knowledge.model_dump(mode='json'), 'local':kb.revision}) if kb else digest(processor.knowledge)
 
 
 def intact(envelope):
@@ -107,7 +114,7 @@ class SuggestionStore:
             durable_delivery_key=durable_delivery_key(record.source, target_account, comment.message_id),
             created_at=now.isoformat(), expires_at=(comment.timestamp + timedelta(minutes=5)).isoformat(),
             live_session_id=session_id, target_account=target_account,
-            active_runtime_revision=runtime_revision, knowledge_revision=digest(processor.knowledge),
+            active_runtime_revision=runtime_revision, knowledge_revision=knowledge_revision(processor),
             policy_revision=policy_revision(processor), suggested_reply_hash=reply_hash(record.suggestion.suggested_reply))
         envelope = SuggestionEnvelope.model_validate(values | {"suggestion_revision": "0" * 64})
         envelope = envelope.model_copy(update={"suggestion_revision": digest(envelope.model_dump(mode="json", exclude={"suggestion_revision"}))})
@@ -119,8 +126,16 @@ class SuggestionStore:
         self.sequence += 1
         envelope._created_sequence = self.sequence
         envelope._source_message_id = comment.message_id if identity_kind == "sdk_message_id" else None
+        if record.source == 'periodic' and identity_kind == 'periodic_slot':
+            envelope._periodic_id, envelope._periodic_proof = comment._periodic_id, comment._periodic_proof
+            values = envelope.model_dump(mode='json')
+            values['durable_delivery_key'] = digest({'source':'periodic','account':(target_account or '').casefold(),'slot':comment._periodic_id})
+            # Rebind immutable public metadata before recording private admission.
+            updated = envelope.model_copy(update={'durable_delivery_key':values['durable_delivery_key']})
+            updated = updated.model_copy(update={'suggestion_revision':digest(updated.model_dump(mode='json',exclude={'suggestion_revision'}))})
+            envelope = updated
         receipt = comment._ingestion_receipt
-        if (receipt and record.source == 'tiktok' and receipt.account == target_account and
+        if (receipt and record.source in {'tiktok','periodic'} and receipt.account == target_account and
                 receipt.session_id == session_id and receipt.runtime_revision == runtime_revision and
                 receipt.message_id == envelope._source_message_id):
             envelope._ingestion_receipt = receipt

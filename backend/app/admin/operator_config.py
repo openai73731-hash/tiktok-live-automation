@@ -10,6 +10,7 @@ from pydantic import Field, field_validator
 
 from app.ai.knowledge import ConfigModel, ProjectConfig
 from app.config import Settings
+from app.ai.profile import AIProfile
 
 
 class LocalConfigError(ValueError):
@@ -52,6 +53,7 @@ class OperatorOverlay(ConfigModel):
     ai: AIOverride = Field(default_factory=AIOverride)
     reply: ReplyOverride = Field(default_factory=ReplyOverride)
     android: AndroidOverride = Field(default_factory=AndroidOverride)
+    ai_profile: AIProfile | None = None
 
 
 class StrictLoader(yaml.SafeLoader):
@@ -90,6 +92,14 @@ def effective(base: ProjectConfig, overlay: OperatorOverlay) -> ProjectConfig:
     values["ai"].update(overlay.ai.model_dump(exclude_none=True))
     names = {"mode": "reply_policy", "max_sentences": "max_reply_sentences", "max_chars": "max_reply_chars"}
     values["ai"].update({names[key]: value for key, value in overlay.reply.model_dump(exclude_none=True).items()})
+    if overlay.ai_profile is not None: values["ai_profile"] = overlay.ai_profile.model_dump()
+    if values.get("ai_profile"):
+        profile = AIProfile.model_validate(values["ai_profile"])
+        values["ai"].update(provider="lmstudio", model=profile.model.model,
+            lmstudio_base_url=profile.model.base_url, temperature=profile.model.temperature,
+            max_model_output_tokens=profile.model.max_tokens)
+        values['stream']['language'] = profile.language
+        values['product'] = dict(name=profile.name, platform='TikTok LIVE')
     return ProjectConfig.model_validate(values)
 
 
@@ -134,6 +144,7 @@ class OperatorStore:
         self.guard_path()
         self.validate(overlay)
         data = yaml.safe_dump(overlay.model_dump(exclude_none=True), allow_unicode=True, sort_keys=False)
+        if len(data.encode("utf-8")) > 16_384: raise LocalConfigError("Local settings exceed 16 KiB")
         temporary = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.path.parent,

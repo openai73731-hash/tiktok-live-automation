@@ -17,5 +17,7 @@ data/delivery.sqlite3*
 data/windows-delivery.sqlite3*
 data/unified-delivery.sqlite3*
 data/android-delivery-evidence.sqlite3*
+data/knowledge.sqlite3*
+data/periodic.sqlite3*
 diagnostics/android/
 diagnostics/windows/

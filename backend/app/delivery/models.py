@@ -26,11 +26,13 @@ class SuggestionEnvelope(ReplySuggestion):
     _source_message_id: str | None = PrivateAttr(default=None)
     _ingestion_receipt: IngestionReceipt | None = PrivateAttr(default=None)
     _registered_auto_epoch_id: str | None = PrivateAttr(default=None)
+    _periodic_id: str | None = PrivateAttr(default=None)
+    _periodic_proof: object | None = PrivateAttr(default=None)
     suggestion_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     suggestion_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
-    source: Literal["tiktok", "fake", "replay", "playground"]
+    source: Literal["tiktok", "fake", "replay", "playground", "periodic"]
     comment_identity: str = Field(pattern=r"^[a-f0-9]{64}$")
-    comment_identity_kind: Literal["sdk_message_id", "fingerprint"]
+    comment_identity_kind: Literal["sdk_message_id", "fingerprint", "periodic_slot"]
     durable_delivery_key: Revision | None = None
     created_at: AwareDatetime
     expires_at: AwareDatetime
@@ -141,7 +143,7 @@ class DeliveryRequest(FrozenModel):
     suggestion_revision: Revision
     comment_identity: Revision
     durable_delivery_key: Revision | None = None
-    source_kind: Literal["tiktok", "fake", "replay", "playground"] | None = None
+    source_kind: Literal["tiktok", "fake", "replay", "playground", "periodic"] | None = None
     source_message_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]{0,18}$")
     approval_id: OpaqueId
     suggested_reply_hash: Revision

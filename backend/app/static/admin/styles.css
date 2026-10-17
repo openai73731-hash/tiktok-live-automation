@@ -1359,6 +1359,12 @@ tbody tr:focus-visible {
 .warning-text { color: #edba7d; }
 summary { cursor: pointer; }
 .operator-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#profile-form .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#profile-form input[type="checkbox"] { width: auto; margin-right: 8px; }
+#profile-form details { margin: 20px 0; }
+#profile-form details input:not([type="checkbox"]), #profile-form details select,
+#kb-text-form input { padding: 10px; color: inherit; background: #121722; border: 1px solid #354055; border-radius: 8px; }
+@media (max-width: 900px) { #profile-form .settings-grid { grid-template-columns: 1fr; } }
 .operator-grid input, .operator-grid select { width: 100%; padding: 12px; color: inherit; background: #121722; border: 1px solid #354055; border-radius: 8px; font: inherit; }
 .operator-grid .field-label { display: block; margin-top: 20px; margin-bottom: 8px; }
 .operator-grid input:focus, .operator-grid select:focus { outline: 2px solid #8b9cff; outline-offset: 2px; }

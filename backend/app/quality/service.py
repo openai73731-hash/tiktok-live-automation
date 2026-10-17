@@ -40,6 +40,8 @@ class QualityService:
                   "Отключите LIVE перед запуском Quality Lab." if live_enabled else None)
         self.base_disabled_reason = ("Quality Lab запрещает OpenAI." if processor.engine.name == "openai" else
                   "75-кейсный baseline использует FOCUSED. Примените FOCUSED в настройках." if processor.project.ai.reply_policy != "focused" else None)
+        if processor.project.ai_profile is not None:
+            reason = self.base_disabled_reason = "Legacy trading corpus не оценивает generic profile. Используйте Playground со своей KB."
         self.run = RunView(service_epoch=uuid4().hex, revision=0, dataset_name=self.dataset.name, dataset_version=self.dataset.version,
             dataset_hash=fingerprint(self.dataset), knowledge_hash=fingerprint(processor.knowledge),
             ai_config_hash=fingerprint(processor.project.ai), provider=processor.engine.name,

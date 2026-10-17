@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const state = {connected: false, busy: false, suite: false, stopSuite: false, csrf: null,
     settings: null, status: null, presets: [], history: new Map(), live: new Map(), stream: null};
-  let quality, operator, delivery;
+  let quality, operator, delivery, profile;
   const liveFeed = createLiveFeed(); state.live = liveFeed.rows;
   let eventRevision = 0;
   const providerName = (name) => ({fake: "Fake · фикстуры", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
@@ -138,6 +138,7 @@
   }
   function updateControls() {
     operator?.controls();
+    profile?.controls();
     quality?.controls();
     const configured = Boolean(state.settings && state.connected && state.csrf);
     const value = $("comment-input").value;
@@ -283,7 +284,8 @@
     state.history = new Map(history.map((record) => [record.id, record])); trimMap(state.history, 100); renderHistory();
     liveFeed.hydrate(live, revision === eventRevision ? liveFeed.token() : liveToken); renderLive();
     setConnected(true);
-    operator.render(operatorSettings);
+    operator.render(operatorSettings); profile?.render(operatorSettings);
+    await profile?.refresh();
     await quality.refresh();
     await delivery.refresh();
   }
@@ -298,7 +300,7 @@
     receive("snapshot", renderStatus);
     receive('preparation_status', renderPreparation);
     receive("quality_update", quality.apply);
-    receive("operator_settings", (value) => { operator.render(value); refreshReviews().catch(() => setConnected(false)); });
+    receive("operator_settings", (value) => { operator.render(value); profile?.render(value); refreshReviews().catch(() => setConnected(false)); });
     receive("delivery_status", (value) => { delivery.render(value); refreshReviews().catch(() => setConnected(false)); });
     receive("suggestion_approval", () => { refresh().catch(() => setConnected(false)); });
     receive("windows_sender_status", () => { delivery.refresh().catch(() => setConnected(false)); });
@@ -316,6 +318,7 @@
   quality = window.createQualityLab({api, node, replyCard, toast, state, updateControls});
   operator = window.createOperatorControls({api, state, toast, renderSettings, renderStatus,
     refreshQuality: async () => { await quality.refresh(); await delivery.refresh(); }});
+  profile = window.createProfileControls?.({api, state, toast});
   delivery = window.createDeliveryControls({api, node, toast, state, refreshReviews, refreshCards: () => {
     renderLive();
     if (state.selectedSuggestion && state.history.has(state.selectedSuggestion)) showResult(state.history.get(state.selectedSuggestion));

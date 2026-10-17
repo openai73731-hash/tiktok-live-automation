@@ -78,6 +78,7 @@ class ManualDeliveryService:
         self.history = deque(maxlen=50)
         self.on_idle = lambda: None
         self.mode = "MANUAL"
+        self.auto_generation = 0
         self.armed_binding = None
         self.auto_queue = asyncio.Queue(maxsize=10)
         self.auto_runner = None
@@ -175,6 +176,7 @@ class ManualDeliveryService:
         self.controller.last = DeviceInspection(reason="not_checked")
 
     def revoke_authority(self):
+        self.auto_generation += 1
         self.account_proof.prepared = None
         self.account_proof.revoke()
         self.mode, self.armed_binding = "MANUAL", None
@@ -350,6 +352,7 @@ class ManualDeliveryService:
         if expected_session != ctx.live_session_id or expected_runtime != ctx.active_runtime_revision:
             raise SuggestionConflict("Mode binding conflict")
         if mode == "MANUAL":
+            self.auto_generation += 1
             self.mode, self.armed_binding = "MANUAL", None
             self.auto_reason = "automatic_mode_required"
             while not self.auto_queue.empty():
@@ -365,6 +368,7 @@ class ManualDeliveryService:
             raise SuggestionConflict("Automatic mode unavailable")
         self.prepare()
         if self.paused: raise SuggestionConflict("Delivery paused; do not retry an unknown operation")
+        self.auto_generation += 1
         self.mode = "AUTOMATIC"
         self.armed_binding = (ctx.live_session_id, ctx.target_account, ctx.active_runtime_revision)
         self.auto_reason = "eligible"

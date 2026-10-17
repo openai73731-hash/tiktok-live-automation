@@ -35,8 +35,12 @@ class CommentProcessor:
         self.project = project
         self.knowledge = knowledge
         self.safety = safety or ReplySafetyPolicy()
+        self.kb = None
 
     async def process(self, comment: Comment) -> ReplySuggestion:
+        if self.project.ai_profile is not None:
+            from app.ai.generic import process_generic
+            return await process_generic(self, comment)
         started = perf_counter()
         candidate = is_reply_candidate(comment.text)
         base = {
@@ -133,3 +137,7 @@ class CommentProcessor:
                 "provider": self.engine.name, "model": getattr(self.engine, "model", None),
                 "error_type": type(exc).__name__,
             }})
+        finally:
+            if self.kb is not None:
+                self.kb.close()
+                self.kb = None
