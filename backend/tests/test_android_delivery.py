@@ -268,11 +268,11 @@ def test_adb_fixed_allowlist_and_pinned_server(tmp_path):
         if command in {AdbCommand.TAB, AdbCommand.ACTIVATE}:
             with pytest.raises(AdbError): adb.argv(command, **kwargs)
             continue
-        if command == AdbCommand.TAP_SEND: kwargs["point"] = (10, 20)
+        if command in {AdbCommand.TAP_SEND, AdbCommand.TAP_COMPOSER}: kwargs["point"] = (10, 20)
         args = adb.argv(command, **kwargs)
         assert all(word not in args for word in ["install", "kill-server", "KEYCODE_TAB", "KEYCODE_DPAD_CENTER"])
         if "input" in args:
-            assert command in {AdbCommand.TEXT, AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TAP_SEND}
+            assert command in {AdbCommand.TEXT, AdbCommand.SELECT_ALL, AdbCommand.DELETE, AdbCommand.TAP_SEND, AdbCommand.TAP_COMPOSER}
     with pytest.raises(AdbError): adb.argv("shell", serial="USB1")
     with pytest.raises(AdbError): adb.argv(AdbCommand.PACKAGE_INFO, serial="USB1", package="browser.app")
 
