@@ -528,7 +528,7 @@ async def test_exact_capture_status_capture_then_final_manual_fill(captured_manu
     assert service.controller.last.account_verified
     assert service.controller.last.screen.value == "COMMENT_INPUT_READY"
     assert not service.controller.last.live_verified and not service.controller.physical_enabled
-    count = 6 if take_capture else 5  # status, optional capture, admission, controller, clear/delete guards
+    count = 5 if take_capture else 4  # status, optional capture, admission, controller, fresh empty guard
     assert reads[:count] == [raw] * count
     assert [args["text"] for command, args in transport.calls if command == AdbCommand.TEXT] == [envelope.suggested_reply]
     assert not {AdbCommand.TAP_SEND, AdbCommand.TAB, AdbCommand.ACTIVATE} & {c for c, _ in transport.calls}
@@ -605,6 +605,11 @@ async def test_exact_capture_manual_failures_block_before_input(captured_manual_
 async def test_manual_never_rechecks_acquisition_after_input_starts(captured_manual_fill_api, monkeypatch, after_command):
     fixture, _, _ = captured_manual_fill_api
     _, client, service, transport, _, body = fixture
+    if after_command == AdbCommand.SELECT_ALL:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(transport.xml)
+        next(n for n in root.iter() if n.get("resource-id", "").endswith(":id/h4k")).set("text", "Existing draft")
+        transport.xml = ET.tostring(root, encoding="unicode")
     original, started, failures = transport.run, False, []
     async def fail_after_input(command, **kwargs):
         nonlocal started

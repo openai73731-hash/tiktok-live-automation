@@ -38,6 +38,7 @@ class AdbCommand(StrEnum):
     TAB = "tab"
     ACTIVATE = "activate"  # Retired keyboard path; never accepted by production argv.
     TAP_SEND = "tap_send"
+    TAP_COMPOSER = "tap_composer"
 
 
 class AdbError(RuntimeError):
@@ -78,7 +79,7 @@ class AdbTransport:
         if not isinstance(command, AdbCommand) or self.executable is None: raise AdbError()
         if type(compressed) is not bool or compressed and command != AdbCommand.DUMP: raise AdbError()
         if text is not None and command != AdbCommand.TEXT: raise AdbError()
-        if point is not None and command != AdbCommand.TAP_SEND: raise AdbError()
+        if point is not None and command not in {AdbCommand.TAP_SEND, AdbCommand.TAP_COMPOSER}: raise AdbError()
         args = [str(self.executable), "-H", "127.0.0.1", "-P", "5037"]
         if command == AdbCommand.DEVICES:
             if serial is not None or package is not None: raise AdbError()
@@ -105,7 +106,7 @@ class AdbTransport:
             if not ascii_supported(text): raise AdbError()
             # adb shell joins argv on the DEVICE: quote there as well, not just on Windows.
             return args + ["shell", "input", "text", shlex.quote(text.replace(" ", "%s"))]
-        if command == AdbCommand.TAP_SEND:
+        if command in {AdbCommand.TAP_SEND, AdbCommand.TAP_COMPOSER}:
             if (not isinstance(point, tuple) or len(point) != 2 or
                     any(type(v) is not int or not 0 <= v <= 8192 for v in point)): raise AdbError()
             return args + ["shell", "input", "tap", *(str(v) for v in point)]

@@ -14,6 +14,7 @@ class ScreenState(StrEnum):
     DEVICE_DISCONNECTED = "DEVICE_DISCONNECTED"
     TIKTOK_NOT_RUNNING = "TIKTOK_NOT_RUNNING"
     LIVE_READY = "LIVE_READY"
+    HOST_MENU = "HOST_MENU"
     COMMENT_INPUT_READY = "COMMENT_INPUT_READY"
     TRANSIENT_OVERLAY = "TRANSIENT_OVERLAY"
     CAPTCHA = "CAPTCHA"
@@ -106,7 +107,7 @@ class AndroidOutcome(DeviceModel):
     reason: Literal["physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen",
         "hierarchy_unavailable",
         "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
-        "rejected", "interrupted", "filled_waiting_user_send", "feed_confirmed",
+        "rejected", "interrupted", "filled_waiting_user_send", "feed_confirmed", "sdk_echo_confirmed",
         "open_phone_composer", "transient_overlay", "confirmation_ambiguous"]
 
 

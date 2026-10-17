@@ -26,10 +26,11 @@ class ASCIITextEntryBackend:
 
     def supports(self, text): return ascii_supported(text)
 
-    def bind(self, target, guard, *, require_send=True, inspection=None):
+    def bind(self, target, guard, *, require_send=True, inspection=None, before_send=None):
         self.target, self.guard = target, guard
         self.require_send = require_send
         self.inspection = inspection
+        self.before_send = before_send
         self.expected = None
         self.diagnostic = dict(text_entry_method="adb_ascii_focused",
             input_target_resource_id=self.controller._profile.input_id if self.controller._profile else None,
@@ -73,7 +74,7 @@ class ASCIITextEntryBackend:
         c = self.controller
         state = await self.inspection.read() if not self.require_send and self.inspection else await c._inspect(self.target)
         entry = unique_node(c._xml, c._profile.input_id) if c._profile else None
-        ready = state.ready if self.require_send else c.fill_ready_for(self.target.live_session_id, self.target.account)
+        ready = c.ready_for(self.target.live_session_id, self.target.account) if self.require_send else c.fill_ready_for(self.target.live_session_id, self.target.account)
         if not self.guard(): self.reject("guard_rejected")
         if not ready:
             result = getattr(c.transport, "last_command_result", None) or {}
@@ -136,6 +137,7 @@ class ASCIITextEntryBackend:
         if entry.get("text") != self.expected: raise TextEntryError()
         point = resolved_send_point(c._xml, c._profile)
         if point is None or not guard(): return False
+        if self.before_send: self.before_send()
         # Bounds come ONLY from the unique confirmed reviewed vp8/vpl relationship.
         # The transport repeats the synchronous guard immediately before spawning.
         await c.transport.run(AdbCommand.TAP_SEND, serial=serial, point=point, guard=guard)

@@ -20,6 +20,8 @@ class ScreenProfile:
     version_code: str | None = None
     serial: str | None = None
     live_markers: tuple[tuple[str, str], ...] = ()
+    composer_host_path: tuple[tuple[str, str], ...] = ()
+    composer_menu_label: str | None = None
 
 
 PACKAGE = "com.zhiliaoapp.musically"
@@ -29,7 +31,10 @@ TIKTOK_YOU_4683 = ScreenProfile(PACKAGE, "46.8.3", rid("h4k"), rid("vp8"), rid("
     True, ClientVariant.TIKTOK_YOU, ("com.windukk.mod.icon.default",), "2024608030", "903ed867",
     ((rid("tv_online_audience_num"), "android.widget.TextView"),
      (rid("oyh"), "androidx.recyclerview.widget.RecyclerView"),
-     (rid("user_info_container"), "android.view.ViewGroup"), (rid("ttlive_toolbar_more"), "android.widget.FrameLayout")))
+     (rid("user_info_container"), "android.view.ViewGroup"), (rid("ttlive_toolbar_more"), "android.widget.FrameLayout")),
+    composer_host_path=((rid("qs3"), "android.view.ViewGroup"), (rid("z9q"), "android.view.ViewGroup"),
+        (rid("uk3"), "android.widget.LinearLayout"), (rid("ttlive_toolbar_more"), "android.widget.FrameLayout")),
+    composer_menu_label="Оставить комментарий")
 
 
 def parse_hierarchy(xml):

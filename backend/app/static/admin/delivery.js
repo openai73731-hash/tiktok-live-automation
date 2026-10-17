@@ -16,7 +16,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("stream-mode").textContent = windows ? "PC" : "MOBILE";
     const stopped = next.paused || next.delivery_uncertain || next.workflow === "UNKNOWN" || next.inspection?.security_state;
     $("delivery-summary").textContent = stopped ? "STOP" : next.physical_ready || (!windows && next.fill_ready) ? "READY" : "NEED OPERATOR";
-    if (!windows && next.paused) $("delivery-summary").textContent = "DELIVERY PAUSED — RE-PREPARE REQUIRED";
+    if (!windows && next.paused) $("delivery-summary").textContent = next.unknown_ack_count ? "DELIVERY PAUSED — ACK UNKNOWN REQUIRED" : "DELIVERY PAUSED — RE-PREPARE REQUIRED";
     $("auto-summary").textContent = (windows ? next.windows_sender?.auto_enabled : next.mode === "AUTOMATIC") ? "ON" : "OFF";
     $("device-panel-title").textContent = windows ? "Windows LIVE Studio" : "Android / TikTok UI";
     $("device-panel-note").textContent = windows
@@ -100,6 +100,11 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("delivery-mode").disabled = busy || !state.connected;
     $("pause-auto").disabled = !state.connected || next.mode !== "AUTOMATIC";
     $("verify-fill").disabled = busy || !state.connected || next.workflow !== "FILLED — SEND ON PHONE";
+    const ack = $("acknowledge-unknown");
+    if (ack) {
+      ack.hidden = windows || !next.unknown_ack_count;
+      ack.disabled = busy || next.busy || !state.connected || next.mode !== "MANUAL" || !next.live_session_id || !next.unknown_ack_revision;
+    }
     $("delivery-mode-label").textContent = next.mode || "MANUAL";
     $("delivery-workflow").textContent = `${next.workflow || "READY"} · ${next.auto_state || "AUTO OFF"} · ${next.auto_reason || ""}`;
     refreshCards();
@@ -179,6 +184,16 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     if (!window.confirm("Подтверждаю, что vp8/vpl в открытом composer — кнопка отправки. Привязка действует только для проверенного Xiaomi / TikTok You 46.8.3 и аккаунта. Сейчас ничего не отправляется.")) return;
     busy = true;
     try { render(await api("/api/admin/device/confirm-send", {token, confirmed: true})); }
+    catch (error) { toast(error.message); }
+    finally { busy = false; await refresh(); }
+  });
+  $("acknowledge-unknown")?.addEventListener("click", async () => {
+    if (busy || !state.connected || !view?.unknown_ack_revision || view.transport === "windows_live_studio") return;
+    if (!window.confirm("ACK UNKNOWN: прежние операции навсегда остаются UNKNOWN и consumed. Разрешаются только новые SDK message_id после этой границы; AUTO остаётся OFF.")) return;
+    busy = true;
+    try { render(await api("/api/admin/delivery/acknowledge-unknown", {confirmed: true,
+      expected_unknown_revision: view.unknown_ack_revision, expected_live_session_id: view.live_session_id,
+      expected_active_runtime_revision: view.active_runtime_revision})); }
     catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
   });

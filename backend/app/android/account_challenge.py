@@ -70,10 +70,10 @@ class MobileAccountChallenge:
     def configured(self):
         return self.runtime.username.casefold() if self.runtime else ""
 
-    def scope(self):
+    def scope(self, *, ignore_pause=False):
         r, s = self.runtime, self.service
         if (r is None or r.closed or r.transport != "android" or r.admin.delivery is not s or r.pending or r.config_error
-                or s.closed or s.paused or r.live.session_invalidated): return None
+                or s.closed or s.paused and not ignore_pause or r.live.session_invalidated): return None
         live = r.live.service
         # ReplayListener subclasses LiveListener: exact type + real mode matters.
         if (type(live) is not LiveService or type(live.listener) is not LiveListener
@@ -191,6 +191,7 @@ class MobileAccountChallenge:
         return False
 
     def observe(self, comment):
+        if self.service.outgoing.observe(comment): return True
         # Return True to intercept the reserved challenge namespace BEFORE queue/AI.
         reserved = is_challenge_text(comment.text)
         receipt = comment._sdk_receipt

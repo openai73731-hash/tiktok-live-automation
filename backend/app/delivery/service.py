@@ -19,6 +19,8 @@ from app.delivery.suggestions import SuggestionConflict
 from app.lifecycle import finish_owned
 from app.windows.sender import WindowsSenderStatus
 from app.android.account_challenge import MobileAccountChallenge, AccountChallengeView
+from app.android.outgoing import OutgoingConfirmation
+from app.android.unknown_recovery import UnknownRecovery
 
 
 class DeliveryView(FrozenModel):
@@ -30,6 +32,8 @@ class DeliveryView(FrozenModel):
     delivery_uncertain: bool = False
     inspection: DeviceInspection | None = None
     mobile_prepared: bool = False
+    unknown_ack_count: int = 0
+    unknown_ack_revision: str | None = None
     account_challenge: AccountChallengeView | None = None
     physical_delivery_enabled: bool
     physical_ready: bool
@@ -42,7 +46,7 @@ class DeliveryView(FrozenModel):
         "AUTO_RESERVED", "AUTO SENDING", "POST_SEND_VERIFY", "SENT CONFIRMED", "AUTO BLOCKED", "UNKNOWN"] = "READY"
     live_session_id: str | None = None
     active_runtime_revision: str = "unavailable"
-    delivery: Literal["NOT READY", "DRY RUN READY", "FILL READY", "DELIVERY PAUSED — RE-PREPARE REQUIRED"]
+    delivery: Literal["NOT READY", "DRY RUN READY", "FILL READY", "DELIVERY PAUSED — RE-PREPARE REQUIRED", "DELIVERY PAUSED — ACK UNKNOWN REQUIRED"]
     paused: bool
     busy: bool
     reason: Literal["physical_delivery_disabled", "device_unavailable", "ready", "delivery_paused", "cooldown", "not_configured"]
@@ -83,6 +87,9 @@ class ManualDeliveryService:
         self.acceptance_spent = False
         self.controller.on_stage = self._stage
         self.account_proof = MobileAccountChallenge(self)
+        self.outgoing = OutgoingConfirmation(self)
+        self.controller.outgoing = self.outgoing
+        self.unknown_recovery = UnknownRecovery(self)
 
     @property
     def paused(self): return self._paused
@@ -115,7 +122,7 @@ class ManualDeliveryService:
     def consumed(self, envelope):
         from app.delivery.registry import consumed
         try:
-            return bool(self.journal and self.journal.has_envelope_operation(envelope)) or consumed(self.settings.state_dir, envelope)
+            return self.unknown_recovery.old_event(envelope) or bool(self.journal and self.journal.has_envelope_operation(envelope)) or consumed(self.settings.state_dir, envelope)
         except Exception: return True
 
     @property
@@ -123,6 +130,7 @@ class ManualDeliveryService:
         return monotonic() - self.last_attempt < (self.settings.automatic_delivery_min_interval_seconds if self.mode == "AUTOMATIC" else self.settings.manual_delivery_min_interval_seconds)
 
     def view(self):
+        unknown_count, unknown_revision = self.unknown_recovery.view()
         challenge = self.account_proof.view()
         inspected = self.controller.last
         ctx = self.context()
@@ -145,9 +153,10 @@ class ManualDeliveryService:
             elif self.cooldown: auto_reason = "cooldown"
         return DeliveryView(instance_id=self.settings.instance_id, account_label=self.settings.account_label, inspection=inspected,
             mobile_prepared=self.account_proof.prepared_now(), account_challenge=challenge, physical_delivery_enabled=self.settings.enable_physical_tiktok_send,
+            unknown_ack_count=unknown_count, unknown_ack_revision=unknown_revision,
             physical_ready=ready, fill_ready=manual_ready if self.mode == "MANUAL" else inspected.fill_ready,
             mobile_one_shot="DISABLED" if not self.settings.mobile_acceptance_one_shot else "SPENT" if self.acceptance_spent else "AVAILABLE",
-            delivery="DELIVERY PAUSED — RE-PREPARE REQUIRED" if self.paused else
+            delivery=("DELIVERY PAUSED — ACK UNKNOWN REQUIRED" if unknown_count else "DELIVERY PAUSED — RE-PREPARE REQUIRED") if self.paused else
                 "FILL READY" if manual_ready else "DRY RUN READY" if inspected.ready else "NOT READY",
             paused=self.paused, busy=self.busy, reason=reason, mode=self.mode,
             auto_state="AUTO OFF" if self.mode == "MANUAL" else "AUTO PAUSED" if self.paused else
@@ -252,10 +261,11 @@ class ManualDeliveryService:
         if self.journal is None:
             try:
                 self.journal = self.journal_factory()
-                if self.journal.unresolved():
+                from app.android.delivery_evidence import unresolved
+                if unresolved(self):
                     self.paused = True
                     from app.android.preparation import recovery_blocked
-                    if not recovery_blocked(self.journal, self.settings.state_dir):
+                    if not recovery_blocked(self.journal, self.settings.state_dir, service=self):
                         self._pause_reason = "manual_rejected"
             except Exception: self.paused = True
         return self.view()
@@ -348,7 +358,7 @@ class ManualDeliveryService:
             self.on_idle()
             return self.view()
         if (self.busy or self.closed or self.auto_runner is not None and not self.auto_runner.done()
-                or self.account_proof.prepared is not None and not self.account_proof.manual_accepted
+                or self.account_proof.prepared is not None and not (self.account_proof.manual_accepted or self.unknown_recovery.authorized())
                 or self.settings.mobile_acceptance_one_shot and self.acceptance_spent
                 or not self.settings.enable_physical_tiktok_send
                 or not ctx.connected or not ctx.active or not ctx.device_available or self.pending_fill):
@@ -423,6 +433,7 @@ class ManualDeliveryService:
                 e, _, verdict = self.suggestions.authoritative(body.suggestion_id, body.approval_id,
                     body.expected_suggestion_revision, self.fill_context())
                 if not verdict.eligible: raise SuggestionConflict("Fill binding rejected")
+                if self.consumed(e): raise SuggestionConflict("Consumed identity; only new SDK events may be filled")
                 if not self.controller.actions or not self.controller.actions.supports(e.suggested_reply):
                     return DeliveryResult(status="needs_operator", reason="unicode_entry_unavailable")
                 target = AndroidTarget(live_session_id=e.live_session_id, account=e.target_account,
@@ -462,6 +473,7 @@ class ManualDeliveryService:
                     result = await coordinator.execute(body.suggestion_id, body.approval_id,
                         body.expected_suggestion_revision, body.idempotency_key, timeout=60, device_serial=target.device_serial)
                     if result.status == "filled":
+                        self.outgoing.begin(coordinator.operation_id, target, e.suggested_reply)
                         self.workflow = "FILLED — SEND ON PHONE"
                         self.pending_fill = (body, target, before, e.suggested_reply, coordinator.operation_id)
                     else:
@@ -486,15 +498,21 @@ class ManualDeliveryService:
                     try:
                         _, _, verdict = self.suggestions.authoritative(body.suggestion_id, body.approval_id,
                             body.expected_suggestion_revision, self.fill_context())
-                        return verdict.eligible
+                        pending = self.outgoing.pending
+                        return verdict.eligible and (pending is None or self.outgoing.valid(pending))
                     except SuggestionConflict: return False
                 cancelled = False
                 result = DeliveryResult(status="unknown", reason="interrupted")
                 try:
-                    async with self.controller.lock:
-                        confirmed = await self.controller.verify_post_send(target, before, reply, guard)
-                    result = DeliveryResult(status="confirmed" if confirmed else "unknown",
-                        reason="feed_confirmed" if confirmed else "interrupted")
+                    confirmed = await self.outgoing.wait(operation_id, guard)
+                    reason = "sdk_echo_confirmed" if confirmed else "interrupted"
+                    if not confirmed:
+                        async with self.controller.lock:
+                            confirmed = await self.controller.verify_post_send(target, before, reply, guard)
+                        if confirmed: reason = "feed_confirmed"
+                        elif await self.outgoing.wait(operation_id, guard, seconds=0):
+                            confirmed, reason = True, "sdk_echo_confirmed"
+                    result = DeliveryResult(status="confirmed" if confirmed else "unknown", reason=reason)
                 except asyncio.CancelledError:
                     cancelled = True
                     result = DeliveryResult(status="unknown", reason="cancelled")
@@ -505,6 +523,7 @@ class ManualDeliveryService:
                     self.paused = True
                     result = DeliveryResult(status="unknown", reason="journal_unavailable")
                 self.pending_fill = None
+                self.outgoing.finish(operation_id)
                 self.workflow = "SENT CONFIRMED" if result.status == "confirmed" else "UNKNOWN"
                 if result.status == "unknown": self.paused = True
                 else: self.account_proof.manual_verified()
@@ -542,7 +561,9 @@ class ManualDeliveryService:
                     lambda: self.auto_context(confirming=self.workflow == "POST_SEND_VERIFY"),
                     mode="AUTOMATIC", authority=self.suggestions.automatic_authoritative)
                 self.coordinator = coordinator
+                sdk_scope = self.account_proof.scope()
                 sender.preflight = lambda request: (coordinator.preflight(request) and
+                    (sdk_scope is None or self.account_proof.scope() == sdk_scope) and
                     request.device_serial == (self.controller.serial or self.controller.last.serial))
                 try:
                     self.last_attempt = monotonic()
@@ -550,7 +571,7 @@ class ManualDeliveryService:
                     self.workflow = "AUTO_RESERVED"
                     self.on_idle()
                     result = await coordinator.execute(body.suggestion_id, body.approval_id,
-                        body.expected_suggestion_revision, body.idempotency_key, timeout=60,
+                        body.expected_suggestion_revision, body.idempotency_key, timeout=90,
                         device_serial=self.controller.serial or self.controller.last.serial)
                     if result.status in {"unknown", "needs_operator"}: self.paused = True
                     self.workflow = "SENT CONFIRMED" if result.status == "confirmed" else "UNKNOWN" if result.status == "unknown" else "AUTO BLOCKED"
@@ -562,6 +583,7 @@ class ManualDeliveryService:
                 finally:
                     self.paused = self.paused or coordinator.failed
                     await coordinator.aclose()
+                    if coordinator.operation_id: self.outgoing.finish(coordinator.operation_id)
                     if self.settings.mobile_acceptance_one_shot and self.acceptance_spent:
                         self.mode, self.armed_binding = "MANUAL", None
                         while not self.auto_queue.empty():

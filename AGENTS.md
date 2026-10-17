@@ -1,5 +1,20 @@
 # Project scope and rules
 
+- Current Android AUTO acceptance (explicit user authorization) adds a reviewed
+  two-step ordinary composer opener: unique host More control, then the exact
+  "Оставить комментарий" menu row. Each gets one guarded selector-resolved tap;
+  missing/ambiguous post-action evidence stops without retry. No guessed points.
+  Confirmation prefers a fresh exact own-account real SDK echo bound to the
+  immutable reply, operation, device/install, runtime/session/listener generation
+  and original ingestion boundary; existing positive UI feed proof is secondary.
+  Explicit ACK UNKNOWN grants only future distinct SDK message IDs after fresh
+  exact account/device/install/LIVE checks. It may authorize this operator's
+  one-shot AUTO without pretending the old MANUAL UNKNOWN was confirmed. Old
+  journal rows and durable dedup stay unchanged/consumed forever. No silent ACK,
+  AUTO opt-in or rearming a spent one-shot. Raw captures remain ignored/local.
+  The human reviews Send-control nonce and enables AUTO; the agent never issues
+  Android input itself. Run only directly affected tests during this iteration.
+
 - Mobile release account proof (explicit user authorization) replaces mandatory
   Profile acquisition on the reviewed Xiaomi/TikTok installation with a fresh
   two-channel LIVE challenge. PREPARE MOBILE is device/install/idle-journal only,

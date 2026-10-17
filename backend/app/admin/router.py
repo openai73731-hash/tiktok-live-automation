@@ -258,6 +258,25 @@ async def verify_fill(request: Request, body: EmptyInput):
         raise HTTPException(409, detail="Нет текущего введённого ответа для проверки.") from None
 
 
+class UnknownAcknowledgementInput(UIModel):
+    confirmed: Literal[True]
+    expected_live_session_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    expected_active_runtime_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    expected_unknown_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @field_validator("confirmed", mode="before")
+    @classmethod
+    def explicit_acknowledgement(cls, value):
+        if value is not True: raise ValueError("Explicit acknowledgement required")
+        return value
+
+
+@router.post("/api/admin/delivery/acknowledge-unknown")
+async def acknowledge_unknown(request: Request, body: UnknownAcknowledgementInput):
+    try: return await android_service(request).unknown_recovery.acknowledge(body)
+    except SuggestionConflict as exc: raise HTTPException(409, detail=str(exc)) from None
+
+
 @router.post("/api/admin/delivery/send")
 async def send_reply(request: Request, body: ManualDeliveryInput):
     return await delivery_action(request.app.state.delivery.send, body)

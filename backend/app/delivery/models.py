@@ -125,7 +125,7 @@ DeliveryReason = Literal["mock_confirmed", "not_configured", "rejected", "timeou
     "physical_delivery_disabled", "device_unavailable", "security_ui", "unknown_screen", "hierarchy_unavailable",
     "account_unverified", "live_unverified", "profile_unverified", "unicode_entry_unavailable",
     "journal_unavailable", "delivery_paused", "cooldown", "dry_run", "shutdown",
-    "filled_waiting_user_send", "feed_confirmed", "open_phone_composer", "transient_overlay",
+    "filled_waiting_user_send", "feed_confirmed", "sdk_echo_confirmed", "open_phone_composer", "transient_overlay",
     "confirmation_ambiguous", "automatic_mode_required", "auto_ineligible", "waiting_user_send", "filled_only", "echo_verified"]
 
 

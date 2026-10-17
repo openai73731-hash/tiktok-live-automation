@@ -8,7 +8,10 @@ from app.delivery.registry import read_store, REGISTRY_NAME
 from app.delivery.suggestions import SuggestionConflict
 
 
-def recovery_blocked(journal, state_dir):
+def recovery_blocked(journal, state_dir, *, service=None):
+    if service is not None:
+        from app.android.delivery_evidence import unresolved
+        return unresolved(service, allow_rejected=True)
     # A settled MANUAL rejection remains consumed, but does not prohibit a NEW
     # acceptance cycle. All ambiguous/unresolved operations still block recovery.
     query = """SELECT 1 FROM operations WHERE status IS NULL OR status NOT IN ('confirmed','not_sent','needs_operator')
@@ -64,7 +67,7 @@ async def prepare_mobile(service, runtime):
                 except ValueError: reject("fresh expected device/install preparation failed; security/login must be absent")
                 try:
                     if service.journal is None: service.journal = service.journal_factory()
-                    if recovery_blocked(service.journal, service.settings.state_dir):
+                    if recovery_blocked(service.journal, service.settings.state_dir, service=service):
                         service.paused = True
                         reject("unresolved delivery; UNKNOWN/reserved/filled has NO RETRY")
                 except SuggestionConflict:

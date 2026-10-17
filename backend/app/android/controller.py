@@ -30,6 +30,8 @@ class ADBAndroidController:
         self.on_stage = lambda stage: None
         self._profile = None
         self._xml = ""
+        self._opening = None
+        self.outgoing = None
         self.invalidate_trust()
 
     def invalidate_trust(self):
@@ -43,7 +45,7 @@ class ADBAndroidController:
     @property
     def current_ready(self):
         if self._account_scope_guard is not None and not self._account_scope_guard(): return False
-        if not self.last.ready: return False
+        if not self.last.ready and not self.opener_ready(): return False
         if self._profile and self._profile.live_markers:
             return bool(self._live_evidence and monotonic() - self._live_evidence[3] < 90
                 and self._account_binding == self._send_binding and self._send_binding is not None)
@@ -54,6 +56,19 @@ class ADBAndroidController:
         if self._profile and self._profile.live_markers:
             return self._live_evidence[:3] == (self._installation, account, session_id)
         return True
+
+    def opener_ready(self):
+        from app.android.composer_open import resolved_composer_open_point
+        if (self._profile != TIKTOK_YOU_4683 or not self.last.account_verified or not self.last.live_verified
+                or self.last.security_state or self._send_binding is None or self._send_binding != self._account_binding): return False
+        if self.last.screen == ScreenState.COMMENT_INPUT_READY:
+            entry = unique_node(self._xml, self._profile.input_id)
+            return bool(entry is not None and entry.get('text') == '' and
+                all(entry.get(k) == 'true' for k in ('focused','enabled','clickable','focusable')))
+        if self.last.screen == ScreenState.LIVE_READY:
+            return resolved_composer_open_point(self._xml, self._profile) is not None
+        return bool(self.last.screen == ScreenState.HOST_MENU and self._opening
+            and monotonic() - self._opening[3] < 20)
 
     def fill_ready_for(self, session_id, account):
         if self._account_scope_guard is not None and not self._account_scope_guard(): return False
@@ -88,7 +103,8 @@ class ADBAndroidController:
         # Recognize the reviewed surface independently of account/LIVE authority,
         # just as for the primary activity. The classifier still requires both
         # bindings for delivery; an alias must not create a circular account gate.
-        return composer_shape(root)
+        from app.android.composer_open import resolved_composer_open_point
+        return composer_shape(root) or bool(self._opening and resolved_composer_open_point(xml, TIKTOK_YOU_4683, menu=True))
 
     @staticmethod
     def installation(info):
@@ -186,6 +202,11 @@ class ADBAndroidController:
                 and monotonic() - self._live_evidence[3] < 90)
             parsed = inspect_hierarchy(xml, package, account, profile, account_bound=account_bound,
                 live_bound=live_bound, send_confirmed=self._send_binding == (key, account))
+            if (self._opening and self._opening[:3] == (key, account, session)
+                    and monotonic() - self._opening[3] < 20 and account_bound and live_bound and not parsed['security_state']):
+                from app.android.composer_open import resolved_composer_open_point
+                if resolved_composer_open_point(xml, profile, menu=True) is not None:
+                    parsed.update(screen=ScreenState.HOST_MENU, live_verified=True, reason="input_unavailable")
             if profile and profile.live_markers:
                 if parsed["screen"] == ScreenState.LIVE_READY and parsed["live_verified"] and account_bound and session:
                     self._live_evidence = (key, account, session, monotonic())
@@ -399,7 +420,26 @@ class ADBAndroidController:
                 return AndroidOutcome(status="needs_operator", reason="security_ui")
             if inspected.screen == ScreenState.TRANSIENT_OVERLAY:
                 return AndroidOutcome(status="not_sent", reason="transient_overlay")
-            if not inspected.ready:
+            if inspected.screen == ScreenState.LIVE_READY and self.opener_ready():
+                from app.android.composer_open import resolved_composer_open_point
+                self._opening = (self._installation, request.target.account, request.target.live_session_id, monotonic())
+                try:
+                    for menu in (False, True):
+                        point = resolved_composer_open_point(self._xml, self._profile, menu=menu)
+                        if point is None or not guard(): return AndroidOutcome(status="unknown", reason="interrupted")
+                        await self.transport.run(AdbCommand.TAP_COMPOSER, serial=inspected.serial, point=point, guard=guard)
+                        inspected = await self._inspect(request.target)
+                        if not guard() or inspected.security_state: return AndroidOutcome(status="unknown", reason="interrupted")
+                        if not menu and inspected.screen != ScreenState.HOST_MENU:
+                            return AndroidOutcome(status="unknown", reason="interrupted")
+                    entry = unique_node(self._xml, self._profile.input_id) if self._profile else None
+                    if (not self.current_ready or entry is None or entry.get('text') != ''
+                            or any(entry.get(k) != 'true' for k in ('focused','enabled','focusable'))):
+                        return AndroidOutcome(status="unknown", reason="interrupted")
+                except (AdbError, ValueError):
+                    return AndroidOutcome(status="unknown", reason="interrupted")
+                finally: self._opening = None
+            if not self.current_ready:
                 reason = inspected.reason if inspected.reason in {"account_unverified", "live_unverified", "profile_unverified"} else "unknown_screen"
                 return AndroidOutcome(status="needs_operator", reason=reason)
             if not guard(): return AndroidOutcome(status="not_sent", reason="rejected")
@@ -411,9 +451,12 @@ class ADBAndroidController:
             if profile.live_markers:
                 from app.android.feed import normalized
                 if before is None or (before.host, normalized(request.text)) in before.pairs:
-                    return AndroidOutcome(status="not_sent", reason="confirmation_ambiguous")
+                    if not (self.outgoing and self.outgoing.available(request.target)):
+                        return AndroidOutcome(status="not_sent", reason="confirmation_ambiguous")
             from app.android.text_entry import ASCIITextEntryBackend, TextEntryError
-            if isinstance(self.actions, ASCIITextEntryBackend): self.actions.bind(request.target, guard)
+            def before_send():
+                if self.outgoing: self.outgoing.begin(request.operation_id, request.target, request.text, seconds=20)
+            if isinstance(self.actions, ASCIITextEntryBackend): self.actions.bind(request.target, guard, before_send=before_send)
             try:
                 entered = await self.actions.prepare_exact(inspected.serial, profile.input_id, request.text)
             except (TextEntryError, AdbError):
@@ -433,8 +476,15 @@ class ADBAndroidController:
                 return AndroidOutcome(status="needs_operator", reason="rejected")
             if issued is False: return AndroidOutcome(status="not_sent", reason="rejected")
             self.on_stage("POST_SEND_VERIFY")
-            if before is not None and await self.verify_post_send(request.target, before, request.text, guard):
+            if self.outgoing and await self.outgoing.wait(request.operation_id, guard):
+                return AndroidOutcome(status="confirmed", reason="sdk_echo_confirmed")
+            def confirmation_guard():
+                pending = self.outgoing.pending if self.outgoing else None
+                return guard() and (pending is None or self.outgoing.valid(pending))
+            if before is not None and await self.verify_post_send(request.target, before, request.text, confirmation_guard):
                 return AndroidOutcome(status="confirmed", reason="feed_confirmed")
+            if self.outgoing and await self.outgoing.wait(request.operation_id, guard, seconds=0):
+                return AndroidOutcome(status="confirmed", reason="sdk_echo_confirmed")
             # Exit status, blank composer or absence of a row can never prove delivery.
             return AndroidOutcome(status="unknown", reason="interrupted")
 
