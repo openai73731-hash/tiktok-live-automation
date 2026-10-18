@@ -1,19 +1,20 @@
 /* Presentation only. Classification, facts, safety and eligibility live on the server. */
 (() => {
   "use strict";
+  const t = window.AdminI18n?.text || (value => value);
   const $ = (id) => document.getElementById(id);
   const state = {connected: false, busy: false, suite: false, stopSuite: false, csrf: null,
     settings: null, status: null, presets: [], history: new Map(), live: new Map(), stream: null};
   let quality, operator, delivery, profile;
   const liveFeed = createLiveFeed(); state.live = liveFeed.rows;
   let eventRevision = 0;
-  const providerName = (name) => ({fake: "Fake · фикстуры", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
-  const liveName = (value) => value === "operator_required" ? "NEED_OPERATOR" : String(value).toUpperCase();
-  const statusName = (value) => ({ready: "REPLY READY", skipped: "SKIPPED", needs_operator: "NEEDS OPERATOR"}[value] || value);
+  const providerName = (name) => ({fake: "Демонстрация", lmstudio: "LM Studio", openai: "OpenAI"}[name] || name);
+  const liveName = (value) => t(value);
+  const statusName = (value) => t(value);
   const statusClass = (value) => ({ready: "good", skipped: "neutral", needs_operator: "warning"}[value] || "neutral");
-  const sourceName = (value) => ({playground: "Playground · тест", fake: "Fake · демонстрация", replay: "Replay · фикстура", tiktok: "TikTok LIVE"}[value] || value);
+  const sourceName = (value) => ({playground: "Проверка ИИ", fake: "Демонстрация", replay: "Запись для проверки", tiktok: "Эфир TikTok", periodic:"Автосообщение"}[value] || value);
   const time = (value) => value ? new Date(value).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "—";
-  const text = (id, value) => { $(id).textContent = value ?? "—"; };
+  const text = (id, value) => { $(id).textContent = t(value ?? "—"); };
   function node(tag, className, value) {
     const result = document.createElement(tag);
     if (className) result.className = className;
@@ -21,7 +22,7 @@
     return result;
   }
   function toast(message) {
-    text("toast", message); $("toast").hidden = false;
+    text("toast", t(message)); $("toast").hidden = false;
     clearTimeout(toast.timer); toast.timer = setTimeout(() => { $("toast").hidden = true; }, 3000);
   }
   async function api(path, body) {
@@ -32,20 +33,22 @@
       options.headers["X-Admin-CSRF"] = state.csrf || "";
       options.body = JSON.stringify(body);
     }
-    const response = await fetch(path, options);
+    let response;
+    try { response = await fetch(path, options); }
+    catch { setConnected(false); throw new Error("Нет связи с локальным сервером. Дождитесь переподключения и проверьте состояние."); }
     let data;
-    try { data = await response.json(); } catch { throw new Error("Backend вернул неожиданный ответ."); }
+    try { data = await response.json(); } catch { throw new Error("Сервер вернул неожиданный ответ."); }
     if (!response.ok) {
       const safeMessages = {csrf_required: "Сессия изменилась. Обновите страницу.",
         same_origin_required: "Запрос должен выполняться с той же локальной страницы.",
         local_access_only: "Панель доступна только локально.", invalid_input: "Проверьте текст и параметры запроса."};
-      const error = new Error(safeMessages[data.error] || data.detail || "Операция не выполнена. Проверьте состояние backend.");
+      const error = new Error(window.AdminI18n ? window.AdminI18n.error(data,response.status) : safeMessages[data.error] || data.detail || "Операция не выполнена. Проверьте состояние сервера.");
       error.status = response.status; throw error;
     }
     return data;
   }
   function openPage(name) {
-    const names = {dashboard: "Обзор", live: "Комментарии LIVE", playground: "AI Playground", settings: "Система и настройки"};
+    const names = {dashboard: "Главная", live: "Комментарии эфира", periodic:"Автосообщения", profile:"Настройки ИИ", knowledge:"База знаний", playground: "Проверка ИИ", settings: "Дополнительные настройки"};
     if (!names[name]) return;
     document.querySelectorAll(".page").forEach((section) => { section.hidden = section.id !== `page-${name}`; });
     document.querySelectorAll(".nav-item").forEach((button) => {
@@ -55,6 +58,7 @@
     });
     text("breadcrumb-page", names[name]);
     location.hash = name;
+    window.scrollTo?.(0,0);
   }
   function setConnected(value) {
     state.connected = value;
@@ -62,7 +66,7 @@
     $("backend-dot").className = `dot ${value ? "good" : "warning"}`;
     text("backend-label", value ? "Работает" : "Нет связи");
     text("dash-backend", value ? "RUNNING" : "Нет связи");
-    text("dash-sse", state.stream?.readyState === 1 ? "CONNECTED" : "RECONNECTING");
+    text("dash-sse", state.stream?.readyState === 1 ? "Подключено" : "Переподключение…");
     $("connection-warning").hidden = value;
     updateControls();
   }
@@ -73,6 +77,7 @@
   function renderLiveStatus(live) {
     liveFeed.select(live.live_session_id); renderLive();
     if (state.status) state.status.live = live;
+    text("home-tiktok", liveName(live.state));
     text("dash-tiktok", liveName(live.state)); text("dash-live", live.activity.toUpperCase());
     text("dash-queue", live.queue_size);
     text("dash-last-comment", time(live.last_comment_at));
@@ -91,18 +96,18 @@
     text("ai-configured-model", ai.model);
     text("ai-model-found", ai.model_found === null ? "Не проверено" : ai.model_found ? "Да" : "Нет");
     text("ai-last-check", time(ai.last_check));
-    let label = "Не проверен", message = "Нажмите «Проверить AI». Проверка не генерирует ответ.", color = "neutral";
+    let label = "Не проверен", message = "Нажмите «Проверить ИИ». Проверка не генерирует ответ.", color = "neutral";
     if (ai.state === "checking") { label = "Проверка"; message = "Проверяем локальный сервер и наличие модели…"; color = "info"; }
     else if (ai.model_found === false) { label = "Модель отсутствует"; message = "Сервер доступен, но настроенная модель не найдена. Загрузите её в LM Studio."; color = "warning"; }
     else if (ai.state === "available") { label = "Доступен"; message = ai.provider === "fake" ? "Детерминированные фикстуры. Сеть и API key не нужны." : "Сервер доступен, настроенная модель найдена. Качество ответа проверяется отдельно."; color = "good"; }
     else if (ai.state === "unavailable") { label = "Недоступен"; message = "Локальный AI недоступен или ответ сервера не прошёл проверку. Проверьте LM Studio и выбранную модель."; color = "warning"; }
     else if (ai.provider === "openai") { label = "Платный API"; message = "Проверка доступа — только отдельным подтверждённым анализом. Фоновых платных запросов нет."; color = "info"; }
     text("ai-status-badge", label); $("ai-status-badge").className = `badge ${color}`;
-    text("ai-status-message", message); text("ai-label", label);
+    text("ai-status-message", message); text("ai-label", label); text("home-ai",label);
     $("ai-dot").className = `dot ${color === "neutral" ? "muted" : color === "info" ? "info" : color}`;
   }
   function renderPreparation(value) {
-    text('startup-preparation', `${value?.state || 'PRE-LIVE NOT PREPARED'}${value?.result && value.result !== 'READY' ? ' · ' + value.result : ''}`);
+    text('startup-preparation', `${t(value?.state || 'PRE-LIVE NOT PREPARED')}${value?.result && value.result !== 'READY' ? ' · ' + t(value.result) : ''}`);
   }
   function renderStatus(value) {
     renderPreparation(value.preparation);
@@ -118,7 +123,7 @@
   }
   function settingsList(id, items) {
     $(id).replaceChildren(...items.map(([label, value]) => {
-      const row = node("div"); row.append(node("dt", "", label), node("dd", "", String(value ?? "—"))); return row;
+      const row = node("div"); row.append(node("dt", "", t(label)), node("dd", "", t(String(value ?? "—")))); return row;
     }));
   }
   function renderSettings(settings) {
@@ -139,6 +144,7 @@
   function updateControls() {
     operator?.controls();
     profile?.controls();
+    delivery?.controls();
     quality?.controls();
     const configured = Boolean(state.settings && state.connected && state.csrf);
     const value = $("comment-input").value;
@@ -163,7 +169,7 @@
     const top = node("div", "reply-top"), author = node("div");
     author.append(node("div", "reply-author", `@${item.username}`), node("div", "reply-source", `${sourceName(record.source)} · ${time(record.received_at)}`));
     top.append(author, node("span", `badge ${statusClass(item.status)}`, statusName(item.status))); card.append(top);
-    if (item.translation_requires_review) card.append(node("div", "review-banner", "TRANSLATION REVIEW REQUIRED · Машинный перевод ответа требует отдельной проверки оператором."));
+    if (item.translation_requires_review) card.append(node("div", "review-banner", "Проверьте машинный перевод ответа перед одобрением."));
     if (record.original_truncated) card.append(node("div", "review-banner", "Оригинал сокращён до 10 000 символов для отображения."));
     field(card, `ОРИГИНАЛ · ${item.detected_language}`, item.original_text);
     field(card, "ПЕРЕВОД КОММЕНТАРИЯ · RU", item.operator_translation);
@@ -175,26 +181,26 @@
       ["PROCESSING ERROR", item.processing_error || "—"], ["ERROR DETAIL", item.processing_error_detail || "—"],
       ["AI AUTO AUTHORITY", String(item.auto_send_eligible)], ["TRANSLATION REVIEW", String(item.translation_requires_review)],
       ["TRANSLATION SOURCE", item.translation_source]].forEach(([label, value]) => {
-        const cell = node("div"); cell.append(node("div", "reply-field-label", label), node("div", "value mono", value)); metadata.append(cell);
+        const cell = node("div"); cell.append(node("div", "reply-field-label", t(label)), node("div", "value mono", t(value))); metadata.append(cell);
       });
     card.append(metadata);
     const flags = node("div", "flag-list");
-    flags.append(node("span", "badge warning", item.requires_approval ? "REQUIRES APPROVAL" : "APPROVAL STATUS UNKNOWN"),
-      node("span", "badge neutral", "AI DOES NOT AUTHORIZE AUTO"));
-    card.append(flags, node("p", "reply-reason", item.reason));
-    const actions = node("div", "reply-actions"), copy = node("button", "button secondary-button", "COPY REPLY");
+    flags.append(node("span", "badge warning", item.requires_approval ? "Требуется одобрение" : "Одобрение не подтверждено"),
+      node("span", "badge neutral", "Ответ ИИ сам по себе не разрешает отправку"));
+    card.append(flags, node("p", "reply-reason", t(item.reason)));
+    const actions = node("div", "reply-actions"), copy = node("button", "button secondary-button", "Копировать ответ");
     copy.type = "button"; copy.disabled = !item.suggested_reply;
     copy.addEventListener("click", async () => {
-      try { await navigator.clipboard.writeText(item.suggested_reply); copy.textContent = "Скопировано"; toast("Ответ скопирован. Ничего не отправлено."); setTimeout(() => { copy.textContent = "COPY REPLY"; }, 1600); }
+      try { await navigator.clipboard.writeText(item.suggested_reply); copy.textContent = "Скопировано"; toast("Ответ скопирован. Ничего не отправлено."); setTimeout(() => { copy.textContent = "Копировать ответ"; }, 1600); }
       catch { toast("Браузер не разрешил копирование. Выделите текст ответа вручную."); }
     });
-    const send = node("button", "button send-disabled", "SEND · не подключён"); send.disabled = true; send.title = "Delivery not configured";
+    const send = node("button", "button send-disabled", "Отправка не подключена"); send.disabled = true; send.title = "Отправка не настроена";
     actions.append(copy, send); card.append(actions);
     if (record.delivery_review) {
       const review = record.delivery_review, envelope = review.envelope;
-      card.append(node("p", "subtle mono", `ID ${envelope.suggestion_id} · runtime ${envelope.active_runtime_revision.slice(0, 8)} · session ${envelope.live_session_id?.slice(0, 8) || "Playground"}`),
-        node("p", "subtle", `Approval: ${review.approval_state} · Delivery: ${review.approval_state === "approved" ? "APPROVED" : "READY"} · ${review.eligibility.reason}`));
-      const approve = node("button", "button secondary-button", "APPROVE · без отправки");
+      card.append(node("p", "subtle mono", `ID ${envelope.suggestion_id} · настройки ${envelope.active_runtime_revision.slice(0, 8)} · сессия ${envelope.live_session_id?.slice(0, 8) || "Playground"}`),
+        node("p", "subtle", `Одобрение: ${t(review.approval_state)} · Отправка: ${t(review.approval_state === "approved" ? "APPROVED" : "READY")} · ${t(review.eligibility.reason)}`));
+      const approve = node("button", "button secondary-button", "Одобрить — без отправки");
       approve.type = "button"; approve.disabled = item.status !== "ready" || review.approval_state !== "missing" || review.consumed;
       let translationCheck = null;
       if (item.translation_requires_review) {
@@ -207,7 +213,7 @@
           const next = await api(`/api/admin/suggestions/${envelope.suggestion_id}/approve`, {
             expected_suggestion_revision: envelope.suggestion_revision,
             translation_review_confirmed: Boolean(translationCheck?.checked)});
-          record.delivery_review = next; card.replaceWith(replyCard(record)); toast("Approval записан. Ничего не отправлено.");
+          record.delivery_review = next; card.replaceWith(replyCard(record)); toast("Одобрение записано. Ничего не отправлено.");
         } catch (error) {
           toast(error.message);
           try { record.delivery_review = await api(`/api/admin/suggestions/${envelope.suggestion_id}`); card.replaceWith(replyCard(record)); }
@@ -259,7 +265,7 @@
     $("live-cards").replaceChildren(...[...state.live.values()].map((record) => {
       const panel = node("article", "panel");
       if (record.suggestion) panel.append(replyCard(record));
-      else { panel.append(node("span", "badge info", "Обработка AI")); field(panel, `@${record.username} · ${sourceName(record.source)} · ${time(record.timestamp)}`, record.text); }
+      else { panel.append(node("span", "badge info", "Обработка ИИ")); field(panel, `@${record.username} · ${sourceName(record.source)} · ${time(record.timestamp)}`, record.text); }
       return panel;
     }));
   }
@@ -320,7 +326,7 @@
     refreshQuality: async () => { await quality.refresh(); await delivery.refresh(); }});
   profile = window.createProfileControls?.({api, state, toast});
   delivery = window.createDeliveryControls({api, node, toast, state, refreshReviews, refreshCards: () => {
-    renderLive();
+    renderLive(); profile?.controls();
     if (state.selectedSuggestion && state.history.has(state.selectedSuggestion)) showResult(state.history.get(state.selectedSuggestion));
   }});
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => openPage(button.dataset.page)));

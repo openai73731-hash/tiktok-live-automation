@@ -488,14 +488,14 @@ const delivery=window.createDeliveryControls({api,node:(_,__,s)=>Object.assign(e
 (async()=>{await delivery.refresh();
 const record={delivery_review:{fill_allowed:true,text_entry_supported:true,approval_state:'approved',approval:{approval_id:'a'.repeat(32)},envelope:{suggestion_id:'b'.repeat(32),suggestion_revision:'c'.repeat(64),source:'tiktok',status:'ready',expires_at:new Date(Date.now()+60000).toISOString(),suggested_reply:'PRIVATE IMMUTABLE'}}};
 const actions=el(),send=el();delivery.attach(actions,record,send);
-const fill=actions.children.find(e=>e.textContent.includes('FILL PHONE'));
+const fill=actions.children.find(e=>e.textContent.includes('Вставить в телефон'));
 assert.strictEqual(fill.disabled,false);assert.strictEqual(send.hidden,true);assert(!send.listeners.click);
 await fill.listeners.click();const body=calls.find(([p])=>p.endsWith('/fill'))[1];
 assert.deepStrictEqual(Object.keys(body).sort(),['approval_id','expected_suggestion_revision','idempotency_key','suggestion_id']);assert(!JSON.stringify(body).includes('PRIVATE IMMUTABLE'));
 assert(messages.includes('Ответ введён в телефон. Нажмите отправить на телефоне.'));
 assert(!calls.some(([p])=>p.endsWith('/send')));
 record.delivery_review.fill_allowed=false;record.delivery_review.text_entry_supported=false;
-const unicode=el();delivery.attach(unicode,record,el());assert(unicode.children[0].disabled);assert(unicode.children[0].title.includes('COPY'));
+const unicode=el();delivery.attach(unicode,record,el());assert(unicode.children[0].disabled);assert(unicode.children[0].title.includes('копирование'));
 document.getElementById('delivery-mode').value='AUTOMATIC';await document.getElementById('delivery-mode').listeners.change();
 const mode=calls.find(([p])=>p.endsWith('/mode'))[1];assert.deepStrictEqual(Object.keys(mode).sort(),['expected_active_runtime_revision','expected_live_session_id','mode']);assert.strictEqual(mode.expected_live_session_id,status.live_session_id);assert.strictEqual(mode.mode,'AUTOMATIC');
 })().catch(e=>{console.error(e);process.exitCode=1});

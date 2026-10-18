@@ -458,7 +458,7 @@ const operator=window.createOperatorControls({api,state,toast(){},renderSettings
 const get=id=>document.getElementById(id),tick=()=>new Promise(r=>setImmediate(r));
 (async()=>{operator.render(view);get('operator-username').value='@mitchelljoneswn0632256';get('operator-username').listeners.input();assert(connect.every(b=>b.disabled));assert(reasons[0].textContent.includes('Сохраните'));
 get('operator-form').listeners.submit({preventDefault(){}});await tick();assert(connect.every(b=>b.disabled));assert(reasons[0].textContent.includes('Примените'));
-await get('operator-apply').listeners.click();assert(connect.every(b=>!b.disabled));assert(reasons[0].textContent.includes('Android readiness не требуется'));
+await get('operator-apply').listeners.click();assert(connect.every(b=>!b.disabled));assert(reasons[0].textContent.includes('Готовность отправки Android не требуется'));
 operator.render({...view,connect_block_reason:'Очистка LIVE не завершена.'});assert(connect.every(b=>b.disabled));assert(reasons[0].textContent.includes('Очистка'));
 state.connected=false;operator.controls();assert(reasons[0].textContent.includes('Нет связи'));state.connected=true;
 const delivery=window.createDeliveryControls({api,node:(_,__,v)=>Object.assign(el(),{textContent:v}),toast(){},state,refreshCards(){}});await delivery.refresh();

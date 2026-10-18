@@ -1,11 +1,15 @@
 /* Explicit manual fill; separately armed backend AUTO. Identity-only requests. */
-window.createDeliveryControls = ({api, node, toast, state, refreshCards, refreshReviews = async () => {}}) => {
+window.createDeliveryControls = ({api, node: rawNode, toast, state, refreshCards, refreshReviews = async () => {}}) => {
+  const t = window.AdminI18n?.text || (v=>v);
+  const node=(tag,cls,value)=>rawNode(tag,cls,t(value));
   const $ = (id) => document.getElementById(id);
   let view = null, version = 0, busy = false, challengeTimer = null;
   const keys = new Map();
+  function russian() { ['active-transport','stream-mode','delivery-summary','auto-summary','device-panel-title','device-panel-note','dash-delivery-mode','device-status','windows-instruction','mobile-challenge-note','delivery-mode-label','delivery-workflow'].forEach(id=>window.AdminI18n?.localize($(id))); }
+
   function render(next) {
     ++version; // Invalidate older GETs when SSE publishes a transport switch.
-    view = next;
+    view = next; state.delivery = next;
     if (challengeTimer !== null) { window.clearTimeout(challengeTimer); challengeTimer = null; }
     if (next.transport !== "windows_live_studio" && next.account_challenge?.token && window.setTimeout) {
       challengeTimer = window.setTimeout(() => { challengeTimer = null; refresh().catch((error) => toast(error.message)); },
@@ -32,6 +36,16 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       $(id).hidden = windows;
       $(id).disabled = windows || busy || !state.connected;
     });
+    const toggle = $("auto-replies");
+    if (toggle) {
+      toggle.checked = windows ? Boolean(next.windows_sender?.auto_enabled) : next.mode === "AUTOMATIC";
+      toggle.disabled = windows || busy || next.busy || !state.connected;
+      $("auto-replies-state").textContent = windows ? toggle.checked ? "Автоответы включены" : "Автоответы выключены" : t(next.auto_state);
+      const limit = windows ? next.windows_sender?.acceptance_status : next.mobile_one_shot;
+      $("auto-limit").textContent = limit === "DISABLED" ? "Непрерывная работа" : "Только одна отправка" + (limit === "SPENT" ? " — уже использована" : " — доступна");
+      $("auto-replies-reason").textContent = windows ? "Управление Windows доступно в дополнительных настройках." : !state.connected ? "Нет связи с локальным сервером." : window.AdminI18n?.blockReason(next,state.status?.live) || t(next.auto_reason);
+      toggle.setAttribute?.("aria-busy",String(busy));
+    }
     const d = next.inspection, w = next.windows_sender || {};
     const items = windows ? [["Transport", "windows_live_studio"], ["Instance", next.instance_id],
       ["Account label", next.account_label],
@@ -57,7 +71,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       ["Physical SEND", next.physical_delivery_enabled ? "GATE ENABLED · проверка обязательна" : "DISABLED"],
       ["Причина", next.reason === "device_unavailable" ? d.reason : next.reason]];
     $("device-status").replaceChildren(...items.map(([label, value]) => {
-      const row = node("div"); row.append(node("dt", "", label), node("dd", "mono", String(value ?? "—"))); return row;
+      const row = node("div"); row.append(node("dt", "", label), node("dd", "mono", t(String(value ?? "—")))); return row;
     }));
     if (windows) {
       $("windows-unknown").hidden = !next.delivery_uncertain;
@@ -71,7 +85,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       $("windows-accept-empty").disabled = !state.connected || w.last_send_status !== "SENT_CONFIRMED" || w.clock_verification === "unstable";
       $("windows-auto").checked = Boolean(w.auto_enabled);
       $("windows-auto").disabled = !state.connected || !next.physical_delivery_enabled || !w.empty_after_verified_confirmed || w.acceptance_status === "SPENT";
-      refreshCards(); return;
+      russian(); refreshCards(); return;
     }
     const select = $("operator-device"), selected = select.value;
     const wanted = selected;
@@ -90,10 +104,10 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     $("live-account-challenge").disabled = busy || next.busy || !state.connected || !next.account_challenge?.available;
     const challenge = next.account_challenge;
     $("mobile-challenge-note").textContent = challenge?.token
-      ? `TYPE THIS EXACT COMMENT FROM THE HOST PHONE: ${challenge.token} · expires in ${challenge.expires_in_seconds}s. Введите и отправьте вручную с host телефона.`
-      : challenge?.state === "VERIFIED" ? "LIVE ACCOUNT VERIFIED · новая внешняя test comment → AI → APPROVE → host LIVE inspect → FILL PHONE → human Send → VERIFY."
-      : challenge?.state === "CHECKING" ? "Challenge получен. Свежая read-only проверка host LIVE/device/install…"
-      : "PREPARE MOBILE проверяет только device/install. Затем вручную START LIVE → CONNECT → LIVE ACCOUNT CHALLENGE. Profile proof остаётся отдельной строгой диагностикой.";
+      ? `Отправьте с телефона владельца эфира точно этот текст: ${challenge.token} · осталось ${challenge.expires_in_seconds} сек. Ввод и отправка выполняются вручную.`
+      : challenge?.state === "VERIFIED" ? "Аккаунт эфира подтверждён. Ручная проверка: новый комментарий зрителя → ответ ИИ → одобрение → проверка экрана своего эфира → вставка → ручная отправка → проверка результата."
+      : challenge?.state === "CHECKING" ? "Проверочное сообщение получено. Проверяем экран своего эфира, устройство и установленное приложение…"
+      : "Подготовка проверяет устройство и установленное приложение. Затем запустите свой эфир, подключите чат и подтвердите аккаунт. Проверка на странице своего профиля доступна отдельно.";
     $("prepare-mobile").disabled = busy || next.busy || !state.connected || next.mode !== "MANUAL" || Boolean(next.live_session_id);
     $("confirm-send").disabled = busy || !state.connected || !d.send_confirmation_token;
     $("delivery-mode").value = next.mode || "MANUAL";
@@ -106,8 +120,8 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       ack.disabled = busy || next.busy || !state.connected || next.mode !== "MANUAL" || !next.live_session_id || !next.unknown_ack_revision;
     }
     $("delivery-mode-label").textContent = next.mode || "MANUAL";
-    $("delivery-workflow").textContent = `${next.workflow || "READY"} · ${next.auto_state || "AUTO OFF"} · ${next.auto_reason || ""}`;
-    refreshCards();
+    $("delivery-workflow").textContent = `${t(next.workflow || "READY")} · ${t(next.auto_state || "AUTO OFF")} · ${t(next.auto_reason || "")}`;
+    russian(); refreshCards();
   }
   async function windowsAction(path, payload) {
     ++version;
@@ -115,11 +129,11 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     catch (error) { toast(error.message); }
   }
   $("windows-arm").addEventListener("click", () => {
-    if (window.confirm("Ensure the comment field is empty before arming. Подтверждаю пустое поле; после READY вручную кликну composer.")) windowsAction("arm", {empty_confirmed: true});
+    if (window.confirm("Подтверждаю, что поле комментария пустое. После готовности привязки вручную нажму это поле.")) windowsAction("arm", {empty_confirmed: true});
   });
   $("windows-disarm").addEventListener("click", () => windowsAction("disarm", {}));
   $("windows-accept-empty").addEventListener("click", () => {
-    if (window.confirm("После VERIFIED отправки поле действительно очистилось. Подтверждаю это для текущего Studio/LIVE. Новый ARM остаётся ручным.")) windowsAction("accept-empty", {empty_confirmed: true});
+    if (window.confirm("После подтверждённой отправки поле действительно очистилось. Подтверждаю для текущей сессии LIVE Studio. Новая привязка остаётся ручной.")) windowsAction("accept-empty", {empty_confirmed: true});
   });
   $("windows-auto").addEventListener("change", () => windowsAction("auto", {enabled: $("windows-auto").checked}));
   async function refresh() {
@@ -129,10 +143,12 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     await refreshReviews();
     if (token !== version) return;
     render(next);
+    const last = history.find(entry => entry.result === "confirmed");
+    if ($("last-confirmed-send")) $("last-confirmed-send").textContent = last ? new Date(last.time).toLocaleString("ru-RU") : "Пока нет";
     $("delivery-history").replaceChildren(...history.map((entry) => {
       const row = node("tr");
-      [entry.time, entry.username, entry.suggestion_id, entry.result, entry.reason, entry.device, entry.mode, entry.operation_id]
-        .forEach((value) => row.append(node("td", "mono cell-text", String(value ?? "—"))));
+      [entry.time ? new Date(entry.time).toLocaleString("ru-RU") : "—", entry.username, entry.suggestion_id, t(entry.result), t(entry.reason), entry.device, t(entry.mode), entry.operation_id]
+        .forEach((value) => row.append(node("td", "mono cell-text", t(String(value ?? "—")))));
       return row;
     }));
     $("delivery-history-empty").hidden = history.length > 0;
@@ -158,7 +174,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
   $("verify-account").addEventListener("click", async () => {
     if (busy || !state.connected) return;
     busy = true;
-    try { render(await api("/api/admin/device/verify-account", {})); toast("Аккаунт проверен. Откройте host LIVE и проверьте устройство, затем откройте composer вручную."); }
+    try { render(await api("/api/admin/device/verify-account", {})); toast("Аккаунт проверен. Откройте свой эфир и проверьте устройство, затем вручную откройте поле комментария."); }
     catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
   });
@@ -167,7 +183,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     busy = true;
     try {
       render(await api("/api/admin/delivery/prepare", {}));
-      toast("Device/install prepared. Аккаунт ещё не подтверждён: START LIVE → CONNECT → LIVE ACCOUNT CHALLENGE. AUTO OFF.");
+      toast("Устройство и приложение подготовлены. Аккаунт ещё не подтверждён: запустите свой эфир, подключите чат и пройдите проверку аккаунта. Автоотправка выключена.");
     } catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
   });
@@ -181,7 +197,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
   $("confirm-send").addEventListener("click", async () => {
     const token = view?.inspection?.send_confirmation_token;
     if (busy || !token || !state.connected) return;
-    if (!window.confirm("Подтверждаю, что vp8/vpl в открытом composer — кнопка отправки. Привязка действует только для проверенного Xiaomi / TikTok You 46.8.3 и аккаунта. Сейчас ничего не отправляется.")) return;
+    if (!window.confirm("Подтверждаю: найденный элемент рядом с полем — обычная кнопка отправки TikTok. Привязка действует только для проверенного телефона, установленной версии приложения и аккаунта. Сейчас ничего не отправляется.")) return;
     busy = true;
     try { render(await api("/api/admin/device/confirm-send", {token, confirmed: true})); }
     catch (error) { toast(error.message); }
@@ -189,7 +205,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
   });
   $("acknowledge-unknown")?.addEventListener("click", async () => {
     if (busy || !state.connected || !view?.unknown_ack_revision || view.transport === "windows_live_studio") return;
-    if (!window.confirm("ACK UNKNOWN: прежние операции навсегда остаются UNKNOWN и consumed. Разрешаются только новые SDK message_id после этой границы; AUTO остаётся OFF.")) return;
+    if (!window.confirm("Подтвердить неподтверждённую операцию? Прежние операции навсегда остаются использованными, повтор запрещён. Разрешаются только новые сообщения после этой границы. Автоотправка остаётся выключенной.")) return;
     busy = true;
     try { render(await api("/api/admin/delivery/acknowledge-unknown", {confirmed: true,
       expected_unknown_revision: view.unknown_ack_revision, expected_live_session_id: view.live_session_id,
@@ -198,14 +214,21 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     finally { busy = false; await refresh(); }
   });
   async function setMode(mode) {
-    if (!view || !state.connected) return;
-    if (mode === "AUTOMATIC" && !window.confirm("Включить AUTOMATIC только для текущей собственной LIVE-сессии? Безопасные ответы могут отправляться без отдельного APPROVE. Одна попытка; UNKNOWN ставит AUTO на паузу.")) { render(view); return; }
+    if (!view || !state.connected || busy) return;
+    if (mode === "AUTOMATIC" && !window.confirm("Включить автоматический режим для текущего собственного эфира? Проверенные ответы смогут отправляться без отдельного одобрения. Ограничение отправок показано на главной. Неподтверждённый результат останавливает отправку и запрещает повтор.")) { render(view); return; }
+    busy = true; render(view);
+    if ($("auto-replies-error")) $("auto-replies-error").hidden = true;
     try {
       render(await api("/api/admin/delivery/mode", {mode, expected_live_session_id: view.live_session_id,
         expected_active_runtime_revision: view.active_runtime_revision}));
       await refresh();
-    } catch (error) { toast(error.message); render(view); }
+    } catch (error) {
+      try { await refresh(); } catch { /* Keep the last canonical state. */ }
+      if ($("auto-replies-error")) { $("auto-replies-error").textContent = error.message + " " + (window.AdminI18n?.blockReason(view,state.status?.live) || ""); $("auto-replies-error").hidden = false; }
+      toast(error.message);
+    } finally { busy=false; render(view); }
   }
+  $("auto-replies")?.addEventListener("change", () => setMode($("auto-replies").checked ? "AUTOMATIC" : "MANUAL"));
   $("delivery-mode").addEventListener("change", () => setMode($("delivery-mode").value));
   $("pause-auto").addEventListener("click", () => setMode("MANUAL"));
   $("verify-fill").addEventListener("click", async () => {
@@ -213,7 +236,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     busy = true;
     try {
       const result = await api("/api/admin/delivery/verify-fill", {});
-      toast(result.status === "confirmed" ? "SENT CONFIRMED: точная строка появилась в LIVE." : "UNKNOWN. Проверьте TikTok вручную. Повтор запрещён.");
+      toast(result.status === "confirmed" ? "Отправка подтверждена: получено точное подтверждение в TikTok." : "Отправка не подтверждена. Проверьте TikTok вручную. Повтор запрещён.");
     } catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
   });
@@ -226,7 +249,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     if (view?.transport === "windows_live_studio") {
       const auto = review?.auto_delivery;
       if (review?.consumed) actions.append(node("span", "badge danger", "CONSUMED / NO RETRY"));
-      actions.append(node("span", "badge neutral", `Server AUTO: ${auto?.eligible ? "ELIGIBLE" : "BLOCKED"} · ${auto?.reason || "unavailable"}`));
+      actions.append(node("span", "badge neutral", `Автоотправка: ${t(auto?.eligible ? "ELIGIBLE" : "BLOCKED")} · ${t(auto?.reason || "unavailable")}`));
       send.hidden = false;
       send.textContent = "Fill approved reply";
       send.disabled = !allowed || !review?.text_entry_supported || view.busy || busy || !state.connected || Date.now() >= Date.parse(e?.expires_at);
@@ -238,7 +261,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
         keys.set(e.suggestion_id, crypto.randomUUID().replaceAll("-", ""));
       }
       const begin = async (path, control) => {
-        if (control.disabled || !window.confirm("Ensure the comment field is empty before arming. Подтверждаю пустое поле и вручную кликну composer после Focus watch READY.")) return;
+        if (control.disabled || !window.confirm("Подтверждаю пустое поле и вручную нажму его после готовности проверки фокуса.")) return;
         send.disabled = once.disabled = true;
         await windowsAction(path, {empty_confirmed: true, delivery: {
           suggestion_id: e.suggestion_id, expected_suggestion_revision: e.suggestion_revision,
@@ -246,18 +269,18 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
       };
       send.addEventListener("click", () => begin("fill", send));
       once.addEventListener("click", () => begin("send-once", once));
-      actions.append(node("span", "subtle", "Ручной ARM + клик для каждого действия из Admin. Fill расходует dedup; Enter после Fill нажимает оператор."));
+      actions.append(node("span", "subtle", "Для каждого действия привяжите пустое поле вручную. После вставки этот ответ уже нельзя использовать повторно; отправляет его оператор."));
       return;
     }
-    const fill = node("button", "button secondary-button", "ВСТАВИТЬ В ТЕЛЕФОН · FILL PHONE");
+    const fill = node("button", "button secondary-button", "Вставить в телефон");
     fill.type = "button"; fill.hidden = view?.mode === "AUTOMATIC";
     fill.disabled = !allowed || !review?.fill_allowed || busy || view?.busy || !state.connected || Date.now() >= Date.parse(e?.expires_at);
-    fill.title = !review?.text_entry_supported ? "unicode_entry_unavailable · доступен COPY" : "Откройте и сфокусируйте поле комментария на телефоне. Отправляете вы.";
+    fill.title = !review?.text_entry_supported ? "Автоматический ввод этого текста недоступен — используйте копирование" : "Откройте и сфокусируйте поле комментария на телефоне. Отправляете вы.";
     if (!fill.disabled) setTimeout(() => { fill.disabled = true; }, Math.max(0, Math.min(Date.parse(e.expires_at) - Date.now(), 90000)));
-    const dry = node("button", "button secondary-button", "DRY RUN SEND");
+    const dry = node("button", "button secondary-button", "Проверить без отправки");
     dry.type = "button"; dry.disabled = !allowed || busy || !state.connected;
     actions.append(fill, dry);
-    actions.append(node("span", "subtle", `AUTO: ${review?.auto_eligibility?.eligible ? "ELIGIBLE" : "BLOCKED"} · ${review?.auto_eligibility?.reason || "automatic_mode_required"}`));
+    actions.append(node("span", "subtle", `Автоотправка: ${t(review?.auto_eligibility?.eligible ? "ELIGIBLE" : "BLOCKED")} · ${t(review?.auto_eligibility?.reason || "automatic_mode_required")}`));
     if (!keys.has(e?.suggestion_id) && e) {
       if (keys.size >= 150) keys.delete(keys.keys().next().value);
       keys.set(e.suggestion_id, crypto.randomUUID().replaceAll("-", ""));
@@ -273,14 +296,14 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
           open_phone_composer: "Откройте поле комментария на телефоне и повторите FILL PHONE.",
           unicode_entry_unavailable: "Unicode-ввод недоступен. Используйте COPY REPLY.",
           transient_overlay: "Дождитесь обычного LIVE на телефоне. Overlay закрывать автоматически нельзя."};
-        toast(result.status === "unknown" ? "UNKNOWN. Проверьте TikTok вручную. Повтор запрещён."
-          : input ? messages[result.reason] || `${result.status}: ${result.reason}`
-          : `DRY RUN: eligible=${result.eligible}, device_ready=${result.device_ready}, would_send=${result.would_send}; ${result.reason}. Ничего не отправлено.`);
+        toast(result.status === "unknown" ? "Отправка не подтверждена. Проверьте TikTok вручную. Повтор запрещён."
+          : input ? messages[result.reason] || `${t(result.status)}: ${t(result.reason)}`
+          : `Проверка без отправки: разрешено — ${t(result.eligible)}, устройство готово — ${t(result.device_ready)}, возможна отправка — ${t(result.would_send)}; ${t(result.reason)}. Ничего не отправлено.`);
       } catch (error) { toast(error.message); }
       finally { busy = false; await refresh(); }
     };
     fill.addEventListener("click", () => perform(true));
     dry.addEventListener("click", () => perform(false));
   }
-  return {refresh, attach, render};
+  return {refresh, attach, render, controls:()=>{if(view)render(view);}};
 };

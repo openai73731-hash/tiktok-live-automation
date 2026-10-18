@@ -613,7 +613,7 @@ const delivery=window.createDeliveryControls({api,node:(_,__,s)=>Object.assign(e
 (async()=>{document.getElementById('operator-device').value='USB1';await delivery.refresh();document.getElementById('operator-device').value='';await delivery.refresh();assert.strictEqual(document.getElementById('operator-device').value,'');
 const actions=el(),send=el(),record={delivery_review:{approval_state:'approved',approval:{approval_id:'a'.repeat(32)},envelope:{suggestion_id:'b'.repeat(32),suggestion_revision:'c'.repeat(64),source:'tiktok',status:'ready',suggested_reply:'PRIVATE EXACT TEXT'}}};
 delivery.attach(actions,record,send);assert.strictEqual(send.disabled,true);assert.strictEqual(send.hidden,true);assert(!send.listeners.click);assert(!calls.some(([p,b])=>p.endsWith('/send')));
-const dry=actions.children.find(e=>e.textContent==='DRY RUN SEND');assert.strictEqual(dry.disabled,false);await dry.listeners.click();
+const dry=actions.children.find(e=>e.textContent==='Проверить без отправки');assert.strictEqual(dry.disabled,false);await dry.listeners.click();
 const posted=calls.find(([p,b])=>p.endsWith('/dry-run'))[1];assert.deepStrictEqual(Object.keys(posted).sort(),['approval_id','expected_suggestion_revision','idempotency_key','suggestion_id']);assert(!JSON.stringify(posted).includes('PRIVATE EXACT TEXT'));
 })().catch(e=>{console.error(e);process.exitCode=1});
 '''

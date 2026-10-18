@@ -1,5 +1,6 @@
 /* Presentation of allowlisted operator settings and explicit LIVE actions. */
 window.createOperatorControls = ({api, state, toast, renderSettings, renderStatus, refreshQuality}) => {
+  const t = window.AdminI18n?.text || (v=>v);
   const $ = (id) => document.getElementById(id);
   const fields = ["username", "provider", "model", "temperature", "timeout", "policy", "sentences", "chars", "device"];
   let view = null, dirty = false, busy = false, editedRevision = null;
@@ -11,38 +12,38 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
     const locked = owned || Boolean(view?.locked) || busy || state.busy;
     fields.forEach((name) => { $("operator-" + name).disabled = locked || Boolean(view?.desired.ai_profile && ["provider","model","temperature","policy"].includes(name)); });
     document.querySelectorAll('input[name="operator-transport"]').forEach(input => { input.disabled = locked; });
-    $("transport-saved").textContent = view?.saved_transport === "windows_live_studio" ? "PC / LIVE STUDIO" : "MOBILE / ANDROID";
-    $("transport-active").textContent = view?.active_transport === "windows_live_studio" ? "PC / LIVE STUDIO" : "MOBILE / ANDROID";
+    $("transport-saved").textContent = view?.saved_transport === "windows_live_studio" ? "Компьютер / LIVE Studio" : "Телефон Android";
+    $("transport-active").textContent = view?.active_transport === "windows_live_studio" ? "Компьютер / LIVE Studio" : "Телефон Android";
     $("operator-save").disabled = !view || !state.connected || locked || !dirty || value("provider") === "openai";
     $("operator-apply").disabled = !view?.pending || locked || dirty || !state.connected;
     $("operator-reset").disabled = !view || locked || !state.connected;
     $("operator-sentences").max = value("policy") === "friendly" ? "3" : "2";
     $("operator-paid-warning").hidden = value("provider") !== "openai";
-    $("operator-lock-reason").textContent = owned ? "Отключите LIVE, чтобы изменить аккаунт или AI настройки." : view?.lock_reason || "Сохранение и применение не запускают модель или TikTok.";
+    $("operator-lock-reason").textContent = owned ? "Отключите подключение к чату, чтобы изменить аккаунт или настройки ИИ. Сам эфир не останавливается." : view?.lock_reason || "Сохранение и применение не запускают модель или TikTok.";
     $("operator-apply-state").textContent = view?.config_error ? "Локальные настройки повреждены. Исправьте или сбросьте их." : dirty ? "Есть несохранённые изменения" : view?.pending ? "Сохранено. Требуется применить настройки." : "Настройки применены";
-    const liveLabel = live?.terminal_state === "operator_required" && owned ? "ТРЕБУЕТСЯ ОПЕРАТОР" : String(live?.state || "disconnected").toUpperCase();
+    const liveLabel = live?.terminal_state === "operator_required" && owned ? "Требуется оператор" : t(live?.state || "disconnected");
     $("operator-live-state").textContent = liveLabel + (live?.username && owned ? " @" + live.username : "");
-    $("dash-live-account").textContent = owned ? `${liveLabel} @${live.username || ""}` : value("username") ? `Аккаунт: @${value("username").replace(/^@/, "")}` : "Укажите свой username в настройках";
-    const connectReason = !state.connected ? "Нет связи с backend."
+    $("dash-live-account").textContent = owned ? `${liveLabel} @${live.username || ""}` : value("username") ? `Аккаунт: @${value("username").replace(/^@/, "")}` : "Укажите имя своего аккаунта в настройках";
+    const connectReason = !state.connected ? "Нет связи с сервером."
       : !view ? "Загружаются настройки подключения."
-      : owned ? "LIVE-сессия уже создана; сначала отключите её."
+      : owned ? "Сессия эфира уже создана; сначала отключите её."
       : busy || state.busy ? "Дождитесь завершения текущей операции."
       : dirty ? "Сохраните и примените изменения настроек."
       : view.config_error ? "Исправьте или сбросьте локальные настройки."
       : view.pending ? "Примените сохранённые настройки."
-      : !value("username").trim() ? "Укажите и примените username собственного LIVE."
+      : !value("username").trim() ? "Укажите и примените имя аккаунта своего эфира."
       : !/^[A-Za-z0-9._]{1,24}$/.test(value("username").trim().replace(/^@/, "")) ? "Username должен содержать 1–24 буквы, цифры, точки или подчёркивания."
       : value("provider") === "openai" ? "Для LIVE выберите и примените Fake или LM Studio."
-      : view.connect_block_reason || (view.locked ? view.lock_reason || "Backend занят." : null);
+      : view.connect_block_reason || (view.locked ? view.lock_reason || "Сервер занят." : null);
     document.querySelectorAll("[data-live-connect-reason]").forEach((element) => {
-      element.textContent = connectReason ? `Connect недоступен: ${connectReason}` : "Готово к чтению собственного LIVE. Android readiness не требуется.";
+      element.textContent = connectReason ? `Подключение недоступно: ${connectReason}` : "Готово к чтению своего эфира. Готовность отправки Android не требуется.";
     });
     document.querySelectorAll('[data-live-action="connect"]').forEach((button) => {
       const connecting = owned && ["starting", "connecting"].includes(live?.state);
       button.hidden = owned && !connecting;
-      button.textContent = connecting ? "Подключение…" : "Подключиться к LIVE";
+      button.textContent = connecting ? "Подключение…" : "Подключиться к эфиру";
       button.disabled = Boolean(connectReason);
-      button.title = connectReason || "Читать комментарии собственного LIVE";
+      button.title = connectReason || "Читать комментарии своего эфира";
     });
     document.querySelectorAll('[data-live-action="disconnect"]').forEach((button) => {
       button.hidden = !owned; button.disabled = !state.connected || busy;
@@ -77,7 +78,7 @@ window.createOperatorControls = ({api, state, toast, renderSettings, renderStatu
       renderStatus(await api("/api/admin/status"));
       await refreshQuality();
       render(await api("/api/admin/operator/settings"));
-      toast(path.endsWith("connect") && !path.endsWith("disconnect") ? "Подключение запрошено. Ожидаем состояние listener." : "Готово.");
+      toast(path.endsWith("connect") && !path.endsWith("disconnect") ? "Подключение запрошено. Ожидаем подключение к чату." : "Готово.");
     } catch (error) {
       if (error.status === 409) {
         render(await api("/api/admin/operator/settings"), true);
