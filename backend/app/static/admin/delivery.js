@@ -142,7 +142,7 @@ window.createDeliveryControls = ({api, node, toast, state, refreshCards, refresh
     busy = true; $("capture-device").disabled = $("inspect-device").disabled = true;
     try { render(await api("/api/admin/device/inspect", {})); await refresh(); }
     catch (error) { toast(error.message); }
-    finally { busy = false; $("capture-device").disabled = $("inspect-device").disabled = !state.connected; }
+    finally { busy = false; $("capture-device").disabled = $("inspect-device").disabled = !state.connected; if (view) render(view); }
   });
   $("capture-device").addEventListener("click", async () => {
     if (busy || !state.connected) return;

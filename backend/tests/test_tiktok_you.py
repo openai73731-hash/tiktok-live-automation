@@ -463,6 +463,10 @@ operator.render({...view,connect_block_reason:'Очистка LIVE не заве
 state.connected=false;operator.controls();assert(reasons[0].textContent.includes('Нет связи'));state.connected=true;
 const delivery=window.createDeliveryControls({api,node:(_,__,v)=>Object.assign(el(),{textContent:v}),toast(){},state,refreshCards(){}});await delivery.refresh();
 await get('inspect-device').listeners.click();assert.strictEqual(get('capture-device').disabled,false);assert.strictEqual(get('inspect-device').disabled,false);
+assert.strictEqual(get('confirm-send').disabled,true);
+status.inspection.send_confirmation_token='d'.repeat(32);status.inspection.send_control_state='SEND_CONTROL_CANDIDATE';
+await get('inspect-device').listeners.click();assert.strictEqual(get('confirm-send').disabled,false);assert(!calls.some(([p])=>p.endsWith('/confirm-send')));
+status.inspection.send_confirmation_token=null;await get('inspect-device').listeners.click();assert.strictEqual(get('confirm-send').disabled,true);
 const text=get('device-status').children.map(r=>r.children.map(c=>c.textContent).join(':')).join('\n');assert(text.includes('TikTok You'));assert(text.includes('47.0.3'));assert(text.includes('UNVERIFIED'));assert(!text.includes('Official'));
 await get('capture-device').listeners.click();assert(get('capture-result').textContent.includes(captured));assert(calls.some(([p])=>p.endsWith('/capture')));assert(!calls.some(([p])=>p.endsWith('/send')||p.endsWith('/live/connect')));
 })().catch(e=>{console.error(e);process.exitCode=1});
