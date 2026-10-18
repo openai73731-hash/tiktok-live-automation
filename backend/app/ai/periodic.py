@@ -99,7 +99,9 @@ class PeriodicScheduler:
                 or s.armed_binding != (scope[2],scope[0],scope[1])
                 or s.controller._account_binding != (s.controller._installation,scope[0])): return True
         from app.android.delivery_evidence import unresolved
-        return unresolved(s)
+        # Match PREPARE/ACK recovery: a settled same-device MANUAL rejection
+        # stays consumed without blocking new identities. Ambiguous rows block.
+        return unresolved(s, allow_rejected=True)
 
     def valid(self, proof, e, context):
         s = self.runtime.admin.delivery

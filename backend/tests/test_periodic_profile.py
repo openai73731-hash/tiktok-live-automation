@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 import json
+from uuid import uuid4
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -112,12 +113,23 @@ async def test_periodic_uses_existing_auto_and_sdk_echo_without_viewer_ai_loop(p
 async def test_ack_old_unknown_allows_only_a_fresh_periodic_slot(periodic_api):
     m=periodic_api
     _,_,old,before=await unknown(m)
+    # Historical settled MANUAL rejections coexist with the ACKed UNKNOWN in
+    # real journals. Seed metadata, never replace the production stores/guards.
+    db=m.service.journal.connection
+    rejected=dict(db.execute('SELECT * FROM operations WHERE operation_id=?',(old.operation_id,)).fetchone())
+    rejected.update(operation_id=uuid4().hex,idempotency_key='old_manual_rejected',suggestion_id=uuid4().hex,
+        comment_identity='a'*64,durable_delivery_key='b'*64,approval_id=uuid4().hex,
+        status='needs_operator',reason='rejected',mode='MANUAL')
+    db.execute('INSERT INTO operations ('+','.join(rejected)+') VALUES ('+','.join('?' for _ in rejected)+')',tuple(rejected.values()))
+    rejected_before=tuple(db.execute('SELECT * FROM operations WHERE operation_id=?',(rejected['operation_id'],)).fetchone())
     await acknowledge(m);await arm_auto(m)
     m.phone.after_send=lambda text:m.clients[-1].comment(text,identity='3002')
     await due(m)
     assert m.runtime.periodic.last_result=='confirmed' and m.phone.sent==1
     row=tuple(m.service.journal.connection.execute('SELECT * FROM operations WHERE operation_id=?',(old.operation_id,)).fetchone())
     assert row==before and m.service.journal.lookup('auto_'+m.app.state.admin.live_history[0].id).status=='confirmed'
+    assert tuple(db.execute('SELECT * FROM operations WHERE operation_id=?',(rejected['operation_id'],)).fetchone())==rejected_before
+    assert (await m.http.post(f'/api/admin/suggestions/{old.suggestion_id}/approve',json={'expected_suggestion_revision':old.suggestion_revision})).status_code==409
 
 
 @pytest.mark.parametrize('periodic_api',['ai'],indirect=True)
