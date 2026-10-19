@@ -1,6 +1,7 @@
 """One explicitly applied generic profile; legacy projects remain valid."""
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.ai.periodic_policy import RELEASE_TEMPLATES
 
 
 class ProfileValue(BaseModel):
@@ -31,9 +32,8 @@ class PeriodicSettings(ProfileValue):
     interval_seconds: int = Field(default=300, ge=60, le=86400, strict=True)
     jitter_seconds: int = Field(default=30, ge=0, le=300, strict=True)
     mode: Literal["templates", "ai", "mixed"] = "templates"
-    instruction: str = Field(default="Write one short, neutral comment inviting conversation about the topic.", max_length=800)
-    templates: tuple[str, ...] = Field(default=("If you have a question about the topic, feel free to ask.",
-        "What would you like to discuss next?", "Welcome everyone, feel free to join the conversation."), max_length=12)
+    instruction: str = Field(default="Write one short, neutral host statement about the active topic. Use English ASCII and one declarative sentence. No questions, question marks, viewer testimonials, invented LIVE events, promises or promotional calls to action.", max_length=800)
+    templates: tuple[str, ...] = Field(default=RELEASE_TEMPLATES, max_length=12)
     max_per_hour: int = Field(default=12, ge=1, le=60, strict=True)
 
     @field_validator("templates")

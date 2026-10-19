@@ -208,6 +208,15 @@ async def delivery_history(request: Request):
     return request.app.state.delivery.recent()
 
 
+@router.post('/api/admin/mobile/readiness')
+async def mobile_readiness(request: Request, body: UIModel):
+    from app.android.readiness import check_readiness
+    try:
+        return await check_readiness(request.app.state.operator_runtime, request.app.state.delivery)
+    except SuggestionConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from None
+
+
 @router.post("/api/admin/device/inspect")
 async def inspect_device(request: Request, body: UIModel):
     return await request.app.state.delivery.inspect()

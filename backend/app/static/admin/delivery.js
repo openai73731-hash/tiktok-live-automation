@@ -4,6 +4,9 @@ window.createDeliveryControls = ({api, node: rawNode, toast, state, refreshCards
   const node=(tag,cls,value)=>rawNode(tag,cls,t(value));
   const $ = (id) => document.getElementById(id);
   let view = null, version = 0, busy = false, challengeTimer = null;
+  let readinessKey = null;
+  function readinessScope(next) { return JSON.stringify([next.active_runtime_revision, next.live_session_id,
+    next.paused, next.inspection?.serial, next.inspection?.version, next.inspection?.account_verified, next.inspection?.live_verified]); }
   const keys = new Map();
   function russian() { ['active-transport','stream-mode','delivery-summary','auto-summary','device-panel-title','device-panel-note','dash-delivery-mode','device-status','windows-instruction','mobile-challenge-note','delivery-mode-label','delivery-workflow'].forEach(id=>window.AdminI18n?.localize($(id))); }
 
@@ -16,6 +19,14 @@ window.createDeliveryControls = ({api, node: rawNode, toast, state, refreshCards
         (next.account_challenge.expires_in_seconds + 1) * 1000);
     }
     const windows = next.transport === "windows_live_studio";
+    if (readinessKey && (windows || readinessKey !== readinessScope(next))) {
+      readinessKey = null;
+      $("mobile-readiness-results")?.replaceChildren();
+      if ($("mobile-readiness-next")) $("mobile-readiness-next").textContent = "Состояние обновлено. Проверки перед вводом и отправкой выполняются автоматически.";
+    }
+    if ($("mobile-readiness")) $("mobile-readiness").hidden = windows;
+    if ($("android-advanced-checks")) $("android-advanced-checks").hidden = windows;
+    if ($("check-mobile-readiness")) $("check-mobile-readiness").disabled = windows || busy || next.busy || !state.connected;
     $("active-transport").textContent = windows ? "PC / LIVE STUDIO" : "MOBILE / ANDROID";
     $("stream-mode").textContent = windows ? "PC" : "MOBILE";
     const stopped = next.paused || next.delivery_uncertain || next.workflow === "UNKNOWN" || next.inspection?.security_state;
@@ -32,7 +43,7 @@ window.createDeliveryControls = ({api, node: rawNode, toast, state, refreshCards
     $("legacy-delivery-settings").hidden = windows;
     $("dash-delivery-mode").textContent = windows ? next.windows_sender?.auto_enabled ? "AUTO · operator approved" : "MANUAL" : next.mode;
     $("android-capture-note").hidden = windows;
-    ["inspect-device", "capture-device", "verify-account", "confirm-send", "prepare-mobile", "live-account-challenge", "mobile-challenge-note"].forEach((id) => {
+    ["inspect-device", "capture-device", "verify-account", "confirm-send", "prepare-mobile", "mobile-challenge-note"].forEach((id) => {
       $(id).hidden = windows;
       $(id).disabled = windows || busy || !state.connected;
     });
@@ -101,13 +112,12 @@ window.createDeliveryControls = ({api, node: rawNode, toast, state, refreshCards
     $("inspect-device").disabled = busy || !state.connected;
     $("capture-device").disabled = busy || !state.connected;
     $("verify-account").disabled = busy || !state.connected;
-    $("live-account-challenge").disabled = busy || next.busy || !state.connected || !next.account_challenge?.available;
-    const challenge = next.account_challenge;
-    $("mobile-challenge-note").textContent = challenge?.token
-      ? `Отправьте с телефона владельца эфира точно этот текст: ${challenge.token} · осталось ${challenge.expires_in_seconds} сек. Ввод и отправка выполняются вручную.`
-      : challenge?.state === "VERIFIED" ? "Аккаунт эфира подтверждён. Ручная проверка: новый комментарий зрителя → ответ ИИ → одобрение → проверка экрана своего эфира → вставка → ручная отправка → проверка результата."
-      : challenge?.state === "CHECKING" ? "Проверочное сообщение получено. Проверяем экран своего эфира, устройство и установленное приложение…"
-      : "Подготовка проверяет устройство и установленное приложение. Затем запустите свой эфир, подключите чат и подтвердите аккаунт. Проверка на странице своего профиля доступна отдельно.";
+    $("live-account-challenge").hidden = true;
+    $("live-account-challenge").disabled = true;
+    $("mobile-challenge-note").textContent = next.account_challenge?.state === "VERIFIED"
+      ? "Свой аккаунт и текущий эфир проверены автоматически. Проверки перед вводом и отправкой выполняются программой."
+      : d.account_verified ? "Свой профиль проверен. Запустите свой эфир и подключите чат; привязка эфира проверится автоматически."
+      : "До эфира откройте свой профиль в TikTok и нажмите «Подготовить и проверить». Переписывать проверочную фразу не требуется.";
     $("prepare-mobile").disabled = busy || next.busy || !state.connected || next.mode !== "MANUAL" || Boolean(next.live_session_id);
     $("confirm-send").disabled = busy || !state.connected || !d.send_confirmation_token;
     $("delivery-mode").value = next.mode || "MANUAL";
@@ -147,7 +157,10 @@ window.createDeliveryControls = ({api, node: rawNode, toast, state, refreshCards
     if ($("last-confirmed-send")) $("last-confirmed-send").textContent = last ? new Date(last.time).toLocaleString("ru-RU") : "Пока нет";
     $("delivery-history").replaceChildren(...history.map((entry) => {
       const row = node("tr");
-      [entry.time ? new Date(entry.time).toLocaleString("ru-RU") : "—", entry.username, entry.suggestion_id, t(entry.result), t(entry.reason), entry.device, t(entry.mode), entry.operation_id]
+      const resultText = view?.transport === "windows_live_studio" ? t(entry.result) :
+        entry.send_invoked === false ? "Отправка не выполнялась" :
+        ({confirmed:"Отправка подтверждена", not_sent:"Отправка не выполнялась", unknown:"Неизвестно, отправилось ли сообщение", filled:"Текст вставлен — отправляет оператор"})[entry.result] || t(entry.result);
+      [entry.time ? new Date(entry.time).toLocaleString("ru-RU") : "—", entry.username, entry.suggestion_id, resultText, t(entry.reason), entry.device, t(entry.mode), entry.operation_id]
         .forEach((value) => row.append(node("td", "mono cell-text", t(String(value ?? "—")))));
       return row;
     }));
@@ -183,15 +196,8 @@ window.createDeliveryControls = ({api, node: rawNode, toast, state, refreshCards
     busy = true;
     try {
       render(await api("/api/admin/delivery/prepare", {}));
-      toast("Устройство и приложение подготовлены. Аккаунт ещё не подтверждён: запустите свой эфир, подключите чат и пройдите проверку аккаунта. Автоотправка выключена.");
+      toast(view?.inspection?.account_verified ? "Устройство и свой профиль проверены. Запустите эфир и подключите чат. Автоотправка выключена." : "Устройство подготовлено. Откройте свой профиль и нажмите «Подготовить и проверить». Автоотправка выключена.");
     } catch (error) { toast(error.message); }
-    finally { busy = false; await refresh(); }
-  });
-  $("live-account-challenge").addEventListener("click", async () => {
-    if (busy || !state.connected || view?.transport === "windows_live_studio") return;
-    busy = true;
-    try { render(await api("/api/admin/device/live-account-challenge", {})); }
-    catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
   });
   $("confirm-send").addEventListener("click", async () => {
@@ -205,13 +211,30 @@ window.createDeliveryControls = ({api, node: rawNode, toast, state, refreshCards
   });
   $("acknowledge-unknown")?.addEventListener("click", async () => {
     if (busy || !state.connected || !view?.unknown_ack_revision || view.transport === "windows_live_studio") return;
-    if (!window.confirm("Подтвердить неподтверждённую операцию? Прежние операции навсегда остаются использованными, повтор запрещён. Разрешаются только новые сообщения после этой границы. Автоотправка остаётся выключенной.")) return;
+    if (!window.confirm("Вы лично проверили чат? Неизвестный результат старой операции останется неизвестным, а повтор навсегда запрещён. Разрешаются только новые сообщения. Автоотправка остаётся выключенной.")) return;
     busy = true;
     try { render(await api("/api/admin/delivery/acknowledge-unknown", {confirmed: true,
       expected_unknown_revision: view.unknown_ack_revision, expected_live_session_id: view.live_session_id,
       expected_active_runtime_revision: view.active_runtime_revision})); }
     catch (error) { toast(error.message); }
     finally { busy = false; await refresh(); }
+  });
+  $("check-mobile-readiness")?.addEventListener("click", async () => {
+    if (busy || !state.connected || view?.transport === "windows_live_studio") return;
+    busy = true;
+    $("check-mobile-readiness").disabled = true;
+    let refreshed = false;
+    try {
+      const result = await api("/api/admin/mobile/readiness", {});
+      await refresh(); refreshed = true; // Preparation can establish a new runtime revision.
+      if (view?.transport === "windows_live_studio" || result.active_runtime_revision !== view?.active_runtime_revision || result.live_session_id !== view?.live_session_id) return;
+      readinessKey = readinessScope(view);
+      $("mobile-readiness-results").replaceChildren(...result.checks.map(check => {
+        const row=node("div"); row.append(node("dt", "", check.name), node("dd", "", `${check.ok ? "Готово" : "Нужен оператор"}: ${check.detail}`)); return row;
+      }));
+      $("mobile-readiness-next").textContent = result.next_step;
+    } catch (error) { toast(error.message); }
+    finally { busy = false; if (!refreshed) await refresh(); else if (view) render(view); }
   });
   async function setMode(mode) {
     if (!view || !state.connected || busy) return;

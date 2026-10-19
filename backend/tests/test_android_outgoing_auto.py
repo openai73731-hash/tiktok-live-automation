@@ -100,7 +100,7 @@ async def phone_api(settings, tmp_path, monkeypatch):
             assert (await http.post('/api/admin/device/verify-account',json={})).status_code == 200
             phone.current = captured('host')
             assert (await http.post('/api/admin/live/connect',json={'username':OWN})).status_code == 202
-            await until(lambda: m.service.account_proof.challenge is not None)
+            await until(lambda: m.service.account_proof.valid())
             m.service.controller.confirmation_interval = 0
             yield m
 

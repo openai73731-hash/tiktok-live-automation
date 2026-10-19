@@ -17,6 +17,35 @@ from app.live.models import Comment
 from app.main import create_app
 
 
+@pytest.mark.parametrize('purpose',['VIEWER_REPLY','PERIODIC'])
+@pytest.mark.parametrize('invented',[False,True])
+async def test_empty_knowledge_context_is_enforced_in_production_generation_schema(settings,tmp_path,purpose,invented):
+    from app.ai.generic import process_generic
+    profile=AIProfile()
+    project=effective(load_yaml_model(settings.project_config_path,ProjectConfig),OperatorOverlay(ai_profile=profile))
+    processor=create_processor(settings.model_copy(update={'state_dir':tmp_path}),project=project)
+    requests=[]
+    def server(request):
+        if request.method=='GET':return httpx.Response(200,json={'data':[{'id':profile.model.model}]})
+        body=json.loads(request.content);requests.append(body)
+        schema=body['response_format']['json_schema']['schema']
+        assert schema['properties']['context_ids']['maxItems']==0
+        assert schema['properties']['context_ids']['const']==[]
+        assert json.loads(body['messages'][1]['content'])['KNOWLEDGE_CONTEXT']==[]
+        draft=dict(reply='Clear context helps explain the topic.',reply_translation='Понятный контекст помогает объяснить тему.',
+            basis='general',context_ids=['invented'] if invented else [])
+        if purpose=='VIEWER_REPLY':draft.update(detected_language='en',operator_translation='Приветствие',should_reply=True)
+        return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps(draft)}}]})
+    processor.engine._transport=httpx.MockTransport(server)
+    try:
+        result=await process_generic(processor,Comment(username='preview',text='Hello.'),purpose=purpose)
+        assert len(requests)==1
+        assert result.status==('needs_operator' if invented else 'ready')
+        assert not result.knowledge_ids
+        if invented:assert result.suggested_reply is None and result.processing_error
+    finally:await processor.aclose()
+
+
 @pytest.mark.parametrize('values',[{'name':''},{'system_prompt':'x'*3001},{'language':'English'},
     {'periodic_comments':{'interval_seconds':59}},{'periodic_comments':{'jitter_seconds':151}},
     {'periodic_comments':{'max_per_hour':61}},{'model':{'temperature':float('nan')}},

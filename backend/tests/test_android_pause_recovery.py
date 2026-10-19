@@ -93,8 +93,8 @@ async def test_explicit_prepare_recovers_only_new_cycle_and_preserves_consumed(m
     assert (await client.post(f"/api/admin/suggestions/{old.suggestion_id}/approve",
         json={"expected_suggestion_revision":old.suggestion_revision})).status_code == 409
     assert (await client.post("/api/admin/delivery/fill", json=old_body)).status_code == 409
-    # Optional strict Profile proof still works; preparation itself proves no account.
-    assert not prepared.json()["inspection"]["account_verified"]
+    # Preparation automatically verifies the freshly visible exact own Profile.
+    assert prepared.json()["inspection"]["account_verified"]
     assert (await client.post("/api/admin/device/verify-account", json={})).status_code == 200
     assert (await client.post("/api/admin/live/connect", json={"username":ACCOUNT})).status_code == 202
     await runtime.live.service.started.wait()
@@ -187,7 +187,7 @@ async def test_lazy_journal_rejected_pause_requires_explicit_recovery(manual_fil
     assert service.paused and service._pause_reason == "manual_rejected"
     result = await client.post("/api/admin/delivery/prepare", json={})
     assert result.status_code == 200 and not result.json()["paused"]
-    assert result.json()["mobile_prepared"] and not result.json()["inspection"]["account_verified"]
+    assert result.json()["mobile_prepared"] and result.json()["inspection"]["account_verified"]
     assert service.consumed(old) and service.mode == "MANUAL"
 
 

@@ -1,5 +1,26 @@
 # Project scope and rules
 
+- Release instruction 2026-10-19: preserve the current work and finish a bounded
+  release, without repeating manual Fill or viewer test comments. Use the three
+  exact operator-approved neutral templates, templates mode, 60/0/12 only for a
+  separately authorized two-new-slot test, then restore 300/30/12. Never bypass
+  existing runtime trust/manual admission/Send-control, exact readback or dedup.
+  If admission or E2E is blocked, record the exact limitation and ship a clearly
+  marked preliminary ZIP instead of extending diagnosis. Run affected focused
+  tests, one final offline FULL, pip check, diff check and a clean-directory
+  no-physical-send smoke; commit/push feature/unified-transports only. This
+  explicitly permits the preliminary package when real acceptance cannot run.
+
+- The operator explicitly removed manual LIVE challenge entry from the normal
+  Android flow. One Prepare/check action automatically verifies the exact own
+  @handle plus owner controls on the visible reviewed Profile before LIVE. Bind
+  that private runtime/device/install proof to the real owned SDK generation only
+  after a fresh reviewed host inspection. CONNECT, hello, display names, browser
+  flags and an unknown screen cannot prove identity. Revoke on binding changes;
+  no input, AUTO opt-in, ACK UNKNOWN, consumed retry or one-shot rearm is automatic.
+  Legacy challenge API/security tests may remain, but never issue/show a phrase in
+  the normal operator flow. Keep advanced checks out of the primary UI.
+
 - Generic profile release is explicitly authorized, including a separate generated
   content policy (operator decision). Keep legacy extractive checks unchanged for
   legacy profiles. Generic checks bound structured output/citations/claims; do not

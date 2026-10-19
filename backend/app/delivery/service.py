@@ -63,6 +63,10 @@ class DeliveryHistoryEntry(FrozenModel):
     reason: DeliveryReason | None
 
 
+class AndroidDeliveryHistoryEntry(DeliveryHistoryEntry):
+    send_invoked: bool | None = None
+
+
 class ManualDeliveryService:
     def __init__(self, settings, suggestions, context, *, serial=None, controller=None, journal_factory=None):
         self.settings, self.suggestions, self.context = settings, suggestions, context
@@ -91,6 +95,8 @@ class ManualDeliveryService:
         self.outgoing = OutgoingConfirmation(self)
         self.controller.outgoing = self.outgoing
         self.unknown_recovery = UnknownRecovery(self)
+        from app.android.technical_recovery import TechnicalRecovery
+        self.technical_recovery = TechnicalRecovery(self)
 
     @property
     def paused(self): return self._paused
@@ -123,7 +129,7 @@ class ManualDeliveryService:
     def consumed(self, envelope):
         from app.delivery.registry import consumed
         try:
-            return self.unknown_recovery.old_event(envelope) or bool(self.journal and self.journal.has_envelope_operation(envelope)) or consumed(self.settings.state_dir, envelope)
+            return self.unknown_recovery.old_event(envelope) or self.technical_recovery.old_event(envelope) or bool(self.journal and self.journal.has_envelope_operation(envelope)) or consumed(self.settings.state_dir, envelope)
         except Exception: return True
 
     @property
@@ -213,7 +219,9 @@ class ManualDeliveryService:
                 if not valid and verify and self.controller.last.reason == "profile_mismatch":
                     raise SuggestionConflict("profile_mismatch: свежий Profile не подтвердил точный настроенный @handle.")
                 if not valid: raise SuggestionConflict("Проверка не выполнена. Проверьте Profile, LIVE и reviewed composer.")
-                if verify: self._verified_runtime_revision = ctx.active_runtime_revision
+                if verify:
+                    self._verified_runtime_revision = ctx.active_runtime_revision
+                    self.account_proof.record_profile()
                 return self.view()
         return await self._owned(run)
 
@@ -246,6 +254,12 @@ class ManualDeliveryService:
                 inspected = await self.controller.inspect(target)
                 if inspected.security_state:
                     self.paused, self.auto_reason = True, "security_ui"
+                elif target is not None and self.mode == 'MANUAL' and not self.pending_fill:
+                    from app.android.tiktok_ui import profile_account
+                    if self.account_proof.prepared_now() and profile_account(self.controller._xml, target.account):
+                        if await self.controller.verify_account(target):
+                            self.account_proof.record_profile()
+                    self.account_proof.bind_profile_connection(self.controller.last)
                 return self.view()
         return await self._owned(run)
 
@@ -566,9 +580,11 @@ class ManualDeliveryService:
                     mode="AUTOMATIC", authority=self.suggestions.automatic_authoritative)
                 self.coordinator = coordinator
                 sdk_scope = self.account_proof.scope()
+                installation, generation = self.controller._installation, self.auto_generation
                 sender.preflight = lambda request: (coordinator.preflight(request) and
                     (sdk_scope is None or self.account_proof.scope() == sdk_scope) and
                     request.device_serial == (self.controller.serial or self.controller.last.serial))
+                recovered = False
                 try:
                     self.last_attempt = monotonic()
                     if self.settings.mobile_acceptance_one_shot: self.acceptance_spent = True
@@ -577,17 +593,21 @@ class ManualDeliveryService:
                     result = await coordinator.execute(body.suggestion_id, body.approval_id,
                         body.expected_suggestion_revision, body.idempotency_key, timeout=90,
                         device_serial=self.controller.serial or self.controller.last.serial)
-                    if result.status in {"unknown", "needs_operator"}: self.paused = True
+                    recovered = await self.technical_recovery.settle(result, coordinator, sdk_scope, installation, generation)
+                    if result.status in {"unknown", "needs_operator"} and not recovered: self.paused = True
                     self.workflow = "SENT CONFIRMED" if result.status == "confirmed" else "UNKNOWN" if result.status == "unknown" else "AUTO BLOCKED"
-                    self.auto_reason = result.reason
+                    self.auto_reason = "eligible" if recovered else result.reason
+                    if recovered: self.workflow = "READY"
                     return result
                 except JournalConflict:
                     self.paused = True
                     return DeliveryResult(status="needs_operator", reason="rejected")
                 finally:
-                    self.paused = self.paused or coordinator.failed
+                    self.paused = self.paused or (coordinator.failed and not recovered)
                     await coordinator.aclose()
                     if coordinator.operation_id: self.outgoing.finish(coordinator.operation_id)
+                    if self.paused and self.technical_recovery.proven_operation == coordinator.operation_id:
+                        self._pause_reason = "no_send_rejected"
                     if self.settings.mobile_acceptance_one_shot and self.acceptance_spent:
                         self.mode, self.armed_binding = "MANUAL", None
                         while not self.auto_queue.empty():
@@ -597,10 +617,13 @@ class ManualDeliveryService:
     def recent(self):
         if self.journal is None: return tuple(self.history)
         try:
-            return tuple(DeliveryHistoryEntry(operation_id=o.operation_id, suggestion_id=o.suggestion_id,
+            from app.android.delivery_evidence import proven_no_send
+            no_send = proven_no_send(self)
+            return tuple(AndroidDeliveryHistoryEntry(operation_id=o.operation_id, suggestion_id=o.suggestion_id,
                 time=o.created_at, username=o.target_account, device=o.device_serial,
                 mode=o.mode, result="unknown" if o.status == "reserved" else o.status,
-                reason="interrupted" if o.status == "reserved" else o.reason)
+                reason="interrupted" if o.status == "reserved" else o.reason,
+                send_invoked=False if o.operation_id in no_send or o.status=='not_sent' else True if o.status=='confirmed' else None)
                 for o in self.journal.recent())
         except Exception:
             self.paused = True

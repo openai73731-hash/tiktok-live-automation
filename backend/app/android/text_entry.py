@@ -4,6 +4,9 @@ Uses the normal focused EditText. No IME installation, root, clipboard or Unicod
 claims. AOSP input converts %s to spaces; exact UI readback is always required.
 """
 import logging
+from itertools import zip_longest
+from time import monotonic
+import unicodedata
 from app.android.adb import AdbCommand, AdbError, ascii_supported
 from app.android.tiktok_ui import unique_node, resolved_send_point
 from app.logging_config import LOGGER_NAME
@@ -23,6 +26,7 @@ class ASCIITextEntryBackend:
         self.target = None
         self.guard = lambda: False
         self.expected = None
+        self._attempted_text = None
 
     def supports(self, text): return ascii_supported(text)
 
@@ -32,6 +36,7 @@ class ASCIITextEntryBackend:
         self.inspection = inspection
         self.before_send = before_send
         self.expected = None
+        self._attempted_text = None
         self.diagnostic = dict(text_entry_method="adb_ascii_focused",
             input_target_resource_id=self.controller._profile.input_id if self.controller._profile else None,
             target_focused_before_input=None, post_readback_result="not_attempted", rejection_reason="none",
@@ -39,9 +44,8 @@ class ASCIITextEntryBackend:
             stderr_miui_uiautomator_noise=False)
 
     def report(self, reason="none", **fields):
-        if self.require_send: return  # Additional diagnostics are MANUAL-only.
         self.diagnostic.update(fields, rejection_reason=reason)
-        logger.info("android_manual_text_entry", extra={"fields": dict(self.diagnostic)})
+        logger.info("android_text_entry" if self.require_send else "android_manual_text_entry", extra={"fields": dict(self.diagnostic)})
 
     def reject(self, reason, **fields):
         self.report(reason, **fields)
@@ -60,7 +64,6 @@ class ASCIITextEntryBackend:
         return result if result and result.get("command") == command.value else dict(command=command.value, category="unreported")
 
     def record_readback(self, text, entry):
-        if self.require_send: return
         actual = entry.get("text", "")
         # Boolean/length evidence only. Never log approved or read-back text.
         self.diagnostic.update(readback_expected_length=len(text), readback_actual_length=len(actual),
@@ -69,20 +72,45 @@ class ASCIITextEntryBackend:
             readback_is_prefix=text.startswith(actual),
             readback_leading_whitespace=len(actual) - len(actual.lstrip()),
             readback_trailing_whitespace=len(actual) - len(actual.rstrip()))
+        def category(c):
+            if c is None: return 'missing'
+            if c.isspace(): return 'space'
+            kind = unicodedata.category(c)[0]
+            return {'L':'letter','N':'number','P':'punctuation','S':'symbol','M':'mark','C':'control'}.get(kind,'other')
+        differences = [(i, category(expected), category(found)) for i, (expected, found) in
+            enumerate(zip_longest(text, actual)) if expected != found]
+        self.diagnostic.update(readback_first_mismatch_index=differences[0][0] if differences else None,
+            readback_mismatch_count=len(differences), readback_changed_categories=sorted({a+'->'+b for _, a, b in differences}),
+            readback_non_ascii_count=sum(ord(c)>127 for c in actual),
+            readback_case_only_count=sum(a is not None and b is not None and a != b and a.casefold()==b.casefold()
+                for a,b in zip_longest(text,actual)))
 
     async def checked(self, serial, *, focused=False):
         c = self.controller
+        host_evidence = c._live_evidence
         state = await self.inspection.read() if not self.require_send and self.inspection else await c._inspect(self.target)
         entry = unique_node(c._xml, c._profile.input_id) if c._profile else None
         ready = c.ready_for(self.target.live_session_id, self.target.account) if self.require_send else c.fill_ready_for(self.target.live_session_id, self.target.account)
         if not self.guard(): self.reject("guard_rejected")
         if not ready:
             result = getattr(c.transport, "last_command_result", None) or {}
-            self.reject("fresh_evidence_rejected", post_readback_result="unavailable", **result)
+            # Inspection clears the previous XML/profile before acquiring fresh
+            # evidence. Report the observed field even when LIVE authority has
+            # expired; diagnostics never authorize another input or Send.
+            observed = self._attempted_text is not None and entry is not None
+            if observed: self.record_readback(self._attempted_text, entry)
+            self.reject("fresh_evidence_rejected", **result,
+                post_readback_result="observed_without_authority" if observed else "unavailable",
+                classified_screen=state.screen.value, inspection_reason=state.reason,
+                account_verified=state.account_verified, live_verified=state.live_verified,
+                profile_verified=state.profile_verified,
+                readback_target_focused=entry.get("focused") == "true" if entry is not None else None,
+                prior_host_evidence_age_seconds=round(monotonic() - host_evidence[3], 3) if host_evidence else None,
+                current_host_evidence_present=c._live_evidence is not None)
         if state.serial != serial: self.reject("device_mismatch")
         if entry is None: self.reject("input_missing")
         if focused and entry.get("focused") != "true": self.reject("input_not_focused")
-        if not self.require_send: self.diagnostic["target_focused_before_input"] = entry.get("focused") == "true"
+        self.diagnostic["target_focused_before_input"] = entry.get("focused") == "true"
         return entry
 
     async def clear(self, serial):
@@ -109,6 +137,7 @@ class ASCIITextEntryBackend:
             await self.clear(serial)
             await self.checked(serial, focused=True)
         if not self.require_send and self.inspection: self.inspection.input_started = True
+        self._attempted_text = text
         await self.command(AdbCommand.TEXT, serial, text=text)
         entry = await self.checked(serial, focused=True)
         self.record_readback(text, entry)
@@ -144,4 +173,4 @@ class ASCIITextEntryBackend:
         return True
 
     async def aclose(self):
-        self.target = self.expected = None
+        self.target = self.expected = self._attempted_text = None

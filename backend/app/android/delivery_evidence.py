@@ -37,6 +37,7 @@ def evidence_db(state_dir, *, write=False):
             db.execute("PRAGMA synchronous=FULL")
             db.execute("CREATE TABLE IF NOT EXISTS acknowledgements (store TEXT, operation_id TEXT, row_hash TEXT NOT NULL, acknowledged_at TEXT NOT NULL, PRIMARY KEY(store,operation_id))")
             db.execute("CREATE TABLE IF NOT EXISTS echo_receipts (identity TEXT PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE)")
+            db.execute("CREATE TABLE IF NOT EXISTS no_send_receipts (store TEXT, operation_id TEXT, row_hash TEXT NOT NULL, PRIMARY KEY(store,operation_id))")
         yield db
     finally: db.close()
 
@@ -68,14 +69,53 @@ def acknowledgements(service):
 
 def unresolved(service, *, allow_rejected=False):
     accepted = acknowledgements(service)
+    no_send = no_send_receipts(service)
     for name, row, row_hash in rows(service):
         status = row.get("status")
         if status in {"confirmed", "not_sent"}: continue
         if status == "unknown" and accepted.get((name, row["operation_id"])) == row_hash: continue
+        if (status == 'needs_operator' and row.get('mode') == 'AUTOMATIC' and row.get('reason') == 'rejected'
+                and no_send.get((name, row['operation_id'])) == row_hash): continue
         if (allow_rejected and status == "needs_operator" and row.get("mode") == "MANUAL"
                 and row.get("reason") == "rejected" and row.get("device_serial") == (service.controller.serial or service.controller.last.serial)): continue
         return True
     return False
+
+
+def no_send_receipts(service):
+    with evidence_db(state_directory(service)) as db:
+        if db is None or not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='no_send_receipts'").fetchone(): return {}
+        return {(name, operation): row_hash for name, operation, row_hash in db.execute('SELECT store,operation_id,row_hash FROM no_send_receipts')}
+
+
+def proven_no_send(service):
+    if service.journal is None: return set()
+    receipts = no_send_receipts(service)
+    return {row['operation_id'] for name,row,h in rows(service)
+        if name==service.journal.path.name and row['status']=='needs_operator'
+        and row.get('mode')=='AUTOMATIC' and row.get('reason')=='rejected'
+        and receipts.get((name,row['operation_id']))==h}
+
+
+def record_no_send(service, operation_id, target, runtime_revision):
+    found = [(name,row,h) for name,row,h in rows(service) if row['operation_id']==operation_id]
+    if len(found) != 1: raise ValueError('Operation unavailable')
+    name,row,row_hash = found[0]
+    if row['status']!='needs_operator' or row.get('mode')!='AUTOMATIC' or row.get('reason')!='rejected':
+        raise ValueError('Not a settled pre-Send rejection')
+    if (row.get('target_account','').casefold(),row.get('live_session_id'),row.get('runtime_revision'),row.get('device_serial')) != (
+            target.account.casefold(),target.live_session_id,runtime_revision,target.device_serial):
+        raise ValueError('Operation binding changed')
+    with evidence_db(state_directory(service), write=True) as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            db.execute('INSERT INTO no_send_receipts VALUES (?,?,?) ON CONFLICT(store,operation_id) DO UPDATE SET row_hash=excluded.row_hash',
+                (name,operation_id,row_hash))
+            if (name,row,row_hash) not in rows(service): raise ValueError('Operation changed')
+            db.execute('COMMIT')
+        except BaseException:
+            if db.in_transaction: db.execute('ROLLBACK')
+            raise
 
 
 def unknown_snapshot(service):

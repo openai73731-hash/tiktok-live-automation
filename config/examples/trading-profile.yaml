@@ -20,8 +20,8 @@ ai_profile:
     interval_seconds: 300
     jitter_seconds: 30
     mode: templates
-    instruction: Write one neutral question about the topic without advice or financial promises.
+    instruction: Write one short neutral statement about the active topic. English ASCII only; no questions, advice or financial promises.
     templates:
-      - What would you like to discuss about the software?
-      - If you have a question about the topic, feel free to ask.
+      - Risk management is an essential part of trading.
+      - Patience and discipline matter in trading.
     max_per_hour: 12

@@ -53,7 +53,7 @@ async def prepare_mobile(service, runtime):
         async def run():
             async with service.lock:
                 if not idle(): reject("delivery is not idle")
-                if service.paused and service._pause_reason != "manual_rejected":
+                if service.paused and service._pause_reason not in {"manual_rejected", "no_send_rejected"}:
                     reject("pause is not a recoverable MANUAL rejection; UNKNOWN has NO RETRY")
                 ctx = service.context()
                 if not ctx.target_account or ctx.target_account != runtime.username:
@@ -77,6 +77,12 @@ async def prepare_mobile(service, runtime):
                     reject("authoritative delivery journal unavailable")
                 if not idle() or runtime.active_runtime_revision != before or runtime.pending:
                     reject("runtime or recovery evidence changed")
+                from app.android.tiktok_ui import profile_account
+                own_profile = profile_account(c._xml, ctx.target_account)
+                if own_profile:
+                    if not await c.verify_account(target): reject("fresh own Profile verification failed")
+                    if not idle() or runtime.active_runtime_revision != before or runtime.pending:
+                        reject("runtime or Profile evidence changed")
                 # No await from the last checks through publication. Old approvals
                 # become stale; no delivery row, one-shot latch or dedup key changes.
                 runtime.active_runtime_revision = uuid4().hex
@@ -88,6 +94,8 @@ async def prepare_mobile(service, runtime):
                 service._verified_runtime_revision = None
                 service.account_proof.prepared = (runtime.username.casefold(), runtime.active_runtime_revision, installation)
                 service.account_proof.state = "REQUIRED"
+                if own_profile:
+                    if not service.account_proof.record_profile(): reject("own Profile binding changed")
                 service.workflow = "READY"
 
         try:

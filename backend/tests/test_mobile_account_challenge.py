@@ -99,6 +99,11 @@ async def connect(m, *, activity="com.windukk.mod.icon.default"):
     m.phone.activity = activity
     result = await m.http.post("/api/admin/live/connect", json={"username": OWN})
     assert result.status_code == 202, result.text
+    await until(lambda: m.service.account_proof.scope() is not None and not m.service.tasks)
+    # Legacy endpoint remains isolated; normal CONNECT never issues a phrase.
+    assert m.service.account_proof.challenge is None
+    result = await m.http.post('/api/admin/device/live-account-challenge', json={})
+    assert result.status_code == 200, result.text
     await until(lambda: m.service.account_proof.state == "WAITING")
     return m.service.account_proof.challenge.token
 
@@ -282,7 +287,8 @@ async def test_reconnect_revokes_old_token_and_old_sdk_callback(mobile):
     old.handlers[DisconnectEvent](None)
     old.closed.set()
     assert m.service.account_proof.challenge is None
-    await until(lambda: len(m.clients) == 2 and m.service.account_proof.state == "WAITING")
+    await until(lambda: len(m.clients) == 2 and m.service.account_proof.scope() is not None and not m.service.tasks)
+    assert (await m.http.post('/api/admin/device/live-account-challenge',json={})).status_code == 200
     second = m.service.account_proof.challenge.token
     assert first != second
     old.comment(second)
@@ -472,7 +478,7 @@ async def test_only_successful_manual_readonly_verification_unlocks_auto_accepta
 
 
 
-def test_challenge_ui_expires_without_reload_and_never_submits_browser_token():
+def test_operator_ui_never_requests_or_displays_manual_challenge():
     node = shutil.which("node"); assert node
     source = r'''
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
@@ -484,13 +490,15 @@ const base={transport:'android',inspection:{devices:[]},mode:'MANUAL',account_ch
 vm.runInNewContext(fs.readFileSync('backend/app/static/admin/delivery.js','utf8'),{window,document});
 const controls=window.createDeliveryControls({api:async(p,b)=>{calls.push([p,b]);return p.endsWith('/history')?[]:base},node:el,toast(){},state:{connected:true},refreshCards(){}});
 controls.render({...base,account_challenge:{state:'WAITING',token:'MOB-SYNTHETIC',expires_in_seconds:1,available:false}});
-assert(els.get('mobile-challenge-note').textContent.includes('MOB-SYNTHETIC'));
+assert(!els.get('mobile-challenge-note').textContent.includes('MOB-SYNTHETIC'));
+assert(els.get('live-account-challenge').hidden);
 assert(els.get('live-account-challenge').disabled);
 (async()=>{await expiry();await new Promise(r=>setImmediate(r));
 assert(!els.get('mobile-challenge-note').textContent.includes('MOB-SYNTHETIC'));
-assert(!els.get('live-account-challenge').disabled);
-await els.get('live-account-challenge').click();
-const issued=calls.find(c=>c[0].endsWith('/live-account-challenge'));assert(issued);assert.deepStrictEqual(Object.keys(issued[1]),[]);
+assert(els.get('live-account-challenge').disabled);
+assert(!calls.some(c=>c[0].endsWith('/live-account-challenge')));
+controls.render({...base,account_challenge:{state:'VERIFIED'}});
+assert(els.get('mobile-challenge-note').textContent.includes('автоматически'));
 controls.render({transport:'windows_live_studio',windows_sender:{}});
 assert(els.get('live-account-challenge').hidden && els.get('mobile-challenge-note').hidden);
 })().catch(e=>{console.error(e);process.exitCode=1});

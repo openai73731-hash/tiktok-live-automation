@@ -38,7 +38,7 @@ if ($operator.username.ToLowerInvariant() -cne $Username.TrimStart('@').ToLowerI
 $status = Invoke-MobileRequest '/api/admin/status'
 $delivery = Invoke-MobileRequest '/api/admin/delivery/status'
 Assert-MobileIdle $status $delivery -AllowRecovery
-Write-Host 'Preparing the exact reviewed phone/installation. This does not verify the account.'
+Write-Host 'Preparing the exact reviewed phone/installation and checking the visible own Profile automatically.'
 # Explicit recovery creates a new runtime revision; journals/consumed rows remain intact.
 $beforePrepare = Invoke-MobileRequest '/api/admin/operator/settings'
 if ($beforePrepare.active_runtime_revision -cne $operator.active_runtime_revision -or $beforePrepare.pending -or
@@ -47,15 +47,16 @@ $prepared = Invoke-MobileRequest '/api/admin/delivery/prepare' -Post
 if ($prepared.paused) { throw 'operator_paused / recovery required: preparation did not clear the safety pause.' }
 $device = $prepared.inspection
 $devices = @($device.devices)
-if (-not $prepared.mobile_prepared -or $device.account_verified) { throw 'Device/install preparation must PASS without claiming account verification.' }
+if (-not $prepared.mobile_prepared) { throw 'Device/install preparation did not PASS.' }
+if ($device.account_verified -and -not $device.profile_verified) { throw 'Account verification requires the reviewed Profile.' }
 if ($device.adb -cne 'AVAILABLE' -or $devices.Count -ne 1 -or $devices[0].state -cne 'CONNECTED') { throw 'Exactly one expected online Android device is required.' }
 if ($DeviceSerial -and $devices[0].serial -cne $DeviceSerial) { throw 'Detected device differs from expected serial.' }
 if ($device.serial -cne $devices[0].serial -or $device.security_state) { throw 'Selected device mismatch or security/login dialog: STOP.' }
 $finalOperator = Invoke-MobileRequest '/api/admin/operator/settings'
 if ($finalOperator.active_runtime_revision -cne $prepared.active_runtime_revision -or $finalOperator.pending) { throw 'Runtime changed during preparation. Prepare again.' }
 Assert-MobileIdle (Invoke-MobileRequest '/api/admin/status') (Invoke-MobileRequest '/api/admin/delivery/status')
-Write-Host 'PREPARE MOBILE complete. Device/install only; account_verified=false. AUTO OFF. No input or delivery performed.'
-Write-Host 'START LIVE ON PHONE manually -> CONNECT LISTENER -> LIVE ACCOUNT CHALLENGE.'
-Write-Host 'Type/send the backend challenge yourself from the host phone; wait for LIVE ACCOUNT VERIFIED.'
+Write-Host "PREPARE MOBILE complete. Own Profile verified: $($device.account_verified). AUTO OFF. No input or delivery performed."
+if (-not $device.account_verified) { Write-Host 'Open your exact own Profile before LIVE and use Prepare and check in the panel.' }
+Write-Host 'START LIVE ON PHONE manually -> CONNECT LISTENER -> automatic account/session checks.'
 Write-Host 'Then NEW EXTERNAL TEST COMMENT -> AI REPLY -> APPROVE.'
 Write-Host 'Inspect host LIVE, open/focus composer manually -> FILL PHONE -> tap Send yourself -> VERIFY -> STOP.'

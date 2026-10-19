@@ -9,7 +9,7 @@ from typing import Literal
 from app.android.models import DeviceModel, ScreenState
 from app.android.challenge_text import is_challenge_text, new_challenge_text
 from app.android.feed import HostFeed, host_feed
-from app.android.tiktok_ui import TIKTOK_YOU_4683, inspect_hierarchy
+from app.android.tiktok_ui import TIKTOK_YOU_4683, inspect_hierarchy, profile_account
 from app.delivery.models import AndroidTarget
 from app.delivery.registry import REGISTRY_NAME, read_store
 from app.delivery.suggestions import SuggestionConflict, comment_identity, durable_delivery_key
@@ -64,6 +64,7 @@ class MobileAccountChallenge:
         self.manual_scope = None
         self.connection_attempt = None
         self.last_checks = None
+        self.profile_binding = None
         # Never evict identities and allow them to become fresh again.
         self.seen = set()
 
@@ -106,10 +107,46 @@ class MobileAccountChallenge:
         if scope and self.prepared_now() and c._account_binding == (c._installation, scope[0]):
             self.manual_scope = scope
 
+    def record_profile(self):
+        """Capture only the controller's fresh, exact own-Profile proof."""
+        s, c = self.service, self.service.controller
+        if (s.mode != 'MANUAL' or not self.prepared_now() or c._profile != TIKTOK_YOU_4683
+                or c.last.security_state or not c.last.account_verified
+                or c._account_binding != (c._installation, self.configured())
+                or not profile_account(c._xml, self.configured())):
+            return False
+        self.profile_binding = self.prepared
+        return True
+
+    def bind_profile_connection(self, state):
+        """Fresh own-host inspection binds prior Profile proof to this real SDK."""
+        s, c = self.service, self.service.controller
+        scope = self.scope()
+        if (not scope or self.profile_binding is None or self.profile_binding != self.prepared
+                or not self.prepared_now() or state is not c.last or not self.host(state)
+                or c._account_binding != (c._installation, scope[0])):
+            return False
+        self.verified, self.challenge, self.state = scope, None, 'VERIFIED'
+        c._account_scope_guard = self.valid
+        s._verified_runtime_revision = scope[1]
+        return True
+
+    async def automatic_connection(self):
+        s = self.service
+        async with s.lock:
+            scope = self.scope()
+            binding = self.profile_binding
+            if not scope or not self.prepared_now():
+                return
+            state = await s.controller.inspect(self.target(scope))
+            if binding and self.scope() == scope and self.profile_binding == binding:
+                self.bind_profile_connection(state)
+
     def revoke(self):
         changed = self.challenge is not None or self.verified is not None
         self.challenge = self.verified = None
         self.manual_scope = None
+        self.profile_binding = None
         if changed: self.state = "INVALIDATED"
         c = self.service.controller
         if getattr(c, "_account_scope_guard", None) is not None:
@@ -171,7 +208,7 @@ class MobileAccountChallenge:
         scope = self.scope()
         if not scope or not self.prepared_now() or scope == self.connection_attempt: return
         self.connection_attempt = scope
-        task = asyncio.create_task(self.issue(), name="mobile-account-challenge-issue")
+        task = asyncio.create_task(self.automatic_connection(), name="mobile-profile-account-check")
         self.service.tasks.add(task)
         def done(task):
             self.service.tasks.discard(task)

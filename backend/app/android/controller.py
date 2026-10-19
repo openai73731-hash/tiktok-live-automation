@@ -41,6 +41,7 @@ class ADBAndroidController:
         self._manual_fill_evidence = None
         self._installation = None
         self._host_snapshot = None
+        self._send_attempt = None
 
     @property
     def current_ready(self):
@@ -191,6 +192,9 @@ class ADBAndroidController:
             if foreground(after)[0] != package: raise ValueError("Foreground package changed")
             account = getattr(target, "account", None)
             if self._account_binding is not None and self._account_binding[1] != account:
+                self.invalidate_trust()
+            if (profile == TIKTOK_YOU_4683 and self._account_binding is not None
+                    and reviewed_profile_screen(xml) and not profile_account(xml, account)):
                 self.invalidate_trust()
             key = (selected.serial, package, version, code, values["client_variant"], model, android, self.installation(info))
             if self._account_scope_guard is not None and not self._account_scope_guard(): self.invalidate_trust()
@@ -455,8 +459,12 @@ class ADBAndroidController:
                         return AndroidOutcome(status="not_sent", reason="confirmation_ambiguous")
             from app.android.text_entry import ASCIITextEntryBackend, TextEntryError
             def before_send():
+                self._send_attempt = (request.operation_id, True, self._installation, request.target)
                 if self.outgoing: self.outgoing.begin(request.operation_id, request.target, request.text, seconds=20)
-            if isinstance(self.actions, ASCIITextEntryBackend): self.actions.bind(request.target, guard, before_send=before_send)
+            self._send_attempt = None
+            if isinstance(self.actions, ASCIITextEntryBackend):
+                self._send_attempt = (request.operation_id, False, self._installation, request.target)
+                self.actions.bind(request.target, guard, before_send=before_send)
             try:
                 entered = await self.actions.prepare_exact(inspected.serial, profile.input_id, request.text)
             except (TextEntryError, AdbError):

@@ -22,6 +22,9 @@ from test_generic_profile import save_apply
 
 @pytest.fixture
 async def periodic_api(settings,tmp_path,monkeypatch,request):
+    options = getattr(request,'param','templates')
+    mode = options.get('mode','templates') if isinstance(options,dict) else options
+    one_shot = not (isinstance(options,dict) and options.get('continuous'))
     phone,clients,calls=Phone(),[],[]
     executable=tmp_path/'adb.exe';executable.touch()
     monkeypatch.setattr(asyncio,'create_subprocess_exec',AsyncMock(side_effect=phone.spawn))
@@ -36,8 +39,9 @@ async def periodic_api(settings,tmp_path,monkeypatch,request):
         user=json.loads(data['messages'][1]['content']);periodic=user['purpose']=='PERIODIC'
         context=user['KNOWLEDGE_CONTEXT']
         draft=dict(detected_language='en',operator_translation='Периодический комментарий' if periodic else 'Вопрос зрителя',
-            should_reply=True,reply='What would you like to discuss?' if periodic else 'The workshop closes at six.',
-            reply_translation='Что хотите обсудить?' if periodic else 'Мастерская закрывается в шесть.',
+            should_reply=True,reply=('What would you like to discuss?' if isinstance(options,dict) and options.get('question')
+                else 'Clear explanations help keep the topic focused.') if periodic else 'The workshop closes at six.',
+            reply_translation='Понятные объяснения помогают сосредоточиться на теме.' if periodic else 'Мастерская закрывается в шесть.',
             basis='general' if periodic or not context else 'knowledge',context_ids=[context[0]['id']] if context and not periodic else [])
         if periodic:draft={k:v for k,v in draft.items() if k in {'reply','reply_translation','basis','context_ids'}}
         return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps(draft)}}]})
@@ -47,12 +51,12 @@ async def periodic_api(settings,tmp_path,monkeypatch,request):
     monkeypatch.setattr(GenericReplyEngine,'_get_client',get_client)
     cfg=settings.model_copy(update=dict(tiktok_username=OWN,tiktok_transport='android',adb_executable=executable,
         state_dir=tmp_path/'state',log_dir=tmp_path/'logs',enable_physical_tiktok_send=True,
-        enable_physical_windows_send=False,mobile_acceptance_one_shot=True))
+        enable_physical_windows_send=False,mobile_acceptance_one_shot=one_shot))
     app=create_app(cfg)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://127.0.0.1:8000') as http:
             http.headers['X-Admin-CSRF']=app.state.admin.csrf_token
-            p=AIProfile.model_validate({'topic':'Local workshop','periodic_comments':{'enabled':True,'interval_seconds':60,'jitter_seconds':0,'mode':getattr(request,'param','templates')}})
+            p=AIProfile.model_validate({'topic':'Local workshop','periodic_comments':{'enabled':True,'interval_seconds':60,'jitter_seconds':0,'mode':mode}})
             await http.post('/api/admin/knowledge/text',json={'title':'Hours','text':'The workshop closes at six.'})
             await save_apply(app,http,p)
             r=app.state.operator_runtime;s=app.state.delivery
@@ -60,7 +64,7 @@ async def periodic_api(settings,tmp_path,monkeypatch,request):
             assert (await http.post('/api/admin/device/verify-account',json={})).status_code==200
             phone.current=captured('host')
             assert (await http.post('/api/admin/live/connect',json={'username':OWN})).status_code==202
-            await until(lambda:s.account_proof.challenge is not None)
+            await until(lambda:s.account_proof.valid())
             s.controller.confirmation_interval=0
             # Disable only the timer; each test advances the same production tick explicitly.
             await r.periodic.aclose()

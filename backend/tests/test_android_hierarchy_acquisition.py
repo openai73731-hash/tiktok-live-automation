@@ -154,14 +154,16 @@ async def test_api_fresh_profile_mismatch_is_distinct(manual_fill_api, tmp_path,
     assert "hierarchy_unavailable" not in response.text and device.modes == [False]
 
 
-async def test_splash_preparation_is_device_only_profile_verification_remains_optional(manual_fill_api, tmp_path, monkeypatch):
+async def test_splash_preparation_automatically_verifies_fresh_exact_profile(manual_fill_api, tmp_path, monkeypatch):
     app, client, service, _, _, _ = manual_fill_api
     await app.state.operator_runtime.live.disconnect(app.state.operator_runtime.live.session_id)
     c, device = native_controller(tmp_path, monkeypatch, [xml("profile")])
     service.controller = c
     initial = await client.post("/api/admin/delivery/prepare", json={})
     assert initial.status_code == 200 and initial.json()["mobile_prepared"]
-    assert not initial.json()["inspection"]["account_verified"]
+    assert initial.json()["inspection"]["account_verified"]
+    assert service.account_proof.profile_binding == service.account_proof.prepared
+    assert not service.account_proof.manual_accepted and c._send_binding is None
     verified = await client.post("/api/admin/device/verify-account", json={})
     assert verified.status_code == 200 and verified.json()["inspection"]["account_verified"]
     assert verified.json()["inspection"]["foreground_activity"] == SPLASH
@@ -170,7 +172,9 @@ async def test_splash_preparation_is_device_only_profile_verification_remains_op
     assert prepared.status_code == 200 and not prepared.json()["paused"]
     assert prepared.json()["active_runtime_revision"] != revision
     assert prepared.json()["auto_state"] == "AUTO OFF" and True not in device.modes
-    assert not prepared.json()["inspection"]["account_verified"]
+    assert prepared.json()["inspection"]["account_verified"]
+    assert service.account_proof.profile_binding == service.account_proof.prepared
+    assert not service.account_proof.manual_accepted and c._send_binding is None
 
 
 async def test_splash_composer_recognition_never_substitutes_for_account_or_live_proof(tmp_path, monkeypatch):
